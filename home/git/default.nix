@@ -11,17 +11,17 @@
         minus-style = "syntax red";
       };
     };
-    extraConfigs = {
+    extraConfig = {
       branch.autosetuprebase = "always";
       color.ui = "auto";
       core = {
         editor = "hx";
-        pager = "less -+XF -Qc";
         fscache = "yes";
         autocrlf = "no";
         quotepath = "no";
         precomposeunicode = "yes";
-      } credential {
+      };
+      credential = {
         helper = "cache --timeout=3600";
         "https://github.com".username = "pbzweihander";
       };
