@@ -1,4 +1,8 @@
 {
+  imports = [
+    ./fish
+  ];
+
   home = {
     stateVersion = "23.11";
 
