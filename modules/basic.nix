@@ -10,6 +10,8 @@ with inputs;
     home-manager.nixosModules.home-manager
 
     ./users.nix
+
+    ./rust.nix
   ];
 
   system.stateVersion = "23.11";
