@@ -1,17 +1,11 @@
 { pkgs, ... }:
 
 {
-  imports = [
-    ./alacritty
-  ];
+  imports = [ ./alacritty ];
 
-  home.packages = with pkgs; [
-    pulseaudioFull
-  ];
+  home.packages = with pkgs; [ pulseaudioFull ];
 
-  programs = {
-    firefox.enable = true;
-  };
+  programs = { firefox.enable = true; };
 
   programs.plasma = {
     enable = true;
@@ -21,44 +15,34 @@
       wallpaperPictureOfTheDay.provider = "apod";
     };
 
-    panels = [
-      {
-        location = "right";
-        widgets = [
-          {
-            name = "org.kde.plasma.kickoff";
-          }
-          {
-            name = "org.kde.plasma.icontasks";
-            config = {
-              General.launchers = [
-                "applications:firefox"
-                "applications:org.kde.dolphin.desktop"
-              ];
-            };
-          }
-          "org.kde.plasma.marginsseparator"
-          "org.kde.plasma.systemtray"
-          {
-            digitalClock = {
-              format = "MM/dd";
-              time.format = "24h";
-            };
-          }
-        ];
-      }
-    ];
+    panels = [{
+      location = "right";
+      widgets = [
+        { name = "org.kde.plasma.kickoff"; }
+        {
+          name = "org.kde.plasma.icontasks";
+          config = {
+            General.launchers =
+              [ "applications:firefox" "applications:org.kde.dolphin.desktop" ];
+          };
+        }
+        "org.kde.plasma.marginsseparator"
+        "org.kde.plasma.systemtray"
+        {
+          digitalClock = {
+            format = "MM/dd";
+            time.format = "24h";
+          };
+        }
+      ];
+    }];
 
     shortcuts = {
-      ksmserver = {
-        "Lock Session" = [ "Screensaver" "Meta+Esc" ];
-      };
+      ksmserver = { "Lock Session" = [ "Screensaver" "Meta+Esc" ]; };
       "services/Alacritty.desktop"."New" = "Meta+Return";
     };
 
-    configFile = {
-      "kwinrc"."Effect-overview"."BorderActivate" = 9;
-    };
+    configFile = { "kwinrc"."Effect-overview"."BorderActivate" = 9; };
   };
 }
 

@@ -1,7 +1,5 @@
 {
-  imports = [
-    ./kde.nix
-  ];
+  imports = [ ./kde.nix ];
 
   services.xserver = {
     enable = true;

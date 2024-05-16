@@ -4,40 +4,40 @@
 { config, lib, pkgs, modulesPath, ... }:
 
 {
-  imports =
-    [ (modulesPath + "/installer/scan/not-detected.nix")
-    ];
+  imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];
 
-  boot.initrd.availableKernelModules = [ "xhci_pci" "thunderbolt" "nvme" "usb_storage" "sd_mod" ];
+  boot.initrd.availableKernelModules =
+    [ "xhci_pci" "thunderbolt" "nvme" "usb_storage" "sd_mod" ];
   boot.initrd.kernelModules = [ ];
   boot.kernelModules = [ "kvm-intel" ];
   boot.extraModulePackages = [ ];
 
-  fileSystems."/" =
-    { device = "/dev/disk/by-uuid/d7f9e473-c9f3-49e5-a7a3-0dcbd8e096ca";
-      fsType = "btrfs";
-      options = [ "subvol=root" ];
-    };
+  fileSystems."/" = {
+    device = "/dev/disk/by-uuid/d7f9e473-c9f3-49e5-a7a3-0dcbd8e096ca";
+    fsType = "btrfs";
+    options = [ "subvol=root" ];
+  };
 
-  boot.initrd.luks.devices."cryptroot".device = "/dev/disk/by-uuid/f682b3a2-7821-41aa-a611-b5ebd796b3dc";
+  boot.initrd.luks.devices."cryptroot".device =
+    "/dev/disk/by-uuid/f682b3a2-7821-41aa-a611-b5ebd796b3dc";
 
-  fileSystems."/home" =
-    { device = "/dev/disk/by-uuid/d7f9e473-c9f3-49e5-a7a3-0dcbd8e096ca";
-      fsType = "btrfs";
-      options = [ "subvol=home" ];
-    };
+  fileSystems."/home" = {
+    device = "/dev/disk/by-uuid/d7f9e473-c9f3-49e5-a7a3-0dcbd8e096ca";
+    fsType = "btrfs";
+    options = [ "subvol=home" ];
+  };
 
-  fileSystems."/nix" =
-    { device = "/dev/disk/by-uuid/d7f9e473-c9f3-49e5-a7a3-0dcbd8e096ca";
-      fsType = "btrfs";
-      options = [ "subvol=nix" ];
-    };
+  fileSystems."/nix" = {
+    device = "/dev/disk/by-uuid/d7f9e473-c9f3-49e5-a7a3-0dcbd8e096ca";
+    fsType = "btrfs";
+    options = [ "subvol=nix" ];
+  };
 
-  fileSystems."/var/log" =
-    { device = "/dev/disk/by-uuid/d7f9e473-c9f3-49e5-a7a3-0dcbd8e096ca";
-      fsType = "btrfs";
-      options = [ "subvol=log" ];
-    };
+  fileSystems."/var/log" = {
+    device = "/dev/disk/by-uuid/d7f9e473-c9f3-49e5-a7a3-0dcbd8e096ca";
+    fsType = "btrfs";
+    options = [ "subvol=log" ];
+  };
 
   swapDevices = [ ];
 
@@ -50,5 +50,6 @@
   # networking.interfaces.wwp0s20f0u4.useDHCP = lib.mkDefault true;
 
   nixpkgs.hostPlatform = lib.mkDefault "x86_64-linux";
-  hardware.cpu.intel.updateMicrocode = lib.mkDefault config.hardware.enableRedistributableFirmware;
+  hardware.cpu.intel.updateMicrocode =
+    lib.mkDefault config.hardware.enableRedistributableFirmware;
 }

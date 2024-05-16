@@ -5,7 +5,8 @@
     fish = {
       enable = true;
       shellInit = "set -gx fish_greeting";
-      loginShellInit = "export $(/usr/lib/systemd/user-environment-generators/30-systemd-environment-d-generator)";
+      loginShellInit =
+        "export $(/usr/lib/systemd/user-environment-generators/30-systemd-environment-d-generator)";
       plugins = [
         {
           name = "bass";

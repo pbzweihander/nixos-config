@@ -16,11 +16,12 @@
   outputs = { self, nixpkgs, ... }@inputs: {
     formatter = nixpkgs.nixfmt;
 
-    nixosConfigurations = { rossmann = nixpkgs.lib.nixosSystem {
-      system = "x86_64-linux";
-      specialArgs = { inherit inputs; };
-      modules = [ ./machines/rossmann ];
+    nixosConfigurations = {
+      rossmann = nixpkgs.lib.nixosSystem {
+        system = "x86_64-linux";
+        specialArgs = { inherit inputs; };
+        modules = [ ./machines/rossmann ];
+      };
     };
-   };
   };
 }
