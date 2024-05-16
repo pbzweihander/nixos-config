@@ -1,13 +1,16 @@
 { pkgs, ... }:
 
 {
+  imports = [
+    ./alacritty
+  ];
+
   home.packages = with pkgs; [
     pulseaudioFull
   ];
 
   programs = {
     firefox.enable = true;
-    alacritty.enable = true;
   };
 
   programs.plasma = {
