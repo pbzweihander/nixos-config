@@ -1,6 +1,7 @@
 {
   imports = [
     ./fish
+    ./git
     ./helix
   ];
 
