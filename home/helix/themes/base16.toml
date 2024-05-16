@@ -1,0 +1,62 @@
+"ui.cursor" = { fg = "light-gray", modifiers = ["reversed"] }
+"ui.cursor.match" = { fg = "light-yellow", modifiers = ["reversed"] }
+"ui.linenr.selected" = { modifiers = ["bold"] }
+"ui.statusline" = { bg = "black" }
+"ui.statusline.inactive" = { fg = "gray", bg = "black" }
+"ui.statusline.normal" = { fg = "light-blue", modifiers = ["reversed"] }
+"ui.statusline.insert" = { fg = "light-green", modifiers = ["reversed"] }
+"ui.statusline.select" = { fg = "light-magenta", modifiers = ["reversed"] }
+"ui.popup" = { bg = "black" }
+"ui.window" = { fg = "gray" }
+"ui.text.focus" = { modifiers = ["reversed"] }
+"ui.virtual.ruler" = { bg = "gray" }
+"ui.virtual.whitespace" = { fg = "gray" }
+"ui.virtual.indent-guide" = { fg = "gray" }
+"ui.virtual.inlay-hint" = { fg = "gray" }
+"ui.virtual.wrap" = "gray"
+"ui.menu" = { bg = "black" }
+"ui.menu.selected" = { modifiers = ["reversed"] }
+"ui.selection" = { bg = "gray" }
+"ui.highlight" = { bg = "gray" }
+"ui.cursorline.primary" = { underline = { color = "gray", style = "line" } }
+
+"warning" = "light-yellow"
+"error" = "light-red"
+"info" = "light-blue"
+"hint" = "light-gray"
+
+"diagnostic.hint" = { underline = { color = "light-gray", style = "curl" } }
+"diagnostic.info" = { underline = { color = "light-blue", style = "curl" } }
+"diagnostic.warning" = { underline = { color = "light-yellow", style = "curl" } }
+"diagnostic.error" = { underline = { color ="light-red", style = "curl" } }
+
+"attribute" = "light-yellow"
+"type" = "light-cyan"
+"constructor" = "light-blue"
+"constant" = "light-green"
+"constant.character.escape" = "light-yellow"
+"string"  = "light-green"
+"comment" = { fg = "gray", modifiers = ["italic"] }
+"variable" = "light-gray"
+# "label" = ""
+"punctuation" = "light-magenta"
+"keyword" = "light-magenta"
+"keyword.storage" = "light-yellow"
+"keyword.storage.modifier" = "light-magenta"
+"operator" = "light-magenta"
+"function" = "light-blue"
+"tag" = "light-red"
+"namespace" = "light-gray"
+"special" = "light-gray"
+"markup.heading" = "light-blue"
+"markup.list" = "light-yellow"
+"markup.bold" = { fg = "light-red", modifiers = ["bold"] }
+"markup.italic" = { fg = "light-red", modifiers = ["italic"] }
+"markup.strikethrough" = { fg = "light-red", modifiers = ["crossed_out"] }
+"markup.link" = "light-green"
+"markup.link.url" = { fg = "light-red", underline = { color = "red", style = "line"} }
+"markup.quote" = "light-cyan"
+"markup.raw" = "light-magenta"
+"diff.plus" = "light-green"
+"diff.minus" = "light-red"
+"diff.delta" = "light-blue"

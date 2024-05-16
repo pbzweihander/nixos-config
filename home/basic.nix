@@ -1,6 +1,7 @@
 {
   imports = [
     ./fish
+    ./helix
   ];
 
   home = {
