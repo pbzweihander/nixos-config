@@ -1,7 +1,7 @@
 { pkgs, ... }:
 
 {
-  imports = [ ../modules/alacritty ];
+  imports = [ ../modules/alacritty ../modules/fcitx5 ];
 
   home.packages = with pkgs; [ pulseaudioFull ];
 
