@@ -1,4 +1,4 @@
-{ lib, config, inputs, ... }:
+{ pkgs, inputs, ... }:
 
 with inputs;
 
@@ -17,5 +17,10 @@ in {
   time.timeZone = "Asia/Seoul";
 
   home-manager.users.pbzweihander = import ./home;
+
+  systemd.services.modem = {
+    path = [ pkgs.modemmanager ];
+    wantedBy = [ "multi-user.target" ];
+  };
 }
 
