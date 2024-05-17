@@ -166,3 +166,6 @@ abbr -a c. "code ."
 
 # zoxide
 abbr -a zz "z -"
+
+# nix
+abbr -a nrs "sudo nixos-rebuild switch"
