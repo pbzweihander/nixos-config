@@ -20,6 +20,8 @@
   };
 
   outputs = { self, nixpkgs, ... }@inputs: {
+    formatter.x86_64-linux = nixpkgs.legacyPackages.x86_64-linux.nixfmt;
+
     nixosConfigurations = {
       rossmann = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
