@@ -10,6 +10,7 @@ in {
 
     ../../profiles/basic.nix
     ../../profiles/graphical.nix
+    ../../profiles/dev.nix
   ];
 
   time.timeZone = "Asia/Seoul";
