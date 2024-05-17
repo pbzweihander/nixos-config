@@ -4,14 +4,14 @@ with inputs;
 
 {
   imports = [
-    ./boot.nix
-    ./networking.nix
+    ../modules/boot.nix
+    ../modules/networking.nix
 
     home-manager.nixosModules.home-manager
 
-    ./users.nix
+    ../modules/users.nix
 
-    ./rust.nix
+    ../modules/rust.nix
   ];
 
   system.stateVersion = "23.11";

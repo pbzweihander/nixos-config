@@ -1,2 +1,5 @@
-{ imports = [ ../../../home/basic.nix ../../../home/graphical.nix ]; }
+{
+  imports =
+    [ ../../../home/profiles/basic.nix ../../../home/profiles/graphical.nix ];
+}
 

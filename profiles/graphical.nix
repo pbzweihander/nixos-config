@@ -1,5 +1,5 @@
 {
-  imports = [ ./kde.nix ];
+  imports = [ ../modules/kde.nix ../modules/sound.nix ../modules/fonts.nix ];
 
   services.xserver = {
     enable = true;

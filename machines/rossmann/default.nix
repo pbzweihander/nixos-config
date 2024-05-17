@@ -8,10 +8,8 @@ in {
     ./hardware-configuration.nix
     nixos-hardware.nixosModules.lenovo-thinkpad-x13-yoga
 
-    ../../modules/basic.nix
-    ../../modules/sound.nix
-    ../../modules/fonts.nix
-    ../../modules/graphical.nix
+    ../../profiles/basic.nix
+    ../../profiles/graphical.nix
   ];
 
   networking = { hostName = hostname; };

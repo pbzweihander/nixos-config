@@ -1,5 +1,5 @@
 {
-  imports = [ ./fish ./git ./helix ];
+  imports = [ ../modules/fish ../modules/git ../modules/helix ];
 
   home = {
     stateVersion = "23.11";
