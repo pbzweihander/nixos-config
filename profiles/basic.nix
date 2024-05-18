@@ -10,6 +10,8 @@ with inputs;
     home-manager.nixosModules.home-manager
 
     ../modules/users.nix
+
+    ../modules/tools.nix
   ];
 
   system.stateVersion = "23.11";

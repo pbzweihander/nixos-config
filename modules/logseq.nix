@@ -3,4 +3,3 @@
 {
   environment.systemPackages = with pkgs; [ logseq ];
 }
-
