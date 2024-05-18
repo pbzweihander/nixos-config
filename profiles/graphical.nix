@@ -1,3 +1,5 @@
+{ pkgs, ... }:
+
 {
   imports = [
     ../modules/kde.nix
@@ -5,6 +7,8 @@
     ../modules/fonts.nix
     ../modules/logseq.nix
   ];
+
+  environment.systemPackages = with pkgs; [ wl-clipboard ];
 
   services.xserver = {
     enable = true;
