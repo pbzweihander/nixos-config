@@ -2,7 +2,7 @@
 
 with inputs;
 
-let hostname = "rossmann";
+let hostname = "linnamaa";
 in {
   imports = [
     ./hardware-configuration.nix
