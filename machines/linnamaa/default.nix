@@ -13,6 +13,8 @@ in {
     ../../profiles/dev.nix
   ];
 
+  environment.systemPackages = with pkgs; [ libmbim ];
+
   time.timeZone = "Asia/Seoul";
 
   home-manager.users.pbzweihander = import ./home;
@@ -24,24 +26,32 @@ in {
 
   networking = {
     hostName = hostname;
-    networkmanager.ensureProfiles.profiles.wwan = {
-      connection = {
-        id = "WWAN";
-        type = "gsm";
+    networkmanager = {
+      ensureProfiles.profiles.wwan = {
+        connection = {
+          id = "WWAN";
+          type = "gsm";
+        };
+        gsm = {
+          apn = "lte.ktfwing.com";
+          number = "*99#";
+          password-flags = "4";
+          pin-flags = "4";
+        };
+        ipv4 = { method = "auto"; };
+        ipv6 = {
+          addr-gen-mode = "stable-privacy";
+          method = "auto";
+        };
+        ppp = { };
+        proxy = { };
       };
-      gsm = {
-        apn = "lte.ktfwing.com";
-        number = "*99#";
-        password-flags = "4";
-        pin-flags = "4";
-      };
-      ipv4 = { method = "auto"; };
-      ipv6 = {
-        addr-gen-mode = "stable-privacy";
-        method = "auto";
-      };
-      ppp = { };
-      proxy = { };
+      fccUnlockScripts = [
+        {
+          id = "2c7c:030a";
+          path = ./fcc-unlock.sh;
+        }
+      ];
     };
   };
 }
