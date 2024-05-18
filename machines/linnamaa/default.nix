@@ -46,12 +46,10 @@ in {
         ppp = { };
         proxy = { };
       };
-      fccUnlockScripts = [
-        {
-          id = "2c7c:030a";
-          path = ./fcc-unlock.sh;
-        }
-      ];
+      fccUnlockScripts = [{
+        id = "2c7c:030a";
+        path = ./fcc-unlock.sh;
+      }];
     };
   };
 }
