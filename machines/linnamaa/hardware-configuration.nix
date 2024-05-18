@@ -6,8 +6,7 @@
 {
   imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];
 
-  boot.initrd.availableKernelModules =
-    [ "xhci_pci" "thunderbolt" "nvme" "usb_storage" "sd_mod" ];
+  boot.initrd.availableKernelModules = [ "xhci_pci" "thunderbolt" "nvme" ];
   boot.initrd.kernelModules = [ ];
   boot.kernelModules = [ "kvm-intel" ];
   boot.extraModulePackages = [ ];
@@ -21,12 +20,6 @@
   boot.initrd.luks.devices."cryptroot".device =
     "/dev/disk/by-uuid/f682b3a2-7821-41aa-a611-b5ebd796b3dc";
 
-  fileSystems."/home" = {
-    device = "/dev/disk/by-uuid/d7f9e473-c9f3-49e5-a7a3-0dcbd8e096ca";
-    fsType = "btrfs";
-    options = [ "subvol=home" ];
-  };
-
   fileSystems."/nix" = {
     device = "/dev/disk/by-uuid/d7f9e473-c9f3-49e5-a7a3-0dcbd8e096ca";
     fsType = "btrfs";
@@ -39,7 +32,27 @@
     options = [ "subvol=log" ];
   };
 
-  swapDevices = [ ];
+  fileSystems."/home" = {
+    device = "/dev/disk/by-uuid/d7f9e473-c9f3-49e5-a7a3-0dcbd8e096ca";
+    fsType = "btrfs";
+    options = [ "subvol=home" ];
+  };
+
+  fileSystems."/efi" = {
+    device = "systemd-1";
+    fsType = "autofs";
+  };
+
+  fileSystems."/swap" = {
+    device = "/dev/disk/by-uuid/d7f9e473-c9f3-49e5-a7a3-0dcbd8e096ca";
+    fsType = "btrfs";
+    options = [ "subvol=swap" ];
+  };
+
+  swapDevices = [{ device = "/swap/swapfile"; }];
+
+  boot.resumeDevice = "/dev/mapper/cryptroot";
+  boot.kernelParams = [ "resume_offset=5514496" ];
 
   # Enables DHCP on each ethernet and wireless interface. In case of scripted networking
   # (the default) this is the recommended approach. When using systemd-networkd it's
