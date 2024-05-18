@@ -1,5 +1,5 @@
 { pkgs, ... }:
 
 {
-  environment.systemPackages = with pkgs; [ ripgrep fzf ];
+  environment.systemPackages = with pkgs; [ ripgrep fzf usbutils pciutils ];
 }
