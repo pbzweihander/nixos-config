@@ -66,7 +66,7 @@ else if type -q vim
 end
 
 # helix
-abbr -a shx "sudo -E helix"
+abbr -a shx "sudo -E hx"
 
 # systemctl
 abbr -a sctl "sudo systemctl"
