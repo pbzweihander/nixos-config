@@ -8,6 +8,7 @@
     pciutils
     unzip
     mise
+    pipx
   ];
 
   services.keybase.enable = true;
