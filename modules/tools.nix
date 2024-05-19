@@ -9,6 +9,7 @@
     unzip
     mise
     pipx
+    nil
   ];
 
   services.keybase.enable = true;
