@@ -9,4 +9,6 @@
     unzip
     mise
   ];
+
+  services.keybase.enable = true;
 }
