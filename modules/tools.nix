@@ -6,6 +6,7 @@
     fzf
     usbutils
     pciutils
+    unzip
     mise
   ];
 }
