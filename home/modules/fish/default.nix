@@ -77,6 +77,7 @@
   home.file = {
     ".config/starship.toml".source = ./starship.toml;
     ".config/fish/conf.d/aliases.fish".source = ./conf.d/aliases.fish;
+    ".config/fish/conf.d/programs.fish".source = ./conf.d/programs.fish;
     ".config/fish/conf.d/vi.fish".source = ./conf.d/vi.fish;
     ".config/fish/functions/jp.fish".source = ./functions/jp.fish;
   };
