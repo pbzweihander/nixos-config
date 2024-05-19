@@ -53,7 +53,7 @@
       ".python-version"
       ".terraform-version"
       ".tool-versions"
-      ".rtx.toml"
+      ".mise.toml"
     ];
     signing = {
       key = "~/.ssh/id_ed25519.pub";
