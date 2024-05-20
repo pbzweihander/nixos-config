@@ -19,9 +19,18 @@ in {
 
   home-manager.users.pbzweihander = import ./home;
 
-  systemd.services.modem = {
-    path = [ pkgs.modemmanager ];
-    wantedBy = [ "multi-user.target" ];
+  systemd.services = {
+    modem = {
+      enable = true;
+      path = [ pkgs.modemmanager ];
+      wantedBy = [ "multi-user.target" ];
+    };
+    reload-modem = {
+      enable = true;
+      after = [ "suspend.target" "hibernate.target" ];
+      script = "systemctl restart ModemManager.service";
+      wantedBy = [ "suspend.target" "hibernate.target" ];
+    };
   };
 
   networking = {
