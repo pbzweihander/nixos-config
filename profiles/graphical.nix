@@ -8,7 +8,7 @@
     ../modules/logseq.nix
   ];
 
-  environment.systemPackages = with pkgs; [ wl-clipboard ];
+  environment.systemPackages = with pkgs; [ wl-clipboard alacritty ];
 
   services.xserver = {
     enable = true;

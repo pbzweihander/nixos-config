@@ -1,7 +1,3 @@
-{ pkgs, inputs, ... }:
-
-with inputs;
-
 let hostname = "krupinski";
 in {
   imports = [
@@ -10,6 +6,7 @@ in {
     ../../profiles/basic.nix
     ../../profiles/graphical.nix
     ../../profiles/dev.nix
+    ../../profiles/work.nix
   ];
 
   time.timeZone = "Asia/Seoul";

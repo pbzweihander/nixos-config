@@ -1,4 +1,4 @@
-{ inputs, ... }:
+{ pkgs, inputs, ... }:
 
 with inputs;
 
@@ -10,8 +10,6 @@ with inputs;
     home-manager.nixosModules.home-manager
 
     ../modules/users.nix
-
-    ../modules/tools.nix
   ];
 
   system.stateVersion = "23.11";
@@ -34,5 +32,22 @@ with inputs;
   };
 
   services.logrotate.checkConfig = false;
+
+  environment.systemPackages = with pkgs; [
+    helix
+    vim
+    lsd
+    ripgrep
+    fzf
+    usbutils
+    pciutils
+    unzip
+    mise
+    pipx
+    nil
+    dogdns
+  ];
+
+  services.keybase.enable = true;
 }
 
