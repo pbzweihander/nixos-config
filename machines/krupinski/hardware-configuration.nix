@@ -4,40 +4,47 @@
 { config, lib, pkgs, modulesPath, ... }:
 
 {
-  imports =
-    [ (modulesPath + "/installer/scan/not-detected.nix")
-    ];
+  imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];
 
-  boot.initrd.availableKernelModules = [ "xhci_pci" "thunderbolt" "nvme" "usbhid" "usb_storage" "sd_mod" "rtsx_pci_sdmmc" ];
+  boot.initrd.availableKernelModules = [
+    "xhci_pci"
+    "thunderbolt"
+    "nvme"
+    "usbhid"
+    "usb_storage"
+    "sd_mod"
+    "rtsx_pci_sdmmc"
+  ];
   boot.initrd.kernelModules = [ ];
   boot.kernelModules = [ "kvm-intel" ];
   boot.extraModulePackages = [ ];
 
-  fileSystems."/" =
-    { device = "/dev/disk/by-uuid/12fa9cc1-1e96-4e4a-bcf9-8f5772f5d504";
-      fsType = "btrfs";
-      options = [ "subvol=system" ];
-    };
+  fileSystems."/" = {
+    device = "/dev/disk/by-uuid/12fa9cc1-1e96-4e4a-bcf9-8f5772f5d504";
+    fsType = "btrfs";
+    options = [ "subvol=system" ];
+  };
 
-  boot.initrd.luks.devices."cryptroot".device = "/dev/disk/by-uuid/aa3bc426-cd08-43a7-b2a9-ad82321a931b";
+  boot.initrd.luks.devices."cryptroot".device =
+    "/dev/disk/by-uuid/aa3bc426-cd08-43a7-b2a9-ad82321a931b";
 
-  fileSystems."/efi" =
-    { device = "/dev/disk/by-uuid/8BEC-84DC";
-      fsType = "vfat";
-      options = [ "fmask=0022" "dmask=0022" ];
-    };
+  fileSystems."/efi" = {
+    device = "/dev/disk/by-uuid/8BEC-84DC";
+    fsType = "vfat";
+    options = [ "fmask=0022" "dmask=0022" ];
+  };
 
-  fileSystems."/home" =
-    { device = "/dev/disk/by-uuid/12fa9cc1-1e96-4e4a-bcf9-8f5772f5d504";
-      fsType = "btrfs";
-      options = [ "subvol=home" ];
-    };
+  fileSystems."/home" = {
+    device = "/dev/disk/by-uuid/12fa9cc1-1e96-4e4a-bcf9-8f5772f5d504";
+    fsType = "btrfs";
+    options = [ "subvol=home" ];
+  };
 
-  fileSystems."/var/log" =
-    { device = "/dev/disk/by-uuid/12fa9cc1-1e96-4e4a-bcf9-8f5772f5d504";
-      fsType = "btrfs";
-      options = [ "subvol=log" ];
-    };
+  fileSystems."/var/log" = {
+    device = "/dev/disk/by-uuid/12fa9cc1-1e96-4e4a-bcf9-8f5772f5d504";
+    fsType = "btrfs";
+    options = [ "subvol=log" ];
+  };
 
   swapDevices = [ ];
 
@@ -49,5 +56,6 @@
   # networking.interfaces.wlp0s20f3.useDHCP = lib.mkDefault true;
 
   nixpkgs.hostPlatform = lib.mkDefault "x86_64-linux";
-  hardware.cpu.intel.updateMicrocode = lib.mkDefault config.hardware.enableRedistributableFirmware;
+  hardware.cpu.intel.updateMicrocode =
+    lib.mkDefault config.hardware.enableRedistributableFirmware;
 }
