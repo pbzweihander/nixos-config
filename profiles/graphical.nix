@@ -1,14 +1,9 @@
 { pkgs, ... }:
 
 {
-  imports = [
-    ../modules/kde.nix
-    ../modules/sound.nix
-    ../modules/fonts.nix
-    ../modules/logseq.nix
-  ];
+  imports = [ ../modules/kde.nix ../modules/sound.nix ../modules/fonts.nix ];
 
-  environment.systemPackages = with pkgs; [ wl-clipboard alacritty ];
+  environment.systemPackages = with pkgs; [ wl-clipboard alacritty logseq ];
 
   services.xserver = {
     enable = true;

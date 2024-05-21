@@ -46,6 +46,8 @@ with inputs;
     pipx
     nil
     dogdns
+    bitwarden-cli
+    bitwarden
   ];
 
   services.keybase.enable = true;
