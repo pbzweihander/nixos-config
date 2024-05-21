@@ -43,6 +43,7 @@ with inputs;
     lsd
     mise
     nil
+    nixfmt-classic
     pciutils
     pipx
     ripgrep
