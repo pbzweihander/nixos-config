@@ -34,20 +34,21 @@ with inputs;
   services.logrotate.checkConfig = false;
 
   environment.systemPackages = with pkgs; [
-    helix
-    vim
-    lsd
-    ripgrep
-    fzf
-    usbutils
-    pciutils
-    unzip
-    mise
-    pipx
-    nil
-    dogdns
-    bitwarden-cli
     bitwarden
+    bitwarden-cli
+    dogdns
+    fzf
+    helix
+    jaq
+    lsd
+    mise
+    nil
+    pciutils
+    pipx
+    ripgrep
+    unzip
+    usbutils
+    vim
   ];
 
   services.keybase.enable = true;
