@@ -3,7 +3,12 @@
 {
   imports = [ ../modules/kde.nix ../modules/sound.nix ../modules/fonts.nix ];
 
-  environment.systemPackages = with pkgs; [ wl-clipboard alacritty logseq ];
+  environment.systemPackages = with pkgs; [
+    wl-clipboard
+    alacritty
+    logseq
+    spotify
+  ];
 
   services.xserver = {
     enable = true;
