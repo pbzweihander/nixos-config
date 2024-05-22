@@ -8,5 +8,5 @@
     ../modules/kubectl.nix
   ];
 
-  environment.systemPackages = with pkgs; [ devenv ];
+  environment.systemPackages = with pkgs; [ devenv nodejs_22 yarn ];
 }
