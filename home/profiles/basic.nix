@@ -17,5 +17,9 @@
     git.enable = true;
     vim.enable = true;
     helix.enable = true;
+    direnv = {
+      enable = true;
+      nix-direnv.enable = true;
+    };
   };
 }

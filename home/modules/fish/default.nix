@@ -64,14 +64,8 @@
         }
       ];
     };
-    starship = {
-      enable = true;
-      enableFishIntegration = true;
-    };
-    zoxide = {
-      enable = true;
-      enableFishIntegration = true;
-    };
+    starship.enable = true;
+    zoxide.enable = true;
   };
 
   home.file = {

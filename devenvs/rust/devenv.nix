@@ -13,8 +13,4 @@ with inputs;
 
     components = [ "rustc" "cargo" "clippy" "rustfmt" "rust-analyzer" ];
   };
-
-  enterShell = ''
-    exec fish
-  '';
 }
