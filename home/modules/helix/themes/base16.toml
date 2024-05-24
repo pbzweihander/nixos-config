@@ -14,6 +14,7 @@
 "ui.virtual.indent-guide" = { fg = "gray" }
 "ui.virtual.inlay-hint" = { fg = "gray" }
 "ui.virtual.wrap" = "gray"
+"ui.virtual.jump-label" = { fg = "light-yellow", bg = "gray"}
 "ui.menu" = { bg = "black" }
 "ui.menu.selected" = { modifiers = ["reversed"] }
 "ui.selection" = { bg = "gray" }
