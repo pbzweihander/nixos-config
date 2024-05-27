@@ -13,5 +13,6 @@ with inputs;
       "rustfmt"
     ])
     rust-analyzer
+    cargo-sort
   ];
 }
