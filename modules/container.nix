@@ -2,7 +2,13 @@
 
 {
   virtualisation = {
-    containers.enable = true;
+    containers = {
+      enable = true;
+      registries = {
+        insecure = [ "localhost:5001" ];
+        search = [ "docker.io" ];
+      };
+    };
     podman.enable = true;
   };
 
