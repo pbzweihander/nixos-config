@@ -3,7 +3,7 @@
 {
   imports = [
     ../modules/rust.nix
-    ../modules/podman.nix
+    ../modules/container.nix
     ../modules/awscli.nix
     ../modules/kubectl.nix
   ];
