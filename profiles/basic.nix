@@ -34,9 +34,9 @@ with inputs;
   services.logrotate.checkConfig = false;
 
   environment.systemPackages = with pkgs; [
-    bitwarden
     bitwarden-cli
     dogdns
+    fd
     fzf
     helix
     jaq
