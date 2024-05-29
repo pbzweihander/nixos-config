@@ -3,7 +3,13 @@
 {
   fonts = {
     fontDir.enable = true;
-    packages = with pkgs; [ sarasa-gothic source-han-sans iosevka nerdfonts ];
+    packages = with pkgs; [
+      iosevka
+      nerdfonts
+      noto-fonts-cjk-sans
+      sarasa-gothic
+      source-han-sans
+    ];
   };
 }
 
