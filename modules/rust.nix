@@ -1,18 +1,5 @@
-{ pkgs, inputs, ... }:
-
-with inputs;
+{ pkgs, ... }:
 
 {
-  nixpkgs.overlays = [ fenix.overlays.default ];
-  environment.systemPackages = with pkgs; [
-    (fenix.stable.withComponents [
-      "cargo"
-      "clippy"
-      "rust-src"
-      "rustc"
-      "rustfmt"
-    ])
-    rust-analyzer
-    cargo-sort
-  ];
+  environment.systemPackages = with pkgs; [ rust-analyzer cargo-sort ];
 }

@@ -54,14 +54,9 @@
       ".terraform-version"
       ".tool-versions"
       ".mise.toml"
-      ".devenv*"
-      "devenv.local.nix"
       ".direnv"
-      ".pre-commit-config.yaml"
       ".envrc"
-      "devenv.nix"
-      "devenv.yaml"
-      "devenv.lock"
+      ".flake"
     ];
     signing = {
       key = "~/.ssh/id_ed25519.pub";
