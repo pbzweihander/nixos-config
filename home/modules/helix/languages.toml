@@ -1,3 +1,6 @@
+[language-server.rust-analyzer.config]
+cargo.features = "all"
+
 [language-server.haskell-language-server]
 command = "haskell-language-server-wrapper"
 args = ["--lsp"]
@@ -9,3 +12,8 @@ haskell.plugin.rename.config.diff = true
 [[language]]
 name = "haskell"
 auto-format = true
+
+[[language]]
+name = "nix"
+auto-format = true
+formatter = { command = "nixfmt" }
