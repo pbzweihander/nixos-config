@@ -46,6 +46,7 @@ with inputs;
     nixfmt-classic
     pciutils
     pipx
+    python3
     ripgrep
     unzip
     usbutils
