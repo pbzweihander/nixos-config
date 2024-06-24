@@ -46,6 +46,7 @@
       "kwinrc"."Effect-overview"."BorderActivate" = 9;
       "kwinrc"."Wayland"."InputMethod[$e]" =
         "/etc/profiles/per-user/pbzweihander/share/applications/org.fcitx.Fcitx5.desktop";
+      "ksmserverrc"."General"."confirmLogout" = false;
     };
   };
 }
