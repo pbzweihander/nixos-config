@@ -13,7 +13,8 @@
         pkgs = import nixpkgs { inherit system overlays; };
         python = nixpkgs-python.packages.${system}.${version};
       in {
-        devShells.default =
-          pkgs.mkShell { nativeBuildInputs = with pkgs; [ python poetry ]; };
+        devShells.default = pkgs.mkShell {
+          nativeBuildInputs = with pkgs; [ python poetry ruff ];
+        };
       });
 }
