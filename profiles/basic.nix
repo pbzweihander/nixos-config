@@ -23,6 +23,8 @@ with inputs;
   services = {
     fwupd.enable = true;
     fstrim.enable = true;
+    logrotate.checkConfig = false;
+    keybase.enable = true;
   };
 
   home-manager = {
@@ -30,8 +32,6 @@ with inputs;
     useUserPackages = true;
     sharedModules = [ plasma-manager.homeManagerModules.plasma-manager ];
   };
-
-  services.logrotate.checkConfig = false;
 
   environment.systemPackages = with pkgs; [
     bitwarden-cli
@@ -50,7 +50,5 @@ with inputs;
     usbutils
     vim
   ];
-
-  services.keybase.enable = true;
 }
 

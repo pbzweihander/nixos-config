@@ -8,11 +8,15 @@
     bitwarden
     logseq
     spotify
+    vial
     wl-clipboard
   ];
 
-  services.xserver = {
-    enable = true;
-    xkb.options = "ctrl:nocaps,korean:ralt_hangul,korean:rctrl_hanja";
+  services = {
+    xserver = {
+      enable = true;
+      xkb.options = "ctrl:nocaps,korean:ralt_hangul,korean:rctrl_hanja";
+    };
+    udev.packages = with pkgs; [ via vial ];
   };
 }
