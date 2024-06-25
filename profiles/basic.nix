@@ -44,7 +44,6 @@ with inputs;
     nil
     nixfmt-classic
     pciutils
-    pipx
     python3
     ripgrep
     unzip
