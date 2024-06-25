@@ -41,7 +41,6 @@ with inputs;
     helix
     jaq
     lsd
-    mise
     nil
     nixfmt-classic
     pciutils
