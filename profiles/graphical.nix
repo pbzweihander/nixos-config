@@ -8,6 +8,8 @@
     bitwarden
     logseq
     spotify
+    uhk-agent
+    uhk-udev-rules
     vial
     wl-clipboard
   ];
