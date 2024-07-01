@@ -10,7 +10,10 @@
       let
         version = "<version>";
         overlays = [ nixpkgs-terraform.overlays.default ];
-        pkgs = import nixpkgs { inherit system overlays; };
+        pkgs = import nixpkgs {
+          inherit system overlays;
+          config.allowUnfree = true;
+        };
         terraform = pkgs.terraform-versions.${version};
       in {
         devShells.default = pkgs.mkShell { nativeBuildInputs = [ terraform ]; };
