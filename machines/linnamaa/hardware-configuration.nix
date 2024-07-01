@@ -39,8 +39,9 @@
   };
 
   fileSystems."/efi" = {
-    device = "systemd-1";
-    fsType = "autofs";
+    device = "/dev/disk/by-uuid/F202-EDB4";
+    fsType = "vfat";
+    options = [ "fmask=0022" "dmask=0022" ];
   };
 
   fileSystems."/swap" = {
