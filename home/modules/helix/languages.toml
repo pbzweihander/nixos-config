@@ -17,3 +17,7 @@ auto-format = true
 name = "nix"
 auto-format = true
 formatter = { command = "nixfmt" }
+
+[[language]]
+name = "helm"
+indent = { tab-width = 2, unit = "  " }
