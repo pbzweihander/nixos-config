@@ -36,6 +36,7 @@ with inputs;
   environment.systemPackages = with pkgs; [
     bitwarden-cli
     dogdns
+    eva
     fd
     fzf
     helix
@@ -44,11 +45,13 @@ with inputs;
     nil
     nixfmt-classic
     pciutils
+    pwgen
     python3
     ripgrep
     unzip
     usbutils
     vim
+    xh
   ];
 }
 
