@@ -38,6 +38,7 @@ with inputs;
     dogdns
     eva
     fd
+    file
     fzf
     helix
     jaq
