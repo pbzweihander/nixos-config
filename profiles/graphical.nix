@@ -8,12 +8,14 @@
     bitwarden
     gimp
     inkscape
+    keymapp
     logseq
     spotify
     uhk-agent
     uhk-udev-rules
     vial
     wl-clipboard
+    zsa-udev-rules
   ];
 
   services = {
