@@ -52,6 +52,7 @@ with inputs;
     unzip
     usbutils
     vim
+    wget
     xh
   ];
 }
