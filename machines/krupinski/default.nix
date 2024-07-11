@@ -14,6 +14,8 @@ in {
     ../../profiles/graphical.nix
     ../../profiles/dev.nix
     ../../profiles/work.nix
+
+    ../../modules/displaylink.nix
   ];
 
   time.timeZone = "Asia/Seoul";
