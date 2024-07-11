@@ -32,6 +32,7 @@ with inputs;
     conflicts = [ "getty@tty7.service" ];
 
     serviceConfig = {
+      ExecStartPre = "${pkgs.kmod}/bin/modprobe evdi";
       ExecStart = "${pkgs.displaylink}/bin/DisplayLinkManager";
       Restart = "always";
       RestartSec = 5;
