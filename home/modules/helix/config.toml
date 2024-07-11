@@ -49,9 +49,10 @@ E = "extend_next_word_end"
 
 g = { "k" = "goto_file_start", "j" = "goto_last_line" }
 
-"A-h" = "extend_to_line_start"
-"A-l" = "extend_to_line_end"
-"A-L" = "extend_to_line_end_newline"
+"A-h" = "goto_line_start"
+"A-H" = "extend_to_line_start"
+"A-l" = "goto_line_end"
+"A-L" = "extend_to_line_end"
 
 "A-f" = "find_prev_char"
 "A-t" = "till_prev_char"
