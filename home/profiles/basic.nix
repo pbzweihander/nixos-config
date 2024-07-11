@@ -8,7 +8,14 @@
     homeDirectory = "/home/pbzweihander";
   };
 
-  fonts.fontconfig.enable = true;
+  fonts.fontconfig = {
+    enable = true;
+    defaultFonts = {
+      serif = [ "Sarasa Gothic K" ];
+      sansSerif = [ "Sarasa UI K" ];
+      monospace = [ "Sarasa Mono K" ];
+    };
+  };
 
   xdg.enable = true;
 

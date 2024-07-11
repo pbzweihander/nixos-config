@@ -10,6 +10,14 @@
       sarasa-gothic
       source-han-sans
     ];
+    fontconfig = {
+      enable = true;
+      defaultFonts = {
+        serif = [ "Sarasa Gothic K" ];
+        sansSerif = [ "Sarasa UI K" ];
+        monospace = [ "Sarasa Mono K" ];
+      };
+    };
   };
 }
 
