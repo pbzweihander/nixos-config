@@ -45,6 +45,7 @@ with inputs;
     lsd
     nil
     nixfmt-classic
+    nix-tree
     pciutils
     pwgen
     python3
