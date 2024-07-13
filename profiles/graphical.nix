@@ -9,7 +9,7 @@
     gimp
     inkscape
     keymapp
-    logseq
+    # logseq TODO: outdated electron
     spotify
     uhk-agent
     uhk-udev-rules
