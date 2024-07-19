@@ -16,6 +16,8 @@ in {
     ../../profiles/gaming.nix
   ];
 
+  services.btrfs.autoScrub.enable = true;
+
   time.timeZone = "Asia/Seoul";
 
   home-manager.users.pbzweihander = import ./home;

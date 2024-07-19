@@ -18,6 +18,8 @@ in {
     ../../modules/displaylink.nix
   ];
 
+  services.btrfs.autoScrub.enable = true;
+
   time.timeZone = "Asia/Seoul";
 
   home-manager.users.pbzweihander = import ./home;

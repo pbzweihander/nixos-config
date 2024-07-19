@@ -13,6 +13,8 @@ in {
     ../../profiles/dev.nix
   ];
 
+  services.btrfs.autoScrub.enable = true;
+
   environment.systemPackages = with pkgs; [ libmbim ];
 
   time.timeZone = "Asia/Seoul";
