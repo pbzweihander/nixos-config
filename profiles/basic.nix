@@ -18,6 +18,11 @@ with inputs;
   nix.settings = {
     trusted-users = [ "root" "@wheel" ];
     extra-experimental-features = [ "nix-command" "flakes" ];
+    gc = {
+      automatic = true;
+      dates = "weekly";
+      options = "--delete-older-than 7d";
+    };
   };
 
   services = {
