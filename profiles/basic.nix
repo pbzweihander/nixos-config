@@ -15,9 +15,11 @@ with inputs;
   system.stateVersion = "23.11";
 
   nixpkgs.config.allowUnfree = true;
-  nix.settings = {
-    trusted-users = [ "root" "@wheel" ];
-    extra-experimental-features = [ "nix-command" "flakes" ];
+  nix = {
+    settings = {
+      trusted-users = [ "root" "@wheel" ];
+      extra-experimental-features = [ "nix-command" "flakes" ];
+    };
     gc = {
       automatic = true;
       dates = "weekly";
