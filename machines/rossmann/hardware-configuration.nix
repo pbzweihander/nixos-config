@@ -17,7 +17,7 @@
   fileSystems."/" = {
     device = "/dev/disk/by-uuid/56af2d9f-6239-4953-a236-1040dae35d21";
     fsType = "btrfs";
-    options = [ "subvol=system" ];
+    options = [ "subvol=system" "noatime" ];
   };
 
   boot.initrd.luks.devices."cryptroot".device =
@@ -32,25 +32,25 @@
   fileSystems."/home" = {
     device = "/dev/disk/by-uuid/56af2d9f-6239-4953-a236-1040dae35d21";
     fsType = "btrfs";
-    options = [ "subvol=home" ];
+    options = [ "subvol=home" "noatime" ];
   };
 
   fileSystems."/var/log" = {
     device = "/dev/disk/by-uuid/56af2d9f-6239-4953-a236-1040dae35d21";
     fsType = "btrfs";
-    options = [ "subvol=log" ];
+    options = [ "subvol=log" "noatime" ];
   };
 
   fileSystems."/swap" = {
     device = "/dev/disk/by-uuid/56af2d9f-6239-4953-a236-1040dae35d21";
     fsType = "btrfs";
-    options = [ "subvol=@swap" ];
+    options = [ "subvol=@swap" "noatime" ];
   };
 
   fileSystems."/home/pbzweihander/.local/share/Steam" = {
     device = "/dev/disk/by-uuid/56af2d9f-6239-4953-a236-1040dae35d21";
     fsType = "btrfs";
-    options = [ "subvol=steam" ];
+    options = [ "subvol=steam" "noatime" ];
   };
 
   swapDevices = [{ device = "/swap/swapfile"; }];

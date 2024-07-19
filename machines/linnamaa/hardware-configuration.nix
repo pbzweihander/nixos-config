@@ -14,7 +14,7 @@
   fileSystems."/" = {
     device = "/dev/disk/by-uuid/d7f9e473-c9f3-49e5-a7a3-0dcbd8e096ca";
     fsType = "btrfs";
-    options = [ "subvol=root" ];
+    options = [ "subvol=root" "noatime" ];
   };
 
   boot.initrd.luks.devices."cryptroot".device =
@@ -23,19 +23,19 @@
   fileSystems."/nix" = {
     device = "/dev/disk/by-uuid/d7f9e473-c9f3-49e5-a7a3-0dcbd8e096ca";
     fsType = "btrfs";
-    options = [ "subvol=nix" ];
+    options = [ "subvol=nix" "noatime" ];
   };
 
   fileSystems."/var/log" = {
     device = "/dev/disk/by-uuid/d7f9e473-c9f3-49e5-a7a3-0dcbd8e096ca";
     fsType = "btrfs";
-    options = [ "subvol=log" ];
+    options = [ "subvol=log" "noatime" ];
   };
 
   fileSystems."/home" = {
     device = "/dev/disk/by-uuid/d7f9e473-c9f3-49e5-a7a3-0dcbd8e096ca";
     fsType = "btrfs";
-    options = [ "subvol=home" ];
+    options = [ "subvol=home" "noatime" ];
   };
 
   fileSystems."/efi" = {
@@ -47,7 +47,7 @@
   fileSystems."/swap" = {
     device = "/dev/disk/by-uuid/d7f9e473-c9f3-49e5-a7a3-0dcbd8e096ca";
     fsType = "btrfs";
-    options = [ "subvol=swap" ];
+    options = [ "subvol=swap" "noatime" ];
   };
 
   swapDevices = [{ device = "/swap/swapfile"; }];
