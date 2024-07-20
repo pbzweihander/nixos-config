@@ -20,7 +20,7 @@ in {
 
   time.timeZone = "Asia/Seoul";
 
-  home-manager.users.pbzweihander = import ./home;
+  home-manager.users.pbzweihander = import ./home.nix;
 
   networking.hostName = hostname;
 
