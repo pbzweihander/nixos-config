@@ -56,12 +56,15 @@ with inputs;
     pciutils
     pwgen
     python3
+    rar
     ripgrep
+    unrar
     unzip
     usbutils
     vim
     wget
     xh
+    zip
   ];
 }
 
