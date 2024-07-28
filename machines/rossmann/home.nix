@@ -1,7 +1,11 @@
 { pkgs, ... }:
 
 {
-  imports = [ ../../home/profiles/basic.nix ../../home/profiles/graphical.nix ];
+  imports = [
+    ../../home/profiles/basic.nix
+    ../../home/profiles/graphical.nix
+    ../../home/profiles/gaming.nix
+  ];
 
   xdg.desktopEntries = {
     steam-gamescope = {
