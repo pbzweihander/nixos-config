@@ -12,6 +12,8 @@
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.home-manager.follows = "home-manager";
     };
+
+    nix-citizen.url = "github:LovingMelody/nix-citizen";
   };
 
   outputs = { self, nixpkgs, ... }@inputs: {
