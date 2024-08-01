@@ -14,7 +14,10 @@ with inputs;
 
   system.stateVersion = "23.11";
 
-  nixpkgs.config.allowUnfree = true;
+  nixpkgs = {
+    overlays = [ inputs.self.overlays.default ];
+    config.allowUnfree = true;
+  };
   nix = {
     settings = {
       trusted-users = [ "root" "@wheel" ];
