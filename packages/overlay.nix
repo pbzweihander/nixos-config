@@ -10,7 +10,10 @@ final: prev:
       hash = "sha256-C0jLS55DcLJh/e5yM8kLG7fhhKvBNllv5HkfCWRIfc4=";
     };
     nativeBuildInputs = old.nativeBuildInputs
-      ++ (with final; [ wine64Packages.base pkgsi686Linux.glibc ]);
-    cmakeFlags = old.cmakeFlags ++ [ "-DSDK_WINE=ON" ];
+      ++ (with final; [ wine64Packages.base pkgsi686Linux.glibc onnxruntime ]);
+    cmakeFlags = old.cmakeFlags ++ [
+      "-DSDK_WINE=ON"
+      "-DONNXRuntime_INCLUDE_DIR=${final.onnxruntime.dev}/include"
+    ];
   });
 }
