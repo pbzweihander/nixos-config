@@ -48,6 +48,7 @@ in {
       "nix-citizen.cachix.org-1:lPMkWc2X8XD4/7YPEEwXKKBg+SVbYTVrAaLA2wQTKCo="
     ];
   };
+  nixpkgs.overlays = [ nix-citizen.overlays.default ];
 
   nix-citizen.starCitizen = {
     enable = true;
