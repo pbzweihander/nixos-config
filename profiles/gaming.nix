@@ -10,5 +10,10 @@
   };
   programs.gamescope.enable = true;
 
-  environment.systemPackages = with pkgs; [ vesktop protontricks gamescope ];
+  environment.systemPackages = with pkgs; [
+    gamescope
+    protontricks
+    protonup-qt
+    vesktop
+  ];
 }
