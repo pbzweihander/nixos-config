@@ -12,5 +12,9 @@
   };
   programs.gamescope.enable = true;
 
-  environment.systemPackages = with pkgs; [ vesktop gamescope ];
+  environment.systemPackages = with pkgs; [
+    gamescope
+    steamtinkerlaunch
+    vesktop
+  ];
 }
