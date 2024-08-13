@@ -24,7 +24,10 @@ in {
 
   home-manager.users.pbzweihander = import ./home.nix;
 
-  networking.hostName = hostname;
+  networking = {
+    hostName = hostname;
+    firewall.allowedUDPPorts = [ 2934 2935 9987 9988 9989 ];
+  };
 
   programs.steam.gamescopeSession = {
     env = {
