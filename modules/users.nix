@@ -6,7 +6,7 @@
   users.users.pbzweihander = {
     isNormalUser = true;
     description = "Kangwook Lee";
-    extraGroups = [ "wheel" ];
+    extraGroups = [ "wheel" "dialout" ];
     shell = pkgs.fish;
     uid = 1000;
     createHome = true;
