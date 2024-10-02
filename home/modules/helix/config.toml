@@ -3,7 +3,7 @@ theme = "base16"
 [editor]
 mouse = false
 middle-click-paste = false
-auto-pairs = true
+auto-pairs = false
 color-modes = true
 cursorline = true
 rulers = [80, 100]
