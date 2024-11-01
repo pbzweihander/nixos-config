@@ -164,6 +164,7 @@ abbr -a waws "AWS_PROFILE=work aws"
 abbr -a tf terraform
 abbr -a ptf "AWS_PROFILE=personal terraform"
 abbr -a wtf "AWS_PROFILE=work terraform"
+abbr -a ctf "AWS_PROFILE=cftf terraform"
 
 # code
 abbr -a c. "code ."
