@@ -3,9 +3,9 @@
 {
   imports = [ ../modules/alacritty ../modules/fcitx5 ];
 
-  home.packages = with pkgs; [ pulseaudioFull ];
+  home.packages = with pkgs; [ pulseaudioFull libnotify ];
 
-  programs = { firefox.enable = true; };
+  programs.firefox.enable = true;
 
   programs.plasma = {
     enable = true;
