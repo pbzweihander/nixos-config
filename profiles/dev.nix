@@ -5,5 +5,6 @@
     ../modules/container.nix
     ../modules/awscli.nix
     ../modules/kubectl.nix
+    ../modules/pueue.nix
   ];
 }
