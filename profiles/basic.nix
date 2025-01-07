@@ -40,7 +40,6 @@ with inputs;
   home-manager = {
     useGlobalPkgs = true;
     useUserPackages = true;
-    sharedModules = [ plasma-manager.homeManagerModules.plasma-manager ];
   };
 
   environment.systemPackages = with pkgs; [

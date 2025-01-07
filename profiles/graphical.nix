@@ -1,7 +1,7 @@
 { pkgs, ... }:
 
 {
-  imports = [ ../modules/kde.nix ../modules/sound.nix ../modules/fonts.nix ];
+  imports = [ ../modules/sound.nix ../modules/fonts.nix ];
 
   environment.systemPackages = with pkgs; [
     alacritty

@@ -14,9 +14,6 @@
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.home-manager.follows = "home-manager";
     };
-
-    nix-citizen.url = "github:LovingMelody/nix-citizen";
-
   };
 
   outputs = { self, flake-utils, nixpkgs, ... }@inputs:
@@ -31,12 +28,6 @@
             system = "x86_64-linux";
             specialArgs = { inherit inputs; };
             modules = [ ./machines/linnamaa ];
-          };
-
-          krupinski = nixpkgs.lib.nixosSystem {
-            system = "x86_64-linux";
-            specialArgs = { inherit inputs; };
-            modules = [ ./machines/krupinski ];
           };
 
           rossmann = nixpkgs.lib.nixosSystem {

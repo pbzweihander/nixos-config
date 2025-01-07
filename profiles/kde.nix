@@ -1,4 +1,6 @@
-{ pkgs, ... }:
+{ pkgs, inputs, ... }:
+
+with inputs;
 
 {
   services = {
@@ -15,5 +17,7 @@
     konsole
     oxygen
   ];
-}
 
+  home-manager.sharedModules =
+    [ plasma-manager.homeManagerModules.plasma-manager ];
+}
