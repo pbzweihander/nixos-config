@@ -157,10 +157,13 @@ end
 # aws
 abbr -a pap AWS_PROFILE=personal
 abbr -a paws "AWS_PROFILE=personal aws"
+abbr -a wap AWS_PROFILE=work
+abbr -a waws "AWS_PROFILE=work aws"
 
 # terraform
 abbr -a tf terraform
 abbr -a ptf "AWS_PROFILE=personal terraform"
+abbr -a wtf "AWS_PROFILE=work terraform"
 
 # code
 abbr -a c. "code ."
