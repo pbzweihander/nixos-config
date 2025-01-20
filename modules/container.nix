@@ -12,5 +12,5 @@
     podman.enable = true;
   };
 
-  environment.systemPackages = with pkgs; [ kind ];
+  environment.systemPackages = with pkgs; [ kind podman-compose ];
 }
