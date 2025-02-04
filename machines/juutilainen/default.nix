@@ -26,5 +26,7 @@ in {
   home-manager.users.pbzweihander = import ./home.nix;
 
   networking.hostName = hostname;
+
+  hardware.bluetooth.enable = true;
 }
 
