@@ -5,7 +5,6 @@
 
   environment.systemPackages = with pkgs; [
     alacritty
-    bitwarden
     gimp
     inkscape
     keymapp

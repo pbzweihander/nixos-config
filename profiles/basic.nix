@@ -49,7 +49,6 @@ with inputs;
   };
 
   environment.systemPackages = with pkgs; [
-    bitwarden-cli
     dogdns
     eva
     fd
