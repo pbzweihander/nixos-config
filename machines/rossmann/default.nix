@@ -17,10 +17,7 @@ in {
     ../../profiles/gaming.nix
   ];
 
-  services = {
-    btrfs.autoScrub.enable = true;
-    cloudflare-warp.enable = true;
-  };
+  services.btrfs.autoScrub.enable = true;
 
   time.timeZone = "Asia/Seoul";
 
