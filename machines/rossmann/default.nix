@@ -15,7 +15,6 @@ in {
     ../../profiles/kde.nix
     ../../profiles/dev.nix
     ../../profiles/gaming.nix
-    ../../modules/virtualbox.nix
   ];
 
   services = {

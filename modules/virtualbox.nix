@@ -5,4 +5,3 @@
   };
   users.extraGroups.vboxusers.members = [ "pbzweihander" ];
 }
-
