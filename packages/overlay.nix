@@ -9,6 +9,7 @@ final: prev:
       rev = "opentrack-2024.1.1";
       hash = "sha256-IMhPvOBeJoLE+vg0rsKGs8Vhbpse8bIh0DeOwBubOUw=";
     };
+    patches = [ ];
     nativeBuildInputs = old.nativeBuildInputs
       ++ (with final; [ wine64Packages.base pkgsi686Linux.glibc onnxruntime ]);
     cmakeFlags = old.cmakeFlags ++ [
