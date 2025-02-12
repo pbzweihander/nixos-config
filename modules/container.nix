@@ -9,7 +9,10 @@
         search = [ "docker.io" ];
       };
     };
-    podman.enable = true;
+    podman = {
+      enable = true;
+      dockerSocket.enable = true;
+    };
   };
 
   environment.systemPackages = with pkgs; [ kind podman-compose ];
