@@ -9,26 +9,13 @@
   ];
 
   xdg.desktopEntries = {
-    steam-gamescope = {
-      name = "Steam (Gamescope)";
-      exec =
-        "gamescope --borderless --fullscreen -W 3840 -H 2160 -r 160 --hdr-enabled --steam --backend wayland -- steam -pipewire-dmabuf %U";
-      terminal = false;
-      icon = "steam";
-      categories = [ "Game" ];
-    };
-  };
-
-  systemd.user.services = {
+    # Use steam launch option `DISPLAY=:1 %command%`
     gamescope = {
-      Unit = { After = [ "graphical.target" ]; };
-      Service = {
-        Type = "simple";
-        Restart = "always";
-        ExecStart =
-          "${pkgs.gamescope}/bin/gamescope --borderless --fullscreen -W 3840 -H 2160 -r 160 --hdr-enabled --steam --backend wayland";
-      };
-      Install = { WantedBy = [ "default.target" ]; };
+      name = "Gamescope";
+      exec =
+        "${pkgs.coreutils}/bin/env DXVK_HDR=1 ${pkgs.gamescope}/bin/gamescope --borderless --fullscreen -W 3840 -H 2160 -r 160 --hdr-enabled --adaptive-sync --prefer-output DP-1";
+      terminal = false;
+      categories = [ "Game" ];
     };
   };
 }

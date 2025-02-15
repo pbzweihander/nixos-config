@@ -28,19 +28,5 @@ in {
     firewall.allowedUDPPorts = [ 2934 2935 9987 9988 9989 ];
   };
 
-  programs.steam.gamescopeSession = {
-    env = {
-      ENABLE_HDR_WSI = "1";
-      ENABLE_GAMESCOPE_WSI = "1";
-      DXVK_HDR = "1";
-    };
-    args = [
-      "--expose-wayland"
-      "--hdr-enabled"
-      "--hdr-debug-force-output"
-      "--prefer-output=DP-1"
-    ];
-  };
-
   environment.systemPackages = with pkgs; [ opentrack ];
 }
