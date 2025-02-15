@@ -31,4 +31,19 @@ final: prev:
       })
     ];
   });
+
+  vesktop = prev.vesktop.overrideAttrs (old: {
+    desktopItems = [
+      (final.makeDesktopItem {
+        name = "vesktop";
+        desktopName = "Vesktop";
+        exec = "vesktop --ozone-platform-hint=wayland %U";
+        icon = "vesktop";
+        startupWMClass = "Vesktop";
+        genericName = "Internet Messenger";
+        keywords = [ "discord" "vencord" "electron" "chat" ];
+        categories = [ "Network" "InstantMessaging" "Chat" ];
+      })
+    ];
+  });
 }
