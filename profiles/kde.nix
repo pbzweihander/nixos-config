@@ -7,6 +7,7 @@ with inputs;
     displayManager.sddm = {
       enable = true;
       enableHidpi = true;
+      theme = "arona";
     };
     desktopManager.plasma6.enable = true;
   };
