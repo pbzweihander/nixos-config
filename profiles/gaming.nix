@@ -20,6 +20,6 @@
     gamemode
     gamescope
     steamtinkerlaunch
-    vesktop
+    discord-canary
   ];
 }
