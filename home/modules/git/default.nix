@@ -11,6 +11,7 @@
         minus-style = "syntax red";
       };
     };
+    signing.format = "ssh";
     extraConfig = {
       branch.autosetuprebase = "always";
       color.ui = "auto";
@@ -32,7 +33,6 @@
       };
       difftool.prompt = "no";
       fetch.prune = "yes";
-      gpg.format = "ssh";
       init.defaultBranch = "main";
       log.date = "iso8601";
       merge = {
