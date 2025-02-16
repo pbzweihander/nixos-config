@@ -13,10 +13,10 @@ with inputs;
 
   programs.kdeconnect.enable = true;
 
-  environment.plasma6.excludePackages = with pkgs.kdePackages; [
-    konsole
-    oxygen
-  ];
+  environment = {
+    plasma6.excludePackages = with pkgs.kdePackages; [ konsole oxygen ];
+    systemPackages = with pkgs; [ sddm-arona ];
+  };
 
   home-manager.sharedModules =
     [ plasma-manager.homeManagerModules.plasma-manager ];

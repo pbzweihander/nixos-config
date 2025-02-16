@@ -15,7 +15,7 @@ with inputs;
   system.stateVersion = "23.11";
 
   nixpkgs = {
-    overlays = [ inputs.self.overlays.default ];
+    overlays = [ (import ../overlays) ];
     config.allowUnfree = true;
   };
   nix = {

@@ -1,0 +1,383 @@
+diff -Naur Arona-sddm-login-main/Components/Clock.qml Arona-sddm-login-main-qt6/Components/Clock.qml
+--- Arona-sddm-login-main/Components/Clock.qml	2024-07-05 02:55:51.000000000 +0000
++++ Arona-sddm-login-main-qt6/Components/Clock.qml	2025-02-15 17:48:38.285377523 +0000
+@@ -50,7 +50,7 @@
+         color: root.palette.text
+         renderType: Text.QtRendering
+         function updateTime() {
+-            text = new Date().toLocaleTimeString(Qt.locale(config.Locale), config.HourFormat == "long" ? Locale.LongFormat : config.HourFormat !== "" ? config.HourFormat : Locale.ShortFormat)
++            text = new Date().toLocaleTimeString(Qt.locale(config.Locale || undefined), config.HourFormat == "long" ? Locale.LongFormat : config.HourFormat !== "" ? config.HourFormat : Locale.ShortFormat)
+         }
+ 
+         opacity: 0.7
+@@ -62,7 +62,7 @@
+         color: root.palette.text
+         renderType: Text.QtRendering
+         function updateTime() {
+-            text = new Date().toLocaleDateString(Qt.locale(config.Locale), config.DateFormat == "short" ? Locale.ShortFormat : config.DateFormat !== "" ? config.DateFormat : Locale.LongFormat)
++            text = new Date().toLocaleDateString(Qt.locale(config.Locale || undefined), config.DateFormat == "short" ? Locale.ShortFormat : config.DateFormat !== "" ? config.DateFormat : Locale.LongFormat)
+         }
+ 
+         opacity: 0.7
+diff -Naur Arona-sddm-login-main/Components/Input.qml Arona-sddm-login-main-qt6/Components/Input.qml
+--- Arona-sddm-login-main/Components/Input.qml	2024-07-05 02:55:51.000000000 +0000
++++ Arona-sddm-login-main-qt6/Components/Input.qml	2025-02-15 18:07:15.419724130 +0000
+@@ -25,7 +25,7 @@
+ import QtQuick 2.11
+ import QtQuick.Layouts 1.11
+ import QtQuick.Controls 2.4
+-import QtGraphicalEffects 1.0
++import Qt5Compat.GraphicalEffects
+ 
+ Column {
+     id: inputContainer
+@@ -68,6 +68,8 @@
+                 username.text = currentText
+             }
+ 
++            contentItem: null
++
+             // make the text adapt to dark mode or white mode
+             delegate: ItemDelegate {
+                 width: parent.width
+@@ -89,17 +91,21 @@
+             }
+ 
+             indicator: Button {
+-                    id: usernameIcon
+-                    width: selectUser.height * 0.8
+-                    height: parent.height
+-                    anchors.left: parent.left
+-                    anchors.verticalCenter: parent.verticalCenter
+-                    anchors.leftMargin: selectUser.height * 0.125
+-                    icon.height: parent.height * 0.25
+-                    icon.width: parent.height * 0.25
+-                    enabled: false
+-                    icon.color: root.palette.text
+-                    icon.source: Qt.resolvedUrl("../Assets/User.svgz")
++                id: usernameIcon
++                width: selectUser.height * 0.8
++                height: parent.height
++                anchors.left: parent.left
++                anchors.verticalCenter: parent.verticalCenter
++                anchors.leftMargin: selectUser.height * 0.125
++                icon.height: parent.height * 0.25
++                icon.width: parent.height * 0.25
++                enabled: false
++                icon.color: root.palette.text
++                icon.source: Qt.resolvedUrl("../Assets/User.svgz")
++                background: Rectangle {
++                    color: "transparent"
++                    border.color: "transparent"
++                }
+             }
+ 
+             background: Rectangle {
+@@ -312,7 +318,7 @@
+ 
+             contentItem: Text {
+                 id: indicatorLabel
+-                text: config.TranslateShowPassword || "Show Password"
++                text: config.TranslateShowPassword || textConstants.showPasswordPrompt
+                 anchors.verticalCenter: indicator.verticalCenter
+                 horizontalAlignment: Text.AlignLeft
+                 anchors.left: indicator.right
+@@ -419,7 +425,7 @@
+         Label {
+             id: errorMessage
+             width: parent.width
+-            text: failed ? config.TranslateLoginFailedWarning || textConstants.loginFailed + "!" : keyboard.capsLock ? config.TranslateCapslockWarning || textConstants.capslockWarning : null
++            text: failed ? config.TranslateLoginFailedWarning || textConstants.loginFailed : keyboard.capsLock ? config.TranslateCapslockWarning || textConstants.capslockWarning : null
+             horizontalAlignment: Text.AlignHCenter
+             font.pointSize: root.font.pointSize * 0.8
+             font.italic: true
+diff -Naur Arona-sddm-login-main/Components/SessionButton.qml Arona-sddm-login-main-qt6/Components/SessionButton.qml
+--- Arona-sddm-login-main/Components/SessionButton.qml	2024-07-05 02:55:51.000000000 +0000
++++ Arona-sddm-login-main-qt6/Components/SessionButton.qml	2025-02-15 16:39:42.163769254 +0000
+@@ -24,7 +24,7 @@
+ 
+ import QtQuick 2.11
+ import QtQuick.Controls 2.4
+-import QtGraphicalEffects 1.0
++import Qt5Compat.GraphicalEffects
+ 
+ Item {
+     id: sessionButton
+diff -Naur Arona-sddm-login-main/Components/SystemButtons.qml Arona-sddm-login-main-qt6/Components/SystemButtons.qml
+--- Arona-sddm-login-main/Components/SystemButtons.qml	2024-07-05 02:55:51.000000000 +0000
++++ Arona-sddm-login-main-qt6/Components/SystemButtons.qml	2025-02-15 18:08:30.635026139 +0000
+@@ -32,10 +32,10 @@
+ 
+     spacing: root.font.pointSize
+ 
+-    property var suspend: ["Suspend", config.TranslateSuspend || textConstants.suspend, sddm.canSuspend]
+-    property var hibernate: ["Hibernate", config.TranslateHibernate || textConstants.hibernate, sddm.canHibernate]
+-    property var reboot: ["Reboot", config.TranslateReboot || textConstants.reboot, sddm.canReboot]
+-    property var shutdown: ["Shutdown", config.TranslateShutdown || textConstants.shutdown, sddm.canPowerOff]
++    property var suspend: ["Suspend", config.TranslateSuspend || textConstants.suspend, sddm.canSuspend, sddm.suspend]
++    property var hibernate: ["Hibernate", config.TranslateHibernate || textConstants.hibernate, sddm.canHibernate, sddm.hibernate]
++    property var reboot: ["Reboot", config.TranslateReboot || textConstants.reboot, sddm.canReboot, sddm.reboot]
++    property var shutdown: ["Shutdown", config.TranslateShutdown || textConstants.shutdown, sddm.canPowerOff, sddm.powerOff]
+ 
+     property Control exposedSession
+ 
+@@ -66,7 +66,7 @@
+             Keys.onReturnPressed: clicked()
+             onClicked: {
+                 parent.forceActiveFocus()
+-                index == 0 ? sddm.suspend() : index == 1 ? sddm.hibernate() : index == 2 ? sddm.reboot() : sddm.powerOff()
++                modelData[3]()
+             }
+             KeyNavigation.up: exposedSession
+             KeyNavigation.left: parent.children[index-1]
+diff -Naur Arona-sddm-login-main/Components/UserList.qml Arona-sddm-login-main-qt6/Components/UserList.qml
+--- Arona-sddm-login-main/Components/UserList.qml	2024-07-05 02:55:51.000000000 +0000
++++ Arona-sddm-login-main-qt6/Components/UserList.qml	1970-01-01 00:00:00.000000000 +0000
+@@ -1,204 +0,0 @@
+-//
+-// This file is part of SDDM Sugar Candy.
+-// A theme for the Simple Display Desktop Manager.
+-//
+-// Copyright (C) 2018–2020 Marian Arlt
+-//
+-// SDDM Sugar Candy is free software: you can redistribute it and/or modify it
+-// under the terms of the GNU General Public License as published by the
+-// Free Software Foundation, either version 3 of the License, or any later version.
+-//
+-// You are required to preserve this and any additional legal notices, either
+-// contained in this file or in other files that you received along with
+-// SDDM Sugar Candy that refer to the author(s) in accordance with
+-// sections §4, §5 and specifically §7b of the GNU General Public License.
+-//
+-// SDDM Sugar Candy is distributed in the hope that it will be useful,
+-// but WITHOUT ANY WARRANTY; without even the implied warranty of
+-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+-// GNU General Public License for more details.
+-//
+-// You should have received a copy of the GNU General Public License
+-// along with SDDM Sugar Candy. If not, see <https://www.gnu.org/licenses/>
+-//
+-
+-import QtQuick 2.11
+-import QtQuick.Controls 2.4
+-import QtGraphicalEffects 1.0
+-
+-Item {
+-    id: usernameField
+-    // zone size
+-    height: root.font.pointSize * 4.5
+-    width: parent.width / 2
+-    anchors.horizontalCenter: parent.horizontalCenter
+-
+-    property var selectedUser: selectUser.currentIndex
+-    property alias user: username.text
+-
+-    ComboBox {
+-
+-        id: selectUser
+-
+-        width: parent.height
+-        height: parent.height
+-        anchors.left: parent.left
+-        z: 2
+-
+-        model: userModel
+-        currentIndex: model.lastIndex
+-        textRole: "name"
+-        hoverEnabled: true
+-        onActivated: {
+-            username.text = currentText
+-        }
+-
+-        delegate: ItemDelegate {
+-            width: parent.width
+-            anchors.horizontalCenter: parent.horizontalCenter
+-            contentItem: Text {
+-                text: model.name
+-                font.pointSize: root.font.pointSize * 0.8
+-                font.capitalization: Font.Capitalize
+-                color: selectUser.highlightedIndex === index ? "white" : root.palette.window.hslLightness >= 0.8 ? root.palette.highlight : "white"
+-                verticalAlignment: Text.AlignVCenter
+-                horizontalAlignment: Text.AlignHCenter
+-            }
+-            highlighted: parent.highlightedIndex === index
+-            background: Rectangle {
+-                color: selectUser.highlightedIndex === index ? root.palette.highlight : "transparent"
+-            }
+-        }
+-
+-        indicator: Button {
+-                id: usernameIcon
+-                width: selectUser.height * 0.8
+-                height: parent.height
+-                anchors.left: parent.left
+-                anchors.verticalCenter: parent.verticalCenter
+-                anchors.leftMargin: selectUser.height * 0.125
+-                icon.height: parent.height * 0.25
+-                icon.width: parent.height * 0.25
+-                enabled: false
+-                icon.color: root.palette.text
+-                icon.source: Qt.resolvedUrl("../Assets/User.svgz")
+-        }
+-
+-        background: Rectangle {
+-            color: "transparent"
+-            border.color: "transparent"
+-        }
+-
+-        popup: Popup {
+-            y: parent.height - username.height / 3
+-            rightMargin: config.ForceRightToLeft == "true" ? usernameField.width / 2 : undefined
+-            width: usernameField.width
+-            implicitHeight: contentItem.implicitHeight
+-            padding: 10
+-
+-            contentItem: ListView {
+-                clip: true
+-                implicitHeight: contentHeight + 20
+-                model: selectUser.popup.visible ? selectUser.delegateModel : null
+-                currentIndex: selectUser.highlightedIndex
+-                ScrollIndicator.vertical: ScrollIndicator { }
+-            }
+-
+-            background: Rectangle {
+-                radius: 10
+-                color: root.palette.window
+-                layer.enabled: true
+-                layer.effect: DropShadow {
+-                    transparentBorder: true
+-                    horizontalOffset: 0
+-                    verticalOffset: 0
+-                    radius: 100
+-                    samples: 201
+-                    cached: true
+-                    color: "#88000000"
+-                }
+-            }
+-
+-            enter: Transition {
+-                NumberAnimation { property: "opacity"; from: 0; to: 1 }
+-            }
+-        }
+-
+-        states: [
+-            State {
+-                name: "pressed"
+-                when: selectUser.down
+-                PropertyChanges {
+-                    target: usernameIcon
+-                    icon.color: Qt.lighter(root.palette.highlight, 1.1)
+-                }
+-            },modify user select
+-            State {
+-                name: "hovered"
+-                when: selectUser.hovered
+-                PropertyChanges {
+-                    target: usernameIcon
+-                    icon.color: Qt.lighter(root.palette.highlight, 1.2)
+-                }
+-            },
+-            State {
+-                name: "focused"
+-                when: selectUser.visualFocus
+-                PropertyChanges {
+-                    target: usernameIcon
+-                    icon.color: root.palette.highlight
+-                }
+-            }
+-        ]
+-
+-        transitions: [
+-            Transition {
+-                PropertyAnimation {
+-                    properties: "color, border.color, icon.color"
+-                    duration: 150
+-                }
+-            }
+-        ]
+-
+-    }
+-
+-    TextField {
+-        id: username
+-        text: config.ForceLastUser == "true" ? selectUser.currentText : null
+-        font.capitalization: Font.Capitalize
+-        // Scale the font size
+-        font.pointSize: root.font.pointSize * 0.9
+-        anchors.centerIn: parent
+-        height: root.font.pointSize * 3
+-        width: parent.width
+-        placeholderText: config.TranslateUsernamePlaceholder || textConstants.userName
+-        selectByMouse: true
+-        horizontalAlignment: TextInput.AlignHCenter
+-        renderType: Text.QtRendering
+-        background: Rectangle {
+-            color: "transparent"
+-            border.color: root.palette.text
+-            border.width: parent.activeFocus ? 2 : 1
+-            radius: config.RoundCorners || 0
+-        }
+-        Keys.onReturnPressed: loginButton.clicked()
+-        KeyNavigation.down: password
+-        z: 1
+-
+-        states: [
+-            State {
+-                name: "focused"
+-                when: username.activeFocus
+-                PropertyChanges {
+-                    target: username.background
+-                    border.color: root.palette.highlight
+-                }
+-                PropertyChanges {
+-                    target: username
+-                    color: root.palette.highlight
+-                }
+-            }
+-        ]
+-    }
+-
+-}
+diff -Naur Arona-sddm-login-main/Main.qml Arona-sddm-login-main-qt6/Main.qml
+--- Arona-sddm-login-main/Main.qml	2024-07-05 02:55:51.000000000 +0000
++++ Arona-sddm-login-main-qt6/Main.qml	2025-02-15 17:15:08.796598987 +0000
+@@ -25,7 +25,7 @@
+ import QtQuick 2.11
+ import QtQuick.Layouts 1.11
+ import QtQuick.Controls 2.4
+-import QtGraphicalEffects 1.0
++import Qt5Compat.GraphicalEffects
+ import "Components"
+ 
+ // Config: theme.conf
+diff -Naur Arona-sddm-login-main/metadata.desktop Arona-sddm-login-main-qt6/metadata.desktop
+--- Arona-sddm-login-main/metadata.desktop	2024-07-05 02:55:51.000000000 +0000
++++ Arona-sddm-login-main-qt6/metadata.desktop	2025-02-15 17:15:40.461025432 +0000
+@@ -13,3 +13,4 @@
+ TranslationsDirectory=translations
+ Theme-Id=arona-theme
+ Theme-API=2.11
++QtVersion=6
+diff -Naur Arona-sddm-login-main/theme.conf Arona-sddm-login-main-qt6/theme.conf
+--- Arona-sddm-login-main/theme.conf	2024-07-05 02:55:51.000000000 +0000
++++ Arona-sddm-login-main-qt6/theme.conf	2025-02-15 17:29:20.203217639 +0000
+@@ -107,10 +107,10 @@
+ Locale=""
+ ## The time and date locale should usually be set in your system settings. Only hard set this if something is not working by default or you want a seperate locale setting in your login screen.
+ 
+-HourFormat="HH:mm"
++HourFormat=""
+ ## Defaults to Locale.ShortFormat - Accepts "long" or a custom string like "hh:mm A". See http://doc.qt.io/qt-5/qml-qtqml-date.html
+ 
+-DateFormat="dddd, d of MMMM"
++DateFormat=""
+ ## Defaults to Locale.LongFormat - Accepts "short" or a custom string like "dddd, d 'of' MMMM". See http://doc.qt.io/qt-5/qml-qtqml-date.html
+ 
+ 
+@@ -142,4 +142,4 @@
+ # 总体字体颜色？
+ ButtonTextColor="#ffffff"
+ 
+-FontSizeScale="1.2"
+\ No newline at end of file
++FontSizeScale="1.2"

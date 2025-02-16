@@ -21,8 +21,6 @@
     in flake-utils.lib.eachSystem systems (system:
       let pkgs = nixpkgs.legacyPackages.${system};
       in { formatter = pkgs.nixfmt-classic; }) // {
-        overlays.default = import ./packages/overlay.nix;
-
         nixosConfigurations = {
           linnamaa = nixpkgs.lib.nixosSystem {
             system = "x86_64-linux";
