@@ -1,8 +1,6 @@
 final: prev:
 
 {
-  sddm-arona = prev.callPackage ../packages/sddm-arona { };
-
   opentrack = prev.opentrack.overrideAttrs (old: {
     version = "2024.1.1";
     src = final.fetchFromGitHub {
@@ -33,4 +31,4 @@ final: prev:
       })
     ];
   });
-}
+} // import ../packages prev
