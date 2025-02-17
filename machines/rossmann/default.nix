@@ -37,4 +37,6 @@ in {
     serviceConfig = { ExecStart = "${pkgs.lact}/bin/lact daemon"; };
     enable = true;
   };
+
+  hardware.cpu.amd.updateMicrocode = true;
 }
