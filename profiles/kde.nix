@@ -6,7 +6,10 @@ with inputs;
   services = {
     displayManager.sddm = {
       enable = true;
-      enableHidpi = true;
+      wayland = {
+        enable = true;
+        compositor = "kwin";
+      };
       theme = "arona";
     };
     desktopManager.plasma6.enable = true;
@@ -16,7 +19,7 @@ with inputs;
 
   environment = {
     plasma6.excludePackages = with pkgs.kdePackages; [ konsole oxygen ];
-    systemPackages = with pkgs; [ sddm-arona ];
+    systemPackages = with pkgs; [ sddm-arona kdePackages.sddm-kcm ];
   };
 
   home-manager.sharedModules =
