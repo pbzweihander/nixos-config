@@ -22,11 +22,9 @@ with inputs;
     settings = {
       trusted-users = [ "root" "@wheel" ];
       extra-experimental-features = [ "nix-command" "flakes" ];
-      trusted-substituters =
-        [ "https://cache.nixos.org/" "https://nixpkgs-python.cachix.org" ];
-      trusted-public-keys = [
-        "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
-        "nixpkgs-python.cachix.org-1:hxjI7pFxTyuTHn2NkvWCrAUcNZLNS3ZAvfYNuYifcEU="
+      extra-substituters = [ "https://nix-community.cachix.org" ];
+      extra-trusted-public-keys = [
+        "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
       ];
     };
     gc = {
