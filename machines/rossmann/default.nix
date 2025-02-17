@@ -28,5 +28,13 @@ in {
     firewall.allowedUDPPorts = [ 2934 2935 9987 9988 9989 ];
   };
 
-  environment.systemPackages = with pkgs; [ opentrack ];
+  environment.systemPackages = with pkgs; [ opentrack lact ];
+
+  systemd.services.lact = {
+    description = "AMDGPU Control Daemon";
+    after = [ "multi-user.target" ];
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = { ExecStart = "${pkgs.lact}/bin/lact daemon"; };
+    enable = true;
+  };
 }
