@@ -1,5 +1,3 @@
-{ pkgs, ... }:
-
 {
   security.rtkit.enable = true;
   services.pipewire = {
@@ -11,7 +9,4 @@
       support32Bit = true;
     };
   };
-
-  environment.systemPackages = with pkgs; [ pulseaudioFull ];
 }
-

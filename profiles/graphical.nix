@@ -25,4 +25,6 @@
     };
     udev.packages = with pkgs; [ via vial ];
   };
+
+  programs.firefox.enable = true;
 }
