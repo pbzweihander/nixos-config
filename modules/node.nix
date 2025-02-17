@@ -2,7 +2,7 @@
 
 {
   environment.systemPackages = with pkgs; [
-    nodejs_22
+    nodejs
     nodePackages.typescript-language-server
     yarn
   ];
