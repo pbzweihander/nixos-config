@@ -40,4 +40,6 @@ in {
   };
 
   hardware.cpu.amd.updateMicrocode = true;
+
+  boot.kernelPackages = pkgs.linuxPackages_latest;
 }
