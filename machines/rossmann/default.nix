@@ -15,6 +15,7 @@ in {
     ../../profiles/kde.nix
     ../../profiles/dev.nix
     ../../profiles/gaming.nix
+    ../../profiles/work.nix
   ];
 
   services.btrfs.autoScrub.enable = true;
