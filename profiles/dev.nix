@@ -7,4 +7,6 @@
     ../modules/kubectl.nix
     ../modules/pueue.nix
   ];
+
+  programs.nix-ld.enable = true;
 }
