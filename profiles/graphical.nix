@@ -7,9 +7,10 @@
     alacritty
     gimp
     inkscape
-    spotify
-    wl-clipboard
     kcalc
+    spotify
+    vlc
+    wl-clipboard
   ];
 
   services = {

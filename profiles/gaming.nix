@@ -17,8 +17,8 @@
   };
 
   environment.systemPackages = with pkgs; [
-    gamemode
     gamescope
+    lutris
     steamtinkerlaunch
     vesktop
   ];
