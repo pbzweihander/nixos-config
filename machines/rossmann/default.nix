@@ -16,6 +16,7 @@ in {
     ../../profiles/dev.nix
     ../../profiles/gaming.nix
     ../../profiles/work.nix
+    ../../modules/virtualbox.nix
   ];
 
   services.btrfs.autoScrub.enable = true;
