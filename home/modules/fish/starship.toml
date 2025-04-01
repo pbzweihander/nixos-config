@@ -1,14 +1,9 @@
 "$schema" = 'https://starship.rs/config-schema.json'
 
 format = """$all\
-\
-$fill\
-\
 $kubernetes\
 $time\
-\
 $line_break\
-\
 $character"""
 
 [directory]
@@ -17,13 +12,22 @@ before_repo_root_style = "cyan"
 repo_root_style = "bold cyan"
 fish_style_pwd_dir_length = 3
 
-[fill]
-symbol = " "
+[git_branch]
+format = '[$branch(:$remote_branch)]($style) '
 
 [kubernetes]
 disabled = false
-format = ' in [$symbol$context( \($namespace\))]($style)'
+format = '[☸$context(\($namespace\))]($style) '
 
 [time]
 disabled = false
-format = ' at [$time]($style)'
+format = '[$time]($style) '
+
+[shlvl]
+disabled = false
+format = '[↕️$shlvl]($style) '
+
+[nix_shell]
+disabled = false
+heuristic = true
+format = '[❄️nix]($style) '
