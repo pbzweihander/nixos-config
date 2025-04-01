@@ -18,6 +18,7 @@ in {
     ../../profiles/work.nix
 
     ../../modules/virt-manager.nix
+    ../../modules/via.nix
   ];
 
   services.btrfs.autoScrub.enable = true;
