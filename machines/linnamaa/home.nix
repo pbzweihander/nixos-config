@@ -5,4 +5,3 @@
     ../../home/profiles/kde.nix
   ];
 }
-

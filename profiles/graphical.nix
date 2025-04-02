@@ -1,7 +1,5 @@
-{ pkgs, ... }:
-
-{
-  imports = [ ../modules/sound.nix ../modules/fonts.nix ];
+{pkgs, ...}: {
+  imports = [../modules/sound.nix ../modules/fonts.nix];
 
   environment.systemPackages = with pkgs; [
     alacritty
@@ -18,7 +16,7 @@
     xserver = {
       enable = false;
       xkb.options = "ctrl:nocaps,korean:ralt_hangul,korean:rctrl_hanja";
-      excludePackages = with pkgs; [ xterm ];
+      excludePackages = with pkgs; [xterm];
     };
   };
 

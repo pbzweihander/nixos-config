@@ -1,8 +1,10 @@
-{ pkgs, inputs, ... }:
-
-with inputs;
-
-let hostname = "linnamaa";
+{
+  pkgs,
+  inputs,
+  ...
+}:
+with inputs; let
+  hostname = "linnamaa";
 in {
   imports = [
     ./hardware-configuration.nix
@@ -16,7 +18,7 @@ in {
 
   services.btrfs.autoScrub.enable = true;
 
-  environment.systemPackages = with pkgs; [ libmbim ];
+  environment.systemPackages = with pkgs; [libmbim];
 
   time.timeZone = "Asia/Seoul";
 
@@ -25,14 +27,14 @@ in {
   systemd.services = {
     modem = {
       enable = true;
-      path = [ pkgs.modemmanager ];
-      wantedBy = [ "multi-user.target" ];
+      path = [pkgs.modemmanager];
+      wantedBy = ["multi-user.target"];
     };
     reload-modem = {
       enable = true;
-      after = [ "suspend.target" "hibernate.target" ];
+      after = ["suspend.target" "hibernate.target"];
       script = "systemctl restart ModemManager.service";
-      wantedBy = [ "suspend.target" "hibernate.target" ];
+      wantedBy = ["suspend.target" "hibernate.target"];
     };
   };
 
@@ -50,19 +52,20 @@ in {
           password-flags = "4";
           pin-flags = "4";
         };
-        ipv4 = { method = "auto"; };
+        ipv4 = {method = "auto";};
         ipv6 = {
           addr-gen-mode = "stable-privacy";
           method = "auto";
         };
-        ppp = { };
-        proxy = { };
+        ppp = {};
+        proxy = {};
       };
-      fccUnlockScripts = [{
-        id = "2c7c:030a";
-        path = ./fcc-unlock.sh;
-      }];
+      fccUnlockScripts = [
+        {
+          id = "2c7c:030a";
+          path = ./fcc-unlock.sh;
+        }
+      ];
     };
   };
 }
-

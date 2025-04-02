@@ -1,8 +1,6 @@
-{ inputs, ... }:
-
-with inputs;
-
-let hostname = "juutilainen";
+{inputs, ...}:
+with inputs; let
+  hostname = "juutilainen";
 in {
   imports = [
     ./hardware-configuration.nix
@@ -29,4 +27,3 @@ in {
 
   hardware.bluetooth.enable = true;
 }
-

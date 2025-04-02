@@ -6,4 +6,3 @@
     loader.efi.efiSysMountPoint = "/efi";
   };
 }
-

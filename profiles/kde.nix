@@ -1,8 +1,9 @@
-{ pkgs, inputs, ... }:
-
-with inputs;
-
 {
+  pkgs,
+  inputs,
+  ...
+}:
+with inputs; {
   services = {
     displayManager.sddm = {
       enable = true;
@@ -18,10 +19,9 @@ with inputs;
   programs.kdeconnect.enable = true;
 
   environment = {
-    plasma6.excludePackages = with pkgs.kdePackages; [ konsole oxygen ];
-    systemPackages = with pkgs; [ sddm-arona kdePackages.sddm-kcm ];
+    plasma6.excludePackages = with pkgs.kdePackages; [konsole oxygen];
+    systemPackages = with pkgs; [sddm-arona kdePackages.sddm-kcm];
   };
 
-  home-manager.sharedModules =
-    [ plasma-manager.homeManagerModules.plasma-manager ];
+  home-manager.sharedModules = [plasma-manager.homeManagerModules.plasma-manager];
 }

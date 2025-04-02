@@ -1,11 +1,13 @@
-{ pkgs, inputs, config, ... }:
-
-with inputs;
-
 {
-  boot.extraModulePackages = with config.boot.kernelPackages; [ evdi ];
+  pkgs,
+  inputs,
+  config,
+  ...
+}:
+with inputs; {
+  boot.extraModulePackages = with config.boot.kernelPackages; [evdi];
 
-  services.udev.packages = with pkgs; [ displaylink ];
+  services.udev.packages = with pkgs; [displaylink];
 
   powerManagement.powerDownCommands = ''
     #flush any bytes in pipe
@@ -28,8 +30,8 @@ with inputs;
 
   systemd.services.dlm = {
     description = "DisplayLink Manager Service";
-    after = [ "display-manager.service" ];
-    conflicts = [ "getty@tty7.service" ];
+    after = ["display-manager.service"];
+    conflicts = ["getty@tty7.service"];
 
     serviceConfig = {
       ExecStartPre = "${pkgs.kmod}/bin/modprobe evdi";
@@ -40,5 +42,5 @@ with inputs;
     };
   };
 
-  environment.systemPackages = with pkgs; [ displaylink ];
+  environment.systemPackages = with pkgs; [displaylink];
 }

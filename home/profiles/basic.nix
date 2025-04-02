@@ -1,5 +1,5 @@
 {
-  imports = [ ../modules/fish ../modules/git ../modules/helix ../modules/ssh ];
+  imports = [../modules/fish ../modules/git ../modules/helix ../modules/ssh];
 
   home = {
     stateVersion = "23.11";
@@ -11,9 +11,9 @@
   fonts.fontconfig = {
     enable = true;
     defaultFonts = {
-      serif = [ "Sarasa Gothic K" ];
-      sansSerif = [ "Sarasa UI K" ];
-      monospace = [ "Sarasa Mono K" ];
+      serif = ["Sarasa Gothic K"];
+      sansSerif = ["Sarasa UI K"];
+      monospace = ["Sarasa Mono K"];
     };
   };
 

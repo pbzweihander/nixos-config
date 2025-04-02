@@ -1,12 +1,10 @@
-{ pkgs, ... }:
-
-{
+{pkgs, ...}: {
   virtualisation = {
     containers = {
       enable = true;
       registries = {
-        insecure = [ "localhost:5001" ];
-        search = [ "docker.io" ];
+        insecure = ["localhost:5001"];
+        search = ["docker.io"];
       };
     };
     podman = {
@@ -15,5 +13,5 @@
     };
   };
 
-  environment.systemPackages = with pkgs; [ kind podman-compose ];
+  environment.systemPackages = with pkgs; [kind podman-compose];
 }

@@ -23,22 +23,26 @@
     };
   };
 
-  outputs = { nixpkgs, alejandra, ... }@inputs: {
+  outputs = {
+    nixpkgs,
+    alejandra,
+    ...
+  } @ inputs: {
     formatter = alejandra.defaultPackage;
     nixosConfigurations = {
       linnamaa = nixpkgs.lib.nixosSystem {
-        specialArgs = { inherit inputs; };
-        modules = [ ./machines/linnamaa ];
+        specialArgs = {inherit inputs;};
+        modules = [./machines/linnamaa];
       };
 
       rossmann = nixpkgs.lib.nixosSystem {
-        specialArgs = { inherit inputs; };
-        modules = [ ./machines/rossmann ];
+        specialArgs = {inherit inputs;};
+        modules = [./machines/rossmann];
       };
 
       juutilainen = nixpkgs.lib.nixosSystem {
-        specialArgs = { inherit inputs; };
-        modules = [ ./machines/juutilainen ];
+        specialArgs = {inherit inputs;};
+        modules = [./machines/juutilainen];
       };
     };
   };

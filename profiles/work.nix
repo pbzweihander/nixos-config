@@ -1,5 +1,3 @@
-{ pkgs, ... }:
-
-{
-  environment.systemPackages = with pkgs; [ slack oci-cli ];
+{pkgs, ...}: {
+  environment.systemPackages = with pkgs; [slack oci-cli];
 }

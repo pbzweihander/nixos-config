@@ -1,8 +1,6 @@
-{ pkgs, ... }:
-
-{
+{pkgs, ...}: {
   programs.virt-manager.enable = true;
-  users.groups.libvirtd.members = [ "pbzweihander" ];
+  users.groups.libvirtd.members = ["pbzweihander"];
   virtualisation = {
     libvirtd = {
       enable = true;
@@ -14,7 +12,8 @@
             (pkgs.OVMF.override {
               secureBoot = true;
               tpmSupport = true;
-            }).fd
+            })
+            .fd
           ];
         };
       };

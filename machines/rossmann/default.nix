@@ -1,8 +1,10 @@
-{ pkgs, inputs, ... }:
-
-with inputs;
-
-let hostname = "rossmann";
+{
+  pkgs,
+  inputs,
+  ...
+}:
+with inputs; let
+  hostname = "rossmann";
 in {
   imports = [
     ./hardware-configuration.nix
@@ -29,16 +31,16 @@ in {
 
   networking = {
     hostName = hostname;
-    firewall.allowedUDPPorts = [ 2934 2935 9987 9988 9989 ];
+    firewall.allowedUDPPorts = [2934 2935 9987 9988 9989];
   };
 
-  environment.systemPackages = with pkgs; [ opentrack lact ];
+  environment.systemPackages = with pkgs; [opentrack lact];
 
   systemd.services.lact = {
     description = "AMDGPU Control Daemon";
-    after = [ "multi-user.target" ];
-    wantedBy = [ "multi-user.target" ];
-    serviceConfig = { ExecStart = "${pkgs.lact}/bin/lact daemon"; };
+    after = ["multi-user.target"];
+    wantedBy = ["multi-user.target"];
+    serviceConfig = {ExecStart = "${pkgs.lact}/bin/lact daemon";};
     enable = true;
   };
 

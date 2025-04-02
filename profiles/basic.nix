@@ -1,8 +1,9 @@
-{ pkgs, inputs, ... }:
-
-with inputs;
-
 {
+  pkgs,
+  inputs,
+  ...
+}:
+with inputs; {
   imports = [
     ../modules/boot.nix
     ../modules/networking.nix
@@ -25,9 +26,9 @@ with inputs;
   };
   nix = {
     settings = {
-      trusted-users = [ "root" "@wheel" ];
-      extra-experimental-features = [ "nix-command" "flakes" ];
-      extra-substituters = [ "https://nix-community.cachix.org" ];
+      trusted-users = ["root" "@wheel"];
+      extra-experimental-features = ["nix-command" "flakes"];
+      extra-substituters = ["https://nix-community.cachix.org"];
       extra-trusted-public-keys = [
         "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
       ];
@@ -77,4 +78,3 @@ with inputs;
     zip
   ];
 }
-

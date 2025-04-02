@@ -1,2 +1,1 @@
-{ imports = [ ../modules/alacritty ]; }
-
+{imports = [../modules/alacritty];}
