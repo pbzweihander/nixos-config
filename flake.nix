@@ -14,31 +14,30 @@
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.home-manager.follows = "home-manager";
     };
+
+    alejandra = {
+      url = "github:kamadorueda/alejandra/3.1.0";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, flake-utils, nixpkgs, ... }@inputs:
-    let systems = [ "x86_64-linux" ];
-    in flake-utils.lib.eachSystem systems (system:
-      let pkgs = nixpkgs.legacyPackages.${system};
-      in { formatter = pkgs.nixfmt-classic; }) // {
-        nixosConfigurations = {
-          linnamaa = nixpkgs.lib.nixosSystem {
-            system = "x86_64-linux";
-            specialArgs = { inherit inputs; };
-            modules = [ ./machines/linnamaa ];
-          };
-
-          rossmann = nixpkgs.lib.nixosSystem {
-            system = "x86_64-linux";
-            specialArgs = { inherit inputs; };
-            modules = [ ./machines/rossmann ];
-          };
-
-          juutilainen = nixpkgs.lib.nixosSystem {
-            system = "x86_64-linux";
-            specialArgs = { inherit inputs; };
-            modules = [ ./machines/juutilainen ];
-          };
-        };
+  outputs = { nixpkgs, alejandra, ... }@inputs: {
+    formatter = alejandra.defaultPackage;
+    nixosConfigurations = {
+      linnamaa = nixpkgs.lib.nixosSystem {
+        specialArgs = { inherit inputs; };
+        modules = [ ./machines/linnamaa ];
       };
+
+      rossmann = nixpkgs.lib.nixosSystem {
+        specialArgs = { inherit inputs; };
+        modules = [ ./machines/rossmann ];
+      };
+
+      juutilainen = nixpkgs.lib.nixosSystem {
+        specialArgs = { inherit inputs; };
+        modules = [ ./machines/juutilainen ];
+      };
+    };
+  };
 }
