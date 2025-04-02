@@ -11,6 +11,7 @@
     spotify
     vlc
     wl-clipboard
+    unstable.zed-editor
   ];
 
   services = {
