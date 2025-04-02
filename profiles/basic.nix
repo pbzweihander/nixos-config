@@ -15,7 +15,12 @@ with inputs;
   system.stateVersion = "24.11";
 
   nixpkgs = {
-    overlays = [ (import ../overlays) ];
+    overlays = [
+      (final: prev: {
+        unstable = nixpkgs-unstable.legacyPackages.${prev.system};
+      })
+      (import ../overlays)
+    ];
     config.allowUnfree = true;
   };
   nix = {
