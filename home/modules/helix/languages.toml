@@ -9,8 +9,8 @@ args = ["--lsp"]
 haskell.formattingProvider = "fourmolu"
 haskell.plugin.rename.config.diff = true
 
-[language-server.nil.config.nil]
-formatting = { command = ["alejandra", "--quite", "--"] }
+[language-server.nil.config]
+nil.formatting = { command = ["alejandra", "--quite", "--"] }
 
 [[language]]
 name = "haskell"
