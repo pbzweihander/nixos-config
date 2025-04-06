@@ -48,5 +48,23 @@
     "enabled": false
   },
   "ui_font_family": "Sarasa UI K",
-  "ui_font_size": 16
+  "ui_font_size": 16,
+  "languages": {
+    "Nix": {
+      "tab_size": 2,
+      "language_servers": ["nil", "!nixd"]
+    }
+  },
+  "file_types": {
+    "Nix": ["nix"]
+  },
+  "lsp": {
+    "nil": {
+      "initialization_options": {
+        "formatting": {
+          "command": ["alejandra", "--quiet", "--"]
+        }
+      }
+    }
+  }
 }
