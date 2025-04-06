@@ -52,6 +52,11 @@ with inputs; {
     useUserPackages = true;
   };
 
+  programs.nh = {
+    enable = true;
+    flake = "/home/pbzweihander/nixos-config";
+  };
+
   environment.systemPackages = with pkgs; [
     dogdns
     eva

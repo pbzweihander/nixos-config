@@ -175,3 +175,9 @@ abbr -a zz "z -"
 # nix
 abbr -a nrs "sudo nixos-rebuild switch"
 abbr -a nrb "sudo nixos-rebuild boot"
+
+# nix nh
+abbr -a nos "nh os switch"
+abbr -a nosa "nh os switch --ask"
+abbr -a nob "nh os boot"
+abbr -a noba "nh os boot --ask"
