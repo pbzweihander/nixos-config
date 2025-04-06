@@ -1,0 +1,9 @@
+[
+  {
+    "context": "Workspace",
+    "bindings": {
+      "ctrl-tab": "pane::ActivateNextItem",
+      "ctrl-shift-tab": "pane::ActivatePreviousItem"
+    }
+  }
+]
