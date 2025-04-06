@@ -1,8 +1,14 @@
 {
   boot = {
-    loader.systemd-boot.enable = true;
-    loader.systemd-boot.editor = false;
-    loader.efi.canTouchEfiVariables = true;
-    loader.efi.efiSysMountPoint = "/efi";
+    loader = {
+      systemd-boot = {
+        enable = true;
+        editor = false;
+      };
+      efi = {
+        canTouchEfiVariables = true;
+        efiSysMountPoint = "/efi";
+      };
+    };
   };
 }

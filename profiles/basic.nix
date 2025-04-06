@@ -76,6 +76,7 @@ with inputs; {
     python3
     rar
     ripgrep
+    statix
     unrar
     unzip
     usbutils
