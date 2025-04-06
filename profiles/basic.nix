@@ -58,6 +58,7 @@ with inputs; {
   };
 
   environment.systemPackages = with pkgs; [
+    alejandra
     dogdns
     eva
     fd
@@ -67,7 +68,6 @@ with inputs; {
     jaq
     lsd
     nil
-    nixfmt-classic
     nix-tree
     pciutils
     pwgen
