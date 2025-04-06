@@ -33,11 +33,6 @@ with inputs; {
         "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
       ];
     };
-    gc = {
-      automatic = true;
-      dates = "weekly";
-      options = "--delete-older-than 7d";
-    };
   };
 
   services = {
@@ -56,6 +51,10 @@ with inputs; {
     nh = {
       enable = true;
       flake = "/home/pbzweihander/nixos-config";
+      clean = {
+        enable = true;
+        extraArgs = "--keep-since 7d --keep 3";
+      };
     };
     command-not-found.enable = false;
   };
