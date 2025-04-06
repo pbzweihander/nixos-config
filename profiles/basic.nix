@@ -52,9 +52,12 @@ with inputs; {
     useUserPackages = true;
   };
 
-  programs.nh = {
-    enable = true;
-    flake = "/home/pbzweihander/nixos-config";
+  programs = {
+    nh = {
+      enable = true;
+      flake = "/home/pbzweihander/nixos-config";
+    };
+    command-not-found.enable = false;
   };
 
   environment.systemPackages = with pkgs; [
