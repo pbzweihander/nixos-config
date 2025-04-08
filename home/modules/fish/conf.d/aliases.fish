@@ -166,8 +166,9 @@ abbr -a ptf "AWS_PROFILE=personal terraform"
 abbr -a wtf "AWS_PROFILE=work terraform"
 abbr -a ctf "AWS_PROFILE=cftf terraform"
 
-# code
-abbr -a c. "code ."
+# zed
+abbr -a zd zeditor
+abbr -a zd. "zeditor ."
 
 # zoxide
 abbr -a zz "z -"
