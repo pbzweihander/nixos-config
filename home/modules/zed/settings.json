@@ -42,7 +42,7 @@
     "light": "Catppuccin Mocha",
     "dark": "Catppuccin Mocha"
   },
-  "vim_mode": false,
+  "vim_mode": true,
   "assistant": {
     "version": "2",
     "enabled": false
