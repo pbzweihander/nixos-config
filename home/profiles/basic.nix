@@ -1,8 +1,8 @@
 {
-  imports = [../modules/fish ../modules/git ../modules/helix ../modules/ssh];
+  imports = [../modules/fish ../modules/git ../modules/helix ../modules/ssh ../modules/yamlfmt];
 
   home = {
-    stateVersion = "23.11";
+    stateVersion = "24.11";
 
     username = "pbzweihander";
     homeDirectory = "/home/pbzweihander";

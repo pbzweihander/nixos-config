@@ -53,6 +53,14 @@
     "Nix": {
       "tab_size": 2,
       "language_servers": ["nil", "!nixd"]
+    },
+    "YAML": {
+      "formatter": {
+        "external": {
+          "command": "yamlfmt",
+          "arguments": ["-in"]
+        }
+      }
     }
   },
   "file_types": {

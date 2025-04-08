@@ -24,3 +24,8 @@ formatter = { command = "alejandra" }
 [[language]]
 name = "helm"
 indent = { tab-width = 2, unit = "  " }
+
+[[language]]
+name = "yaml"
+auto-format = true
+formatter = { command = "yamlfmt", args = ["-in"] }

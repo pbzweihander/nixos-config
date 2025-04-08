@@ -83,6 +83,7 @@ with inputs; {
     vim
     wget
     xh
+    yamlfmt
     zip
   ];
 }
