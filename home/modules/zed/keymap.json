@@ -5,5 +5,48 @@
       "ctrl-tab": "pane::ActivateNextItem",
       "ctrl-shift-tab": "pane::ActivatePreviousItem"
     }
+  },
+  {
+    "context": "GitPanel || ProjectPanel || CollabPanel || OutlinePanel || ChatPanel || VimControl || EmptyPane || SharedScreen || MarkdownPreview || KeyContextView",
+    "bindings": {
+      "ctrl-h": "workspace::ActivatePaneLeft",
+      "ctrl-j": "workspace::ActivatePaneDown",
+      "ctrl-k": "workspace::ActivatePaneUp",
+      "ctrl-l": "workspace::ActivatePaneRight",
+      "alt-enter": "pane::SplitVertical"
+    }
+  },
+  {
+    "context": "VimControl && !menu",
+    "bindings": {
+      "U": "vim::Redo",
+      "alt-w": "vim::NextSubwordStart",
+      "alt-e": "vim::NextSubwordEnd",
+      "alt-b": "vim::PreviousSubwordStart",
+      "g alt-b": "vim::PreviousSubwordEnd",
+      "g h": "vim::StartOfLine",
+      "g j": "vim::EndOfDocument",
+      "g k": "vim::StartOfDocument",
+      "g l": "vim::EndOfLine",
+      "g s": "vim::StartOfLineDownward",
+      "g d": "editor::GoToDefinition",
+      "g D": "editor::GoToTypeDefinition",
+      "g r": "editor::FindAllReferences",
+      "g i": "editor::GoToImplementation",
+      "alt-j": "vim::JoinLines",
+      "g alt-j": "vim::JoinLinesNoWhitespace",
+      "J": "editor::MoveLineDown",
+      "K": "editor::MoveLineUp",
+      "space": null,
+      "space f": "file_finder::Toggle",
+      "space d": "diagnostics::Deploy",
+      "space a": "editor::ToggleCodeActions",
+      "space /": "pane::DeploySearch",
+      "space k": "editor::Hover",
+      "space r": "editor::Rename",
+      "space p": "project_panel::ToggleFocus",
+      "space g": "git_panel::ToggleFocus",
+      "space o": "outline_panel::ToggleFocus"
+    }
   }
 ]
