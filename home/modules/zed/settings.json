@@ -70,13 +70,16 @@
       "language_servers": ["nil", "!nixd"]
     },
     "YAML": {
+      "tab_size": 2,
       "formatter": {
         "external": {
           "command": "yamlfmt",
           "arguments": ["-in"]
         }
       }
-    }
+    },
+    "HTML": { "tab_size": 2 },
+    "Astro": { "tab_size": 2 }
   },
   "file_types": {
     "Nix": ["nix"]
