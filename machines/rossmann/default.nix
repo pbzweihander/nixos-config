@@ -23,7 +23,10 @@ in {
     ../../modules/via.nix
   ];
 
-  services.btrfs.autoScrub.enable = true;
+  services = {
+    btrfs.autoScrub.enable = true;
+    tailscale.enable = true;
+  };
 
   time.timeZone = "Asia/Seoul";
 
