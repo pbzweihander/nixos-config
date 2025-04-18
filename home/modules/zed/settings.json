@@ -63,7 +63,7 @@
     "enabled": true
   },
   "ui_font_family": "Sarasa UI K",
-  "ui_font_size": 16,
+  "ui_font_size": 14,
   "languages": {
     "Nix": {
       "tab_size": 2,
