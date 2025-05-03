@@ -67,20 +67,53 @@
   # plasma-manager
   programs.plasma = {
     enable = true;
-    workspace = {
-      clickItemTo = "select";
-      wallpaperPictureOfTheDay.provider = "apod";
+    kscreenlocker.appearance.wallpaperPictureOfTheDay.provider = "apod";
+    krunner.shortcuts.launch = ["Search" "Meta+Space" "Alt+F2"];
+    fonts = {
+      general = {
+        family = "Sarasa UI K";
+        pointSize = 10;
+      };
+      fixedWidth = {
+        family = "Sarasa Fixed K";
+        pointSize = 10;
+      };
+      small = {
+        family = "Sarasa UI K";
+        pointSize = 8;
+      };
+      toolbar = {
+        family = "Sarasa UI K";
+        pointSize = 10;
+      };
+      menu = {
+        family = "Sarasa UI K";
+        pointSize = 10;
+      };
+      windowTitle = {
+        family = "Sarasa UI K";
+        pointSize = 10;
+      };
     };
+    session.general.askForConfirmationOnLogout = false;
     shortcuts = {
       ksmserver = {"Lock Session" = ["Screensaver" "Meta+Esc"];};
       "services/Alacritty.desktop"."New" = "Meta+Return";
+    };
+    spectacle.shortcuts = {
+      captureEntireDesktop = "Meta+Shift+Print";
+      captureRectangularRegion = "Shift+Print";
+      captureWindowUnderCursor = "Ctrl+Print";
+    };
+    workspace = {
+      clickItemTo = "select";
+      wallpaperPictureOfTheDay.provider = "apod";
     };
     configFile = {
       "dolphinrc"."DetailsMode"."ExpandableFolders" = false;
       "kdeglobals"."General"."TerminalApplication" = "alacritty";
       "kwinrc"."Effect-overview"."BorderActivate" = 9;
       "kwinrc"."Wayland"."InputMethod[$e]" = "/run/current-system/sw/share/applications/fcitx5-wayland-launcher.desktop";
-      "ksmserverrc"."General"."confirmLogout" = false;
     };
   };
 }
