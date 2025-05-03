@@ -1,4 +1,15 @@
 {
+  "edit_predictions": {
+    "mode": "subtle",
+    "copilot": {
+      "proxy": null,
+      "proxy_no_verify": null
+    },
+    "enabled_in_assistant": false
+  },
+  "features": {
+    "edit_prediction_provider": "zed"
+  },
   "active_pane_modifiers": {
     "border_size": 0.5,
     "inactive_opacity": 0.6
@@ -44,8 +55,12 @@
   },
   "vim_mode": true,
   "assistant": {
+    "default_model": {
+      "provider": "openai",
+      "model": "o3-mini"
+    },
     "version": "2",
-    "enabled": false
+    "enabled": true
   },
   "ui_font_family": "Sarasa UI K",
   "ui_font_size": 16,
