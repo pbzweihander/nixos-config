@@ -11,6 +11,9 @@ containerdConfigPatches:
 - |-
   [plugins."io.containerd.grpc.v1.cri".registry]
     config_path = "/etc/containerd/certs.d"
+- |-
+  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+    privileged_without_host_devices = true
 ' | kind create cluster --config=- $argv
 
     set REGISTRY_DIR "/etc/containerd/certs.d/localhost:$reg_port"
