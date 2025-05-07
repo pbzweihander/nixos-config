@@ -80,6 +80,7 @@ with inputs; {
     unrar
     unzip
     usbutils
+    uv
     vim
     wget
     xh
