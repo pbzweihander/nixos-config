@@ -3,5 +3,5 @@
     enable = true;
     enableExtensionPack = true;
   };
-  users.extraGroups.vboxusers.members = ["pbzweihander"];
+  users.extraGroups.vboxusers.members = [ "pbzweihander" ];
 }

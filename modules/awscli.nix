@@ -1,3 +1,4 @@
-{pkgs, ...}: {
-  environment.systemPackages = with pkgs; [awscli2];
+{ pkgs, ... }:
+{
+  environment.systemPackages = with pkgs; [ awscli2 ];
 }

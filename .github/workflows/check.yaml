@@ -19,5 +19,5 @@ jobs:
     - uses: cachix/install-nix-action@v27
 
     - run: nix fmt -- --check .
-    - run: nix flake check --no-build
+    - run: nix flake check --no-build --all-systems
     - run: nix run nixpkgs#statix -- check --ignore hardware-configuration.nix

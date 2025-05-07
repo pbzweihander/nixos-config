@@ -8,19 +8,23 @@
     };
   };
 
-  outputs = {
-    nixpkgs,
-    flake-utils,
-    rust-overlay,
-    ...
-  }:
-    flake-utils.lib.eachDefaultSystem (system: let
-      version = "<version>";
-      overlays = [(import rust-overlay)];
-      pkgs = import nixpkgs {inherit system overlays;};
-      rust-toolchain = pkgs.rust-bin.stable.${version}.default;
-    in {
-      devShells.default =
-        pkgs.mkShell {nativeBuildInputs = [rust-toolchain];};
-    });
+  outputs =
+    {
+      nixpkgs,
+      flake-utils,
+      rust-overlay,
+      ...
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
+      let
+        version = "<version>";
+        overlays = [ (import rust-overlay) ];
+        pkgs = import nixpkgs { inherit system overlays; };
+        rust-toolchain = pkgs.rust-bin.stable.${version}.default;
+      in
+      {
+        devShells.default = pkgs.mkShell { nativeBuildInputs = [ rust-toolchain ]; };
+      }
+    );
 }

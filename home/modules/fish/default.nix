@@ -1,4 +1,5 @@
-{pkgs, ...}: {
+{ pkgs, ... }:
+{
   programs = {
     fish = {
       enable = true;
@@ -72,7 +73,6 @@
     ".config/fish/conf.d/vi.fish".source = ./conf.d/vi.fish;
     ".config/fish/functions/ds.fish".source = ./functions/ds.fish;
     ".config/fish/functions/jp.fish".source = ./functions/jp.fish;
-    ".config/fish/functions/kind-with-registry.fish".source =
-      ./functions/kind-with-registry.fish;
+    ".config/fish/functions/kind-with-registry.fish".source = ./functions/kind-with-registry.fish;
   };
 }

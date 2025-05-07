@@ -1,7 +1,9 @@
-{inputs, ...}:
-with inputs; let
+{ inputs, ... }:
+with inputs;
+let
   hostname = "juutilainen";
-in {
+in
+{
   imports = [
     ./hardware-configuration.nix
 

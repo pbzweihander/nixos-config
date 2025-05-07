@@ -1,3 +1,3 @@
 pkgs: {
-  sddm-arona = pkgs.callPackage ../packages/sddm-arona {};
+  sddm-arona = pkgs.callPackage ./sddm-arona { };
 }

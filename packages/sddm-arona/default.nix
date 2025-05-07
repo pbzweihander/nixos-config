@@ -14,14 +14,16 @@ stdenvNoCC.mkDerivation {
     hash = "sha256-5EaGP+2f/jX0hpbj8qKiEGLRBxQO+c2/Gu/brcVeTTM=";
   };
 
-  patches = [./0-qt5-compat.patch];
+  patches = [ ./0-qt5-compat.patch ];
 
   dontBuild = true;
 
-  installPhase = let
-    basePath = "$out/share/sddm/themes";
-  in ''
-    mkdir -p ${basePath}
-    cp -aR . ${basePath}/arona
-  '';
+  installPhase =
+    let
+      basePath = "$out/share/sddm/themes";
+    in
+    ''
+      mkdir -p ${basePath}
+      cp -aR . ${basePath}/arona
+    '';
 }

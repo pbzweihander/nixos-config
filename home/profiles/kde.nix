@@ -68,7 +68,11 @@
   programs.plasma = {
     enable = true;
     kscreenlocker.appearance.wallpaperPictureOfTheDay.provider = "apod";
-    krunner.shortcuts.launch = ["Search" "Meta+Space" "Alt+F2"];
+    krunner.shortcuts.launch = [
+      "Search"
+      "Meta+Space"
+      "Alt+F2"
+    ];
     fonts = {
       general = {
         family = "Sarasa UI K";
@@ -97,7 +101,12 @@
     };
     session.general.askForConfirmationOnLogout = false;
     shortcuts = {
-      ksmserver = {"Lock Session" = ["Screensaver" "Meta+Esc"];};
+      ksmserver = {
+        "Lock Session" = [
+          "Screensaver"
+          "Meta+Esc"
+        ];
+      };
       "services/Alacritty.desktop"."New" = "Meta+Return";
     };
     spectacle.shortcuts = {
@@ -113,7 +122,8 @@
       "dolphinrc"."DetailsMode"."ExpandableFolders" = false;
       "kdeglobals"."General"."TerminalApplication" = "alacritty";
       "kwinrc"."Effect-overview"."BorderActivate" = 9;
-      "kwinrc"."Wayland"."InputMethod[$e]" = "/run/current-system/sw/share/applications/fcitx5-wayland-launcher.desktop";
+      "kwinrc"."Wayland"."InputMethod[$e]" =
+        "/run/current-system/sw/share/applications/fcitx5-wayland-launcher.desktop";
     };
   };
 }

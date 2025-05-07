@@ -1,5 +1,11 @@
 {
-  imports = [../modules/fish ../modules/git ../modules/helix ../modules/ssh ../modules/yamlfmt];
+  imports = [
+    ../modules/fish
+    ../modules/git
+    ../modules/helix
+    ../modules/ssh
+    ../modules/yamlfmt
+  ];
 
   home = {
     stateVersion = "24.11";
@@ -11,9 +17,9 @@
   fonts.fontconfig = {
     enable = true;
     defaultFonts = {
-      serif = ["Sarasa Gothic K"];
-      sansSerif = ["Sarasa UI K"];
-      monospace = ["Sarasa Mono K"];
+      serif = [ "Sarasa Gothic K" ];
+      sansSerif = [ "Sarasa UI K" ];
+      monospace = [ "Sarasa Mono K" ];
     };
   };
 

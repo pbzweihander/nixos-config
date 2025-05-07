@@ -1,1 +1,6 @@
-{imports = [../modules/alacritty ../modules/zed];}
+{
+  imports = [
+    ../modules/alacritty
+    ../modules/zed
+  ];
+}

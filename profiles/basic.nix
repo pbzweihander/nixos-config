@@ -1,9 +1,11 @@
 {
   pkgs,
   inputs,
+  outputs,
   ...
 }:
-with inputs; {
+with inputs;
+{
   imports = [
     ../modules/boot.nix
     ../modules/networking.nix
@@ -17,18 +19,23 @@ with inputs; {
 
   nixpkgs = {
     overlays = [
-      (final: prev: {
-        unstable = nixpkgs-unstable.legacyPackages.${prev.system};
-      })
-      (import ../overlays)
+      outputs.overlays.additions
+      outputs.overlays.modifications
+      outputs.overlays.unstable-packages
     ];
     config.allowUnfree = true;
   };
   nix = {
     settings = {
-      trusted-users = ["root" "@wheel"];
-      extra-experimental-features = ["nix-command" "flakes"];
-      extra-substituters = ["https://nix-community.cachix.org"];
+      trusted-users = [
+        "root"
+        "@wheel"
+      ];
+      extra-experimental-features = [
+        "nix-command"
+        "flakes"
+      ];
+      extra-substituters = [ "https://nix-community.cachix.org" ];
       extra-trusted-public-keys = [
         "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
       ];
@@ -45,6 +52,7 @@ with inputs; {
   home-manager = {
     useGlobalPkgs = true;
     useUserPackages = true;
+    backupFileExtension = "home-manager-backup";
   };
 
   programs = {
@@ -60,7 +68,6 @@ with inputs; {
   };
 
   environment.systemPackages = with pkgs; [
-    alejandra
     dogdns
     eva
     fd
@@ -70,6 +77,7 @@ with inputs; {
     jaq
     lsd
     nil
+    nixfmt-rfc-style
     nix-tree
     pciutils
     pwgen

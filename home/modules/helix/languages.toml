@@ -10,7 +10,7 @@ haskell.formattingProvider = "fourmolu"
 haskell.plugin.rename.config.diff = true
 
 [language-server.nil.config]
-nil.formatting = { command = ["alejandra", "--quite", "--"] }
+nil.formatting = { command = ["nixfmt"] }
 
 [[language]]
 name = "haskell"
@@ -19,7 +19,7 @@ auto-format = true
 [[language]]
 name = "nix"
 auto-format = true
-formatter = { command = "alejandra" }
+formatter = { command = "nixfmt" }
 
 [[language]]
 name = "helm"

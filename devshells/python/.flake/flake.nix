@@ -1,6 +1,6 @@
 {
   nixConfig = {
-    extra-substituters = ["https://nixpkgs-python.cachix.org"];
+    extra-substituters = [ "https://nixpkgs-python.cachix.org" ];
     extra-trusted-public-keys = [
       "nixpkgs-python.cachix.org-1:hxjI7pFxTyuTHn2NkvWCrAUcNZLNS3ZAvfYNuYifcEU="
     ];
@@ -12,20 +12,29 @@
     nixpkgs-python.url = "github:cachix/nixpkgs-python";
   };
 
-  outputs = {
-    nixpkgs,
-    flake-utils,
-    nixpkgs-python,
-    ...
-  }:
-    flake-utils.lib.eachDefaultSystem (system: let
-      version = "<version>";
-      overlays = [];
-      pkgs = import nixpkgs {inherit system overlays;};
-      python = nixpkgs-python.packages.${system}.${version};
-    in {
-      devShells.default = pkgs.mkShell {
-        nativeBuildInputs = with pkgs; [python poetry ruff];
-      };
-    });
+  outputs =
+    {
+      nixpkgs,
+      flake-utils,
+      nixpkgs-python,
+      ...
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
+      let
+        version = "<version>";
+        overlays = [ ];
+        pkgs = import nixpkgs { inherit system overlays; };
+        python = nixpkgs-python.packages.${system}.${version};
+      in
+      {
+        devShells.default = pkgs.mkShell {
+          nativeBuildInputs = with pkgs; [
+            python
+            poetry
+            ruff
+          ];
+        };
+      }
+    );
 }
