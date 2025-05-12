@@ -11,8 +11,7 @@
     "edit_prediction_provider": "zed"
   },
   "active_pane_modifiers": {
-    "border_size": 0.5,
-    "inactive_opacity": 0.6
+    "border_size": 0.5
   },
   "buffer_font_family": "Sarasa Mono K",
   "buffer_font_size": 16,
@@ -50,8 +49,8 @@
   },
   "theme": {
     "mode": "dark",
-    "light": "Catppuccin Mocha",
-    "dark": "Catppuccin Mocha"
+    "light": "dimidium",
+    "dark": "dimidium"
   },
   "vim_mode": true,
   "assistant": {
