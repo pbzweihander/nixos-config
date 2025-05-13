@@ -11,9 +11,10 @@
     inkscape
     kcalc
     spotify
-    vlc
-    wl-clipboard
     unstable.zed-editor
+    vlc
+    vscodium
+    wl-clipboard
   ];
 
   services = {
