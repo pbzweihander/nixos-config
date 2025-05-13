@@ -14,6 +14,8 @@ in
     ../../profiles/kde.nix
     ../../profiles/dev.nix
     ../../profiles/work.nix
+
+    ../../modules/via.nix
   ];
 
   services = {
