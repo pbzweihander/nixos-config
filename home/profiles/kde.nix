@@ -1,39 +1,5 @@
 {
   # TODO: Replace with home-manager fcitx5 settings when 25.11
-  xdg.configFile = {
-    "fcitx5/config".text = ''
-      [Hotkey/TriggerKeys]
-      0=Hangul
-
-      [Hotkey/ActivateKeys]
-      0=Shift+space
-
-      [Hotkey/DeactivateKeys]
-      0=Control+space
-      1=Escape
-
-      [Behavior]
-      ShowInputMethodInformation=False
-    '';
-    # "fcitx5/profile".text = ''
-    #   [Groups/0]
-    #   Name=Default
-    #   Default Layout=us
-    #   DefaultIM=hangul
-
-    #   [Groups/0/Items/0]
-    #   Name=keyboard-us
-    #   Layout=
-
-    #   [Groups/0/Items/1]
-    #   Name=hangul
-    #   Layout=
-
-    #   [GroupOrder]
-    #   0=Default
-    # '';
-  };
-
   # i18n.inputMethod = {
   #   enable = true;
   #   type = "fcitx5";
