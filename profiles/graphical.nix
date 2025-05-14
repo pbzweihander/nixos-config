@@ -5,17 +5,20 @@
     ../modules/fonts.nix
   ];
 
-  environment.systemPackages = with pkgs; [
-    alacritty
-    gimp
-    inkscape
-    kcalc
-    spotify
-    unstable.zed-editor
-    vlc
-    vscodium
-    wl-clipboard
-  ];
+  environment = {
+    systemPackages = with pkgs; [
+      alacritty
+      gimp
+      inkscape
+      kcalc
+      spotify
+      unstable.zed-editor
+      vlc
+      vscodium
+      wl-clipboard
+    ];
+    sessionVariables.NIXOS_OZONE_WL = "1";
+  };
 
   services = {
     xserver = {
