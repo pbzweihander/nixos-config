@@ -182,3 +182,7 @@ abbr -a nos "nh os switch"
 abbr -a nosa "nh os switch --ask"
 abbr -a nob "nh os boot"
 abbr -a noba "nh os boot --ask"
+
+# vscodium
+abbr -a vc codium
+abbr -a vc. "codium ."
