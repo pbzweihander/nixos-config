@@ -4,7 +4,7 @@ import = ["~/.config/alacritty/dimidium.toml"]
 [window]
 padding = { x = 5, y = 5 }
 dynamic_padding = true
-opacity = 0.99
+opacity = 0.9
 resize_increments = true
 
 [font]
