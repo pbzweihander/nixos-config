@@ -88,13 +88,13 @@ with inputs;
     ripgrep
     statix
     unrar
+    unstable.yamlfmt
     unzip
     usbutils
     uv
     vim
     wget
     xh
-    yamlfmt
     zip
   ];
 }
