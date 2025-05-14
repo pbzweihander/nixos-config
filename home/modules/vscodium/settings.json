@@ -441,6 +441,7 @@
   ],
   "editor.scrollbar.horizontal": "visible",
   "editor.selectionHighlight": false,
+  "explorer.confirmDragAndDrop": false,
   "files.insertFinalNewline": true,
   "files.trimFinalNewlines": true,
   "git.autofetch": true,
