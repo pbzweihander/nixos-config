@@ -43,10 +43,11 @@ with inputs;
   };
 
   services = {
-    fwupd.enable = true;
     fstrim.enable = true;
-    logrotate.checkConfig = false;
+    fwupd.enable = true;
     keybase.enable = true;
+    logrotate.checkConfig = false;
+    lorri.enable = true;
   };
 
   home-manager = {
@@ -68,6 +69,7 @@ with inputs;
   };
 
   environment.systemPackages = with pkgs; [
+    direnv
     dogdns
     eva
     fd
