@@ -37,6 +37,30 @@
         })
       ];
     });
+
+    vscodium = final.symlinkJoin {
+      name = "vscodium";
+      paths = [ prev.vscodium ];
+      buildInputs = [ final.makeWrapper ];
+      postBuild = ''
+        wrapProgram $out/bin/codium \
+          --add-flags "--enable-wayland-ime"
+      '';
+    };
+
+    # desktop entry for slack directly refers to `$out/bin` so we cannot use symlinkJoin
+    # re-compilation of slack package is not a big of deal (because it just unpacks release binary) so just overrideAttrs
+    slack = prev.slack.overrideAttrs (old: {
+      installPhase =
+        builtins.replaceStrings
+          [
+            "--ozone-platform-hint=auto"
+          ]
+          [
+            "--ozone-platform-hint=auto --enable-wayland-ime"
+          ]
+          old.installPhase;
+    });
   };
 
   unstable-packages = final: _prev: {
