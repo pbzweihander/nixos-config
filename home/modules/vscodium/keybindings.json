@@ -1,0 +1,163 @@
+[
+  {
+    "key": "tab",
+    "command": "-editor.action.inlineSuggest.commit",
+    "when": "inlineSuggestionHasIndentationLessThanTabSize && inlineSuggestionVisible && !editorHoverFocused && !editorTabMovesFocus && !suggestWidgetVisible"
+  },
+  {
+    "key": "tab",
+    "command": "-acceptSelectedSuggestion",
+    "when": "suggestWidgetHasFocusedSuggestion && suggestWidgetVisible && textInputFocus"
+  },
+  {
+    "key": "tab",
+    "command": "-workbench.action.terminal.acceptSelectedSuggestion",
+    "when": "terminalFocus && terminalHasBeenCreated && terminalIsOpen && terminalSuggestWidgetVisible || terminalFocus && terminalIsOpen && terminalProcessSupported && terminalSuggestWidgetVisible"
+  },
+  {
+    "key": "tab",
+    "command": "-insertNextSuggestion",
+    "when": "hasOtherSuggestions && textInputFocus && !inSnippetMode && !suggestWidgetVisible && config.editor.tabCompletion == 'on'"
+  },
+  {
+    "key": "shift+tab",
+    "command": "-insertPrevSuggestion",
+    "when": "hasOtherSuggestions && textInputFocus && !inSnippetMode && !suggestWidgetVisible && config.editor.tabCompletion == 'on'"
+  },
+  {
+    "key": "tab",
+    "command": "selectNextSuggestion",
+    "when": "suggestWidgetMultipleSuggestions && suggestWidgetVisible && textInputFocus || suggestWidgetVisible && textInputFocus && !suggestWidgetHasFocusedSuggestion"
+  },
+  {
+    "key": "shift+tab",
+    "command": "selectPrevSuggestion",
+    "when": "suggestWidgetMultipleSuggestions && suggestWidgetVisible && textInputFocus || suggestWidgetVisible && textInputFocus && !suggestWidgetHasFocusedSuggestion"
+  },
+  {
+    "key": "ctrl+tab",
+    "command": "workbench.action.nextEditor"
+  },
+  {
+    "key": "ctrl+shift+tab",
+    "command": "workbench.action.previousEditor"
+  },
+  {
+    "key": "ctrl+tab",
+    "command": "-workbench.action.quickOpenPreviousRecentlyUsedEditorInGroup",
+    "when": "!activeEditorGroupEmpty"
+  },
+  {
+    "key": "ctrl+shift+tab",
+    "command": "-workbench.action.quickOpenLeastRecentlyUsedEditorInGroup",
+    "when": "!activeEditorGroupEmpty"
+  },
+  {
+    "key": "alt+space",
+    "command": "-dance.selections.clear.main",
+    "when": "editorTextFocus && dance.mode == 'normal'"
+  },
+  {
+    "key": ",",
+    "command": "dance.selections.clear.secondary",
+    "when": "editorTextFocus && dance.mode == 'normal'"
+  },
+  {
+    "key": "space",
+    "command": "-dance.selections.clear.secondary",
+    "when": "editorTextFocus && dance.mode == 'normal'"
+  },
+  {
+    "key": "space",
+    "command": "dance.openMenu",
+    "when": "editorTextFocus && dance.mode == 'normal'",
+    "args": {
+      "menu": "user"
+    }
+  },
+  {
+    "key": "x",
+    "command": "dance.select.line.below.extend",
+    "when": "editorTextFocus && dance.mode == 'normal'"
+  },
+  {
+    "key": "shift+x",
+    "command": "-dance.select.line.below.extend",
+    "when": "editorTextFocus && dance.mode == 'normal'"
+  },
+  {
+    "key": "x",
+    "command": "-dance.select.line.below",
+    "when": "editorTextFocus && dance.mode == 'normal'"
+  },
+  {
+    "key": "ctrl+o",
+    "command": "-workbench.action.files.openFile",
+    "when": "true"
+  },
+  {
+    "key": "ctrl+o",
+    "command": "workbench.action.navigateBack",
+    "when": "canNavigateBack"
+  },
+  {
+    "key": "ctrl+i",
+    "command": "workbench.action.navigateForward",
+    "when": "canNavigateForward"
+  },
+  {
+    "key": "ctrl+i",
+    "command": "-editor.action.triggerSuggest",
+    "when": "editorHasCompletionItemProvider && textInputFocus && !editorReadonly && !suggestWidgetVisible"
+  },
+  {
+    "key": "ctrl+a",
+    "command": "dance.select.lineStart",
+    "when": "editorTextFocus && dance.mode == 'normal'"
+  },
+  {
+    "key": "ctrl+e",
+    "command": "dance.select.lineEnd",
+    "when": "editorTextFocus && dance.mode == 'normal'"
+  },
+  {
+    "key": "ctrl+a",
+    "command": "cursorLineStart",
+    "when": "editorTextFocus && dance.mode == 'insert'"
+  },
+  {
+    "key": "ctrl+e",
+    "command": "cursorLineEnd",
+    "when": "editorTextFocus && dance.mode == 'insert'"
+  },
+  {
+    "key": "ctrl+a",
+    "command": "-editor.action.selectAll",
+    "when": "editorTextFocus"
+  },
+  {
+    "key": "ctrl+e",
+    "command": "-workbench.action.quickOpen"
+  },
+  {
+    "key": "alt+enter",
+    "command": "workbench.action.splitEditor"
+  },
+  {
+    "key": "ctrl+h",
+    "command": "workbench.action.focusLeftGroup"
+  },
+  {
+    "key": "ctrl+h",
+    "command": "-editor.action.startFindReplaceAction",
+    "when": "editorFocus || editorIsOpen"
+  },
+  {
+    "key": "ctrl+l",
+    "command": "workbench.action.focusRightGroup"
+  },
+  {
+    "key": "ctrl+q",
+    "command": "-workbench.action.quit"
+  }
+]

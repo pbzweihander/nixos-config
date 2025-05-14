@@ -1,0 +1,454 @@
+{
+  "[helm]": {
+    "editor.defaultFormatter": null,
+    "editor.formatOnSave": false,
+    "editor.tabSize": 2
+  },
+  "[html]": {
+    "editor.tabSize": 2
+  },
+  "[javascript]": {
+    "editor.tabSize": 2
+  },
+  "[jsonc]": {
+    "editor.defaultFormatter": "vscode.json-language-features",
+    "editor.tabSize": 2
+  },
+  "[markdown]": {
+    "diffEditor.ignoreTrimWhitespace": false,
+    "editor.quickSuggestions": {
+      "comments": "off",
+      "other": "off",
+      "strings": "off"
+    },
+    "editor.tabSize": 2,
+    "editor.unicodeHighlight.ambiguousCharacters": false,
+    "editor.unicodeHighlight.invisibleCharacters": false,
+    "editor.wordWrap": "on"
+  },
+  "[terraform]": {
+    "editor.tabSize": 2
+  },
+  "[typescriptreact]": {
+    "editor.tabSize": 2
+  },
+  "[yaml]": {
+    "editor.defaultFormatter": "jkillian.custom-local-formatters"
+  },
+  "customLocalFormatters.formatters": [
+    {
+      "command": "yamlfmt -in",
+      "languages": [
+        "yaml"
+      ]
+    }
+  ],
+  "dance.menus": {
+    "goto": {
+      "items": {
+        ".": {
+          "args": [
+            {
+              "register": " insert"
+            }
+          ],
+          "command": "dance.selections.restore",
+          "text": "to last buffer modification position"
+        },
+        "b": {
+          "command": "dance.select.lastVisibleLine",
+          "text": "to last displayed line"
+        },
+        "c": {
+          "command": "dance.select.middleVisibleLine",
+          "text": "to middle displayed line"
+        },
+        "d": {
+          "command": "editor.action.revealDefinition",
+          "text": "to definition"
+        },
+        "D": {
+          "command": "editor.action.revealDeclaration",
+          "text": "to declaration"
+        },
+        "f": {
+          "command": "dance.selections.open",
+          "text": "to file whose name is selected"
+        },
+        "gk": {
+          "args": [
+            {
+              "count": 1
+            }
+          ],
+          "command": "dance.select.lineStart",
+          "text": "to first line"
+        },
+        "h": {
+          "command": "dance.select.lineStart",
+          "text": "to line start"
+        },
+        "i": {
+          "args": [
+            {
+              "skipBlank": true
+            }
+          ],
+          "command": "dance.select.lineStart",
+          "text": "to non-blank line start"
+        },
+        "I": {
+          "command": "editor.action.goToImplementation",
+          "text": "to implementation"
+        },
+        "j": {
+          "command": "dance.select.lastLine",
+          "text": "to last line"
+        },
+        "l": {
+          "command": "dance.select.lineEnd",
+          "text": "to line end"
+        },
+        "r": {
+          "command": "editor.action.goToReferences",
+          "text": "to reference"
+        },
+        "t": {
+          "command": "dance.select.firstVisibleLine",
+          "text": "to first displayed line"
+        },
+        "y": {
+          "command": "editor.action.goToTypeDefinition",
+          "text": "to type definition"
+        }
+      },
+      "title": "Go..."
+    },
+    "object": {
+      "items": {
+        " ": {
+          "args": [
+            {
+              "input": "(?<before>[\\s]+)[^\\S\\n]+(?<after>[\\s]+)"
+            }
+          ],
+          "command": "dance.seek.object",
+          "text": "whitespaces"
+        },
+        "a<>": {
+          "args": [
+            {
+              "input": "<(?#inner)>"
+            }
+          ],
+          "command": "dance.seek.object",
+          "text": "angle block"
+        },
+        "b()": {
+          "args": [
+            {
+              "input": "\\((?#inner)\\)"
+            }
+          ],
+          "command": "dance.seek.object",
+          "text": "parenthesis block"
+        },
+        "B{}": {
+          "args": [
+            {
+              "input": "\\{(?#inner)\\}"
+            }
+          ],
+          "command": "dance.seek.object",
+          "text": "braces block"
+        },
+        "c": {
+          "command": "dance.seek.object",
+          "text": "custom object desc"
+        },
+        "g`": {
+          "args": [
+            {
+              "input": "(?#noescape)`(?#inner)(?#noescape)`"
+            }
+          ],
+          "command": "dance.seek.object",
+          "text": "grave quote string"
+        },
+        "i": {
+          "args": [
+            {
+              "input": "(?#predefined=indent)"
+            }
+          ],
+          "command": "dance.seek.object",
+          "text": "indent"
+        },
+        "n": {
+          "args": [
+            {
+              "input": "(?#singleline)-?[\\d_]+(\\.[0-9]+)?([eE]\\d+)?"
+            }
+          ],
+          "command": "dance.seek.object",
+          "text": "number"
+        },
+        "p": {
+          "args": [
+            {
+              "input": "(?#predefined=paragraph)"
+            }
+          ],
+          "command": "dance.seek.object",
+          "text": "paragraph"
+        },
+        "q'": {
+          "args": [
+            {
+              "input": "(?#noescape)'(?#inner)(?#noescape)'"
+            }
+          ],
+          "command": "dance.seek.object",
+          "text": "single quote string"
+        },
+        "Q\"": {
+          "args": [
+            {
+              "input": "(?#noescape)\"(?#inner)(?#noescape)\""
+            }
+          ],
+          "command": "dance.seek.object",
+          "text": "double quote string"
+        },
+        "r[]": {
+          "args": [
+            {
+              "input": "\\[(?#inner)\\]"
+            }
+          ],
+          "command": "dance.seek.object",
+          "text": "brackets block"
+        },
+        "s": {
+          "args": [
+            {
+              "input": "(?#predefined=sentence)"
+            }
+          ],
+          "command": "dance.seek.object",
+          "text": "sentence"
+        },
+        "u": {
+          "args": [
+            {
+              "input": "(?#predefined=argument)"
+            }
+          ],
+          "command": "dance.seek.object",
+          "text": "argument"
+        },
+        "w": {
+          "args": [
+            {
+              "input": "[\\p{L}_\\d]+(?<after>[^\\S\\n]+)"
+            }
+          ],
+          "command": "dance.seek.object",
+          "text": "word"
+        },
+        "W": {
+          "args": [
+            {
+              "input": "[\\S]+(?<after>[^\\S\\n]+)"
+            }
+          ],
+          "command": "dance.seek.object",
+          "text": "WORD"
+        }
+      },
+      "title": "Select object..."
+    },
+    "user": {
+      "items": {
+        "/": {
+          "command": "workbench.view.search",
+          "text": "global search"
+        },
+        "a": {
+          "command": "editor.action.quickFix",
+          "text": "code action"
+        },
+        "e": {
+          "command": "workbench.view.explorer",
+          "text": "explorer"
+        },
+        "f": {
+          "command": "workbench.action.quickOpen",
+          "text": "go to file"
+        },
+        "g": {
+          "command": "workbench.view.scm",
+          "text": "source control"
+        },
+        "k": {
+          "command": "editor.action.showHover",
+          "text": "hover"
+        },
+        "r": {
+          "command": "editor.action.rename",
+          "text": "rename"
+        }
+      },
+      "title": "User"
+    },
+    "view": {
+      "items": {
+        "b": {
+          "args": [
+            {
+              "at": "bottom"
+            }
+          ],
+          "command": "dance.view.line",
+          "text": "cursor on bottom"
+        },
+        "j": {
+          "args": [
+            {
+              "by": "line",
+              "revealCursor": true,
+              "to": "down"
+            }
+          ],
+          "command": "editorScroll",
+          "text": "scroll down"
+        },
+        "k": {
+          "args": [
+            {
+              "by": "line",
+              "revealCursor": true,
+              "to": "up"
+            }
+          ],
+          "command": "editorScroll",
+          "text": "scroll up"
+        },
+        "t": {
+          "args": [
+            {
+              "at": "top"
+            }
+          ],
+          "command": "dance.view.line",
+          "text": "cursor on top"
+        },
+        "vc": {
+          "args": [
+            {
+              "at": "center"
+            }
+          ],
+          "command": "dance.view.line",
+          "text": "center cursor vertically"
+        }
+      },
+      "title": "View"
+    }
+  },
+  "dance.modes": {
+    "": {
+      "hiddenSelectionsIndicatorsDecoration": {
+        "after": {
+          "color": "$list.warningForeground"
+        },
+        "backgroundColor": "$inputValidation.warningBackground",
+        "borderColor": "$inputValidation.warningBorder",
+        "borderStyle": "solid",
+        "borderWidth": "1px",
+        "isWholeLine": true
+      }
+    },
+    "input": {
+      "cursorStyle": "underline-thin"
+    },
+    "insert": {
+      "onLeaveMode": [
+        [
+          ".selections.save",
+          {
+            "register": " insert"
+          }
+        ]
+      ]
+    },
+    "normal": {
+      "cursorStyle": "block",
+      "decorations": {
+        "applyTo": "main",
+        "backgroundColor": "$editor.hoverHighlightBackground",
+        "isWholeLine": false
+      },
+      "lineNumbers": "on",
+      "onEnterMode": [
+        [
+          ".selections.restore",
+          {
+            "register": " ^",
+            "try": true
+          }
+        ]
+      ],
+      "onLeaveMode": [
+        [
+          ".selections.save",
+          {
+            "register": " ^",
+            "style": {
+              "borderColor": "$editor.selectionBackground",
+              "borderRadius": "1px",
+              "borderStyle": "solid",
+              "borderWidth": "2px"
+            },
+            "until": [
+              [
+                "mode-did-change",
+                {
+                  "include": "normal"
+                }
+              ],
+              [
+                "selections-did-change"
+              ]
+            ]
+          }
+        ]
+      ],
+      "selectionBehavior": "character"
+    }
+  },
+  "debug.console.fontFamily": "Sarasa Term K",
+  "editor.acceptSuggestionOnCommitCharacter": false,
+  "editor.cursorSurroundingLines": 3,
+  "editor.fontFamily": "Sarasa Mono K",
+  "editor.fontLigatures": true,
+  "editor.fontSize": 14,
+  "editor.formatOnSave": true,
+  "editor.renderWhitespace": "boundary",
+  "editor.rulers": [
+    70,
+    100
+  ],
+  "editor.scrollbar.horizontal": "visible",
+  "editor.selectionHighlight": false,
+  "files.insertFinalNewline": true,
+  "files.trimFinalNewlines": true,
+  "git.autofetch": true,
+  "git.confirmSync": false,
+  "git.enableSmartCommit": true,
+  "nix.enableLanguageServer": true,
+  "terminal.integrated.fontFamily": "Sarasa Term K",
+  "terminal.integrated.fontSize": 14,
+  "terminal.integrated.letterSpacing": 1,
+  "workbench.colorTheme": "Snazzy"
+}
