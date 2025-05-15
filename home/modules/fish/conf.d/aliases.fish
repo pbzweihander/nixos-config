@@ -185,4 +185,4 @@ abbr -a noba "nh os boot --ask"
 
 # vscodium
 abbr -a vc codium
-abbr -a vc. "codium ."
+abbr -a vc. "codium -- ."
