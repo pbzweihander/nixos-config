@@ -448,6 +448,16 @@
   "git.confirmSync": false,
   "git.enableSmartCommit": true,
   "nix.enableLanguageServer": true,
+  "nix.formatterPath": "nixfmt",
+  "nix.serverSettings": {
+    "nil": {
+      "formatting": {
+        "command": [
+          "nixfmt"
+        ]
+      }
+    }
+  },
   "redhat.telemetry.enabled": false,
   "rust-analyzer.server.path": "rust-analyzer",
   "terminal.integrated.fontFamily": "Sarasa Term K",
