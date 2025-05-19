@@ -21,6 +21,7 @@ in
   services = {
     btrfs.autoScrub.enable = true;
     fstrim.enable = true;
+    fprintd.enable = true;
   };
 
   time.timeZone = "Asia/Seoul";
@@ -30,4 +31,9 @@ in
   networking.hostName = hostname;
 
   hardware.bluetooth.enable = true;
+
+  systemd.services.fprintd = {
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig.Type = "simple";
+  };
 }
