@@ -370,7 +370,7 @@
       }
     },
     "input": {
-      "cursorStyle": "underline-thin"
+      "cursorStyle": "underline"
     },
     "insert": {
       "onLeaveMode": [
@@ -385,8 +385,8 @@
     "normal": {
       "cursorStyle": "block",
       "decorations": {
-        "applyTo": "main",
-        "backgroundColor": "$editor.hoverHighlightBackground",
+        "applyTo": "all",
+        "backgroundColor": "$editor.selectedBackground",
         "isWholeLine": false
       },
       "lineNumbers": "on",
@@ -405,8 +405,7 @@
           {
             "register": " ^",
             "style": {
-              "borderColor": "$editor.selectionBackground",
-              "borderRadius": "1px",
+              "borderColor": "$editor.hoverHighlightBackground",
               "borderStyle": "solid",
               "borderWidth": "2px"
             },
@@ -429,6 +428,7 @@
   },
   "debug.console.fontFamily": "Sarasa Term K",
   "editor.acceptSuggestionOnCommitCharacter": false,
+  "editor.cursorBlinking": "solid",
   "editor.cursorSurroundingLines": 3,
   "editor.fontFamily": "Sarasa Mono K",
   "editor.fontLigatures": true,
@@ -436,7 +436,6 @@
   "editor.formatOnSave": true,
   "editor.renderWhitespace": "boundary",
   "editor.rulers": [
-    70,
     100
   ],
   "editor.scrollbar.horizontal": "visible",
@@ -449,9 +448,10 @@
   "git.confirmSync": false,
   "git.enableSmartCommit": true,
   "nix.enableLanguageServer": true,
+  "redhat.telemetry.enabled": false,
   "rust-analyzer.server.path": "rust-analyzer",
   "terminal.integrated.fontFamily": "Sarasa Term K",
   "terminal.integrated.fontSize": 14,
   "terminal.integrated.letterSpacing": 1,
-  "workbench.colorTheme": "Snazzy"
+  "workbench.colorTheme": "Dimidium"
 }
