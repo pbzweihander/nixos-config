@@ -68,6 +68,7 @@ with inputs;
     };
     command-not-found.enable = false;
     nix-index-database.comma.enable = true;
+    nix-index.enableFishIntegration = false;
   };
 
   environment.systemPackages = with pkgs; [

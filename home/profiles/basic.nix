@@ -30,5 +30,6 @@
     git.enable = true;
     vim.enable = true;
     helix.enable = true;
+    nix-index.enableFishIntegration = false;
   };
 }
