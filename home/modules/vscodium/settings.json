@@ -428,12 +428,19 @@
   },
   "debug.console.fontFamily": "Sarasa Term K",
   "editor.acceptSuggestionOnCommitCharacter": false,
+  "editor.bracketPairColorization.enabled": false,
   "editor.cursorBlinking": "solid",
   "editor.cursorSurroundingLines": 3,
   "editor.fontFamily": "Sarasa Mono K",
   "editor.fontLigatures": true,
   "editor.fontSize": 14,
   "editor.formatOnSave": true,
+  "editor.language.brackets": [
+    [
+      "<",
+      ">"
+    ]
+  ],
   "editor.renderWhitespace": "boundary",
   "editor.rulers": [
     100
