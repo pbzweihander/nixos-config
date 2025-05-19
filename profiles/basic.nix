@@ -11,6 +11,7 @@ with inputs;
     ../modules/networking.nix
 
     home-manager.nixosModules.home-manager
+    nix-index-database.nixosModules.nix-index
 
     ../modules/users.nix
   ];
@@ -66,6 +67,7 @@ with inputs;
       };
     };
     command-not-found.enable = false;
+    nix-index-database.comma.enable = true;
   };
 
   environment.systemPackages = with pkgs; [

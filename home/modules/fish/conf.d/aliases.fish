@@ -183,6 +183,9 @@ abbr -a nosa "nh os switch --ask"
 abbr -a nob "nh os boot"
 abbr -a noba "nh os boot --ask"
 
+# nix-locate
+abbr -a '?' nix-locate
+
 # vscodium
 abbr -a vc codium
 abbr -a vc. "codium -- ."
