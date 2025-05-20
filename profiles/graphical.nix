@@ -12,7 +12,6 @@
       inkscape
       kcalc
       spotify
-      unstable.zed-editor
       vlc
       vscode
       wl-clipboard
