@@ -14,7 +14,7 @@
       spotify
       unstable.zed-editor
       vlc
-      vscodium
+      vscode
       wl-clipboard
     ];
     sessionVariables.NIXOS_OZONE_WL = "1";

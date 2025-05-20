@@ -38,12 +38,12 @@
       ];
     });
 
-    vscodium = final.symlinkJoin {
-      name = "vscodium";
-      paths = [ prev.vscodium ];
+    vscode = final.symlinkJoin {
+      name = "vscode";
+      paths = [ prev.vscode ];
       buildInputs = [ final.makeWrapper ];
       postBuild = ''
-        wrapProgram $out/bin/codium \
+        wrapProgram $out/bin/code \
           --add-flags "--enable-wayland-ime"
       '';
     };

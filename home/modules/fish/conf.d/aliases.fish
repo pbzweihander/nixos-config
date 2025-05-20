@@ -186,6 +186,6 @@ abbr -a noba "nh os boot --ask"
 # nix-locate
 abbr -a '?' nix-locate
 
-# vscodium
-abbr -a vc codium
-abbr -a vc. "codium -- ."
+# vscode
+abbr -a vc code
+abbr -a vc. "code -- ."

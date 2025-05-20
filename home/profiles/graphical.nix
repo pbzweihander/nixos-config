@@ -1,7 +1,7 @@
 {
   imports = [
     ../modules/alacritty
-    ../modules/vscodium
+    ../modules/vscode
     ../modules/zed
   ];
 }

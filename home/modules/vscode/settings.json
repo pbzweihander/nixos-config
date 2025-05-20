@@ -467,7 +467,9 @@
   },
   "redhat.telemetry.enabled": false,
   "rust-analyzer.server.path": "rust-analyzer",
-  "terminal.integrated.fontFamily": "Sarasa Term K",
+  "telemetry.telemetryLevel": "error",
+  "terminal.integrated.customGlyphs": false,
+  "terminal.integrated.fontFamily": "Sarasa Term K, Iosevka Nerd Font",
   "terminal.integrated.fontSize": 14,
   "terminal.integrated.letterSpacing": 1,
   "workbench.colorTheme": "Dimidium"
