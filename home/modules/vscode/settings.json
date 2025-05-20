@@ -35,6 +35,7 @@
   "[yaml]": {
     "editor.defaultFormatter": "jkillian.custom-local-formatters"
   },
+  "chat.commandCenter.enabled": false,
   "customLocalFormatters.formatters": [
     {
       "command": "yamlfmt -in",
@@ -435,6 +436,7 @@
   "editor.fontLigatures": true,
   "editor.fontSize": 14,
   "editor.formatOnSave": true,
+  "editor.inlineSuggest.suppressSuggestions": true,
   "editor.language.brackets": [
     [
       "<",
@@ -451,6 +453,7 @@
   "explorer.confirmDragAndDrop": false,
   "files.insertFinalNewline": true,
   "files.trimFinalNewlines": true,
+  "genieai.enableConversationHistory": true,
   "git.autofetch": true,
   "git.confirmSync": false,
   "git.enableSmartCommit": true,
@@ -467,10 +470,14 @@
   },
   "redhat.telemetry.enabled": false,
   "rust-analyzer.server.path": "rust-analyzer",
+  "telemetry.feedback.enabled": false,
   "telemetry.telemetryLevel": "error",
   "terminal.integrated.customGlyphs": false,
   "terminal.integrated.fontFamily": "Sarasa Term K, Iosevka Nerd Font",
   "terminal.integrated.fontSize": 14,
   "terminal.integrated.letterSpacing": 1,
-  "workbench.colorTheme": "Dimidium"
+  "update.mode": "manual",
+  "window.commandCenter": false,
+  "workbench.colorTheme": "Dimidium",
+  "workbench.layoutControl.enabled": false
 }
