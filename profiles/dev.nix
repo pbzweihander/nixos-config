@@ -10,6 +10,9 @@
   environment.systemPackages = with pkgs; [
     # go
     go
+    golangci-lint
+    golangci-lint-langserver
+    gopls
 
     # node
     nodejs
