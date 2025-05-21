@@ -159,5 +159,10 @@
   {
     "key": "ctrl+q",
     "command": "-workbench.action.quit"
+  },
+  {
+    "key": "ctrl+enter",
+    "command": "editor.action.accessibleViewAcceptInlineCompletion",
+    "when": "editorTextFocus && dance.mode == 'normal'"
   }
 ]

@@ -35,7 +35,6 @@
   "[yaml]": {
     "editor.defaultFormatter": "jkillian.custom-local-formatters"
   },
-  "chat.commandCenter.enabled": false,
   "customLocalFormatters.formatters": [
     {
       "command": "yamlfmt -in",
@@ -279,6 +278,10 @@
           "command": "editor.action.quickFix",
           "text": "code action"
         },
+        "c": {
+          "command": "inlineChat.start",
+          "text": "inline chat"
+        },
         "e": {
           "command": "workbench.view.explorer",
           "text": "explorer"
@@ -298,6 +301,10 @@
         "r": {
           "command": "editor.action.rename",
           "text": "rename"
+        },
+        "s": {
+          "command": "editor.action.inlineSuggest.trigger",
+          "text": "suggestion"
         }
       },
       "title": "User"
@@ -436,6 +443,7 @@
   "editor.fontLigatures": true,
   "editor.fontSize": 14,
   "editor.formatOnSave": true,
+  "editor.inlineSuggest.enabled": false,
   "editor.inlineSuggest.suppressSuggestions": true,
   "editor.language.brackets": [
     [
@@ -451,12 +459,20 @@
   "editor.selectionHighlight": false,
   "explorer.confirmDelete": false,
   "explorer.confirmDragAndDrop": false,
+  "extensions.ignoreRecommendations": true,
   "files.insertFinalNewline": true,
   "files.trimFinalNewlines": true,
-  "genieai.enableConversationHistory": true,
   "git.autofetch": true,
   "git.confirmSync": false,
   "git.enableSmartCommit": true,
+  "github.copilot.chat.agent.runTasks": false,
+  "github.copilot.chat.agent.thinkingTool": true,
+  "github.copilot.chat.codesearch.enabled": true,
+  "github.copilot.chat.copilotDebugCommand.enabled": false,
+  "github.copilot.chat.localeOverride": "ko",
+  "github.copilot.chat.scopeSelection": true,
+  "github.copilot.renameSuggestions.triggerAutomatically": false,
+  "github.gitProtocol": "ssh",
   "nix.enableLanguageServer": true,
   "nix.formatterPath": "nixfmt",
   "nix.serverSettings": {
