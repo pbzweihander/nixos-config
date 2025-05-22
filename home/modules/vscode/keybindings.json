@@ -164,5 +164,9 @@
     "key": "ctrl+enter",
     "command": "editor.action.accessibleViewAcceptInlineCompletion",
     "when": "editorTextFocus && dance.mode == 'normal'"
-  }
+  },
+  {
+    "key": "ctrl+i",
+    "command": "-inlineChat.start"
+  },
 ]
