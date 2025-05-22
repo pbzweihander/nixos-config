@@ -71,10 +71,10 @@ abbr -a dk podman
 abbr -a dc podman-compose
 
 # clipboard
-abbr -a xc "wl-copy --type text"
-abbr -a xcn "wl-copy --type text --trim-newline"
-abbr -a xp "wl-paste --type text"
-abbr -a xpn "wl-paste --type text --trim-newline"
+abbr -a xc "wl-copy --type text/plain"
+abbr -a xcn "wl-copy --type text/plain --trim-newline"
+abbr -a xp "wl-paste --type text/plain"
+abbr -a xpn "wl-paste --type text/plain --trim-newline"
 
 # python
 abbr -a py python
