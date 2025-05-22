@@ -485,6 +485,7 @@
   "github.copilot.chat.scopeSelection": true,
   "github.copilot.renameSuggestions.triggerAutomatically": false,
   "github.gitProtocol": "ssh",
+  "helm-ls.path": "helm-ls",
   "nix.enableLanguageServer": true,
   "nix.formatterPath": "nixfmt",
   "nix.serverSettings": {
@@ -505,6 +506,9 @@
   "terminal.integrated.fontSize": 14,
   "terminal.integrated.letterSpacing": 1,
   "update.mode": "manual",
+  "vs-kubernetes": {
+    "vs-kubernetes.crd-code-completion": "enabled"
+  },
   "window.commandCenter": false,
   "workbench.colorTheme": "Dimidium",
   "workbench.layoutControl.enabled": false

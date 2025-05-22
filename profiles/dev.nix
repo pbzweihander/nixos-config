@@ -29,9 +29,11 @@
     awscli2
 
     # kubernetes
+    helm-ls
     kubectl
     kubectl-node-shell
     kubectx
     kubernetes-helm
+    yaml-language-server
   ];
 }
