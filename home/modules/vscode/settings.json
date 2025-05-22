@@ -447,6 +447,18 @@
   "editor.inlineSuggest.suppressSuggestions": true,
   "editor.language.brackets": [
     [
+      "(",
+      ")"
+    ],
+    [
+      "[",
+      "]"
+    ],
+    [
+      "{",
+      "}"
+    ],
+    [
       "<",
       ">"
     ]
