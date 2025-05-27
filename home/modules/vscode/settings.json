@@ -498,6 +498,7 @@
     }
   },
   "redhat.telemetry.enabled": false,
+  "rust-analyzer.cargo.features": "all",
   "rust-analyzer.server.path": "rust-analyzer",
   "telemetry.feedback.enabled": false,
   "telemetry.telemetryLevel": "error",
