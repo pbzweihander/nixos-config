@@ -21,7 +21,6 @@ in
     ../../profiles/gaming.nix
     ../../profiles/work.nix
 
-    ../../modules/virt-manager.nix
     ../../modules/via.nix
   ];
 

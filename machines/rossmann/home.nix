@@ -5,8 +5,6 @@
     ../../home/profiles/graphical.nix
     ../../home/profiles/kde.nix
     ../../home/profiles/gaming.nix
-
-    ../../home/modules/virt-manager.nix
   ];
 
   xdg.desktopEntries = {
