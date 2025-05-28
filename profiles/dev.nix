@@ -36,5 +36,8 @@
     kubectx
     kubernetes-helm
     yaml-language-server
+
+    # etc
+    yamlfmt
   ];
 }

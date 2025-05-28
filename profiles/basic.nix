@@ -16,7 +16,7 @@ with inputs;
     ../modules/users.nix
   ];
 
-  system.stateVersion = "24.11";
+  system.stateVersion = "25.05";
 
   nixpkgs = {
     overlays = [
@@ -91,7 +91,6 @@ with inputs;
     ripgrep
     statix
     unrar
-    unstable.yamlfmt
     unzip
     usbutils
     uv

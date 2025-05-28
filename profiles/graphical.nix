@@ -10,7 +10,7 @@
       alacritty
       gimp
       inkscape
-      kcalc
+      kdePackages.kcalc
       spotify
       vlc
       vscode
