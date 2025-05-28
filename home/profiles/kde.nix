@@ -9,27 +9,28 @@
         fcitx5-hangul
         fcitx5-configtool
       ];
-      settings = {
-        globalOptions = {
-          "HotKey/TriggerKeys"."0" = "Hangul";
-          "HotKey/ActivateKeys"."0" = "Shift+Hangul";
-          "HotKey/DeactivateKeys" = {
-            "0" = "Control+Hangul";
-            "1" = "Escape";
-          };
-          Behavior.ShowInputMethodInformation = false;
-        };
-        inputMethod = {
-          GroupOrder."0" = "Default";
-          "Groups/0" = {
-            Name = "Default";
-            "Default Layout" = "us";
-            DefaultIM = "hangul";
-          };
-          "Groups/0/Items/0".Name = "keyboard-us";
-          "Groups/0/Items/1".Name = "hangul";
-        };
-      };
+      # TODO: declarative settings when home-manager fixed
+      # settings = {
+      #   globalOptions = {
+      #     "HotKey/TriggerKeys"."0" = "Hangul";
+      #     "HotKey/ActivateKeys"."0" = "Shift+Hangul";
+      #     "HotKey/DeactivateKeys" = {
+      #       "0" = "Control+Hangul";
+      #       "1" = "Escape";
+      #     };
+      #     Behavior.ShowInputMethodInformation = false;
+      #   };
+      #   inputMethod = {
+      #     GroupOrder."0" = "Default";
+      #     "Groups/0" = {
+      #       Name = "Default";
+      #       "Default Layout" = "us";
+      #       DefaultIM = "hangul";
+      #     };
+      #     "Groups/0/Items/0".Name = "keyboard-us";
+      #     "Groups/0/Items/1".Name = "hangul";
+      #   };
+      # };
       waylandFrontend = true;
     };
   };
