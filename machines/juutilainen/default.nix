@@ -44,11 +44,9 @@ in
 
   security.pam.services.sddm.text = lib.mkForce (
     lib.strings.concatLines (
-      builtins.filter (x: !lib.strings.hasInfix "fprintd" x) (
-        builtins.filter (lib.strings.hasPrefix "auth ") (
-          lib.strings.splitString "\n"
-            outputs.nixosConfigurations.${hostname}.config.security.pam.services.login.text
-        )
+      builtins.filter (x: (lib.strings.hasPrefix "auth " x) && (!lib.strings.hasInfix "fprintd" x)) (
+        lib.strings.splitString "\n"
+          outputs.nixosConfigurations.${hostname}.config.security.pam.services.login.text
       )
     )
     + ''
