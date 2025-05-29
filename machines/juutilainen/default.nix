@@ -1,4 +1,9 @@
-{ inputs, ... }:
+{
+  lib,
+  inputs,
+  outputs,
+  ...
+}:
 with inputs;
 let
   hostname = "juutilainen";
@@ -36,4 +41,21 @@ in
     wantedBy = [ "multi-user.target" ];
     serviceConfig.Type = "simple";
   };
+
+  security.pam.services.sddm.text = lib.mkForce (
+    lib.strings.concatLines (
+      builtins.filter (x: !lib.strings.hasInfix "fprintd" x) (
+        builtins.filter (lib.strings.hasPrefix "auth ") (
+          lib.strings.splitString "\n"
+            outputs.nixosConfigurations.${hostname}.config.security.pam.services.login.text
+        )
+      )
+    )
+    + ''
+
+      account   include   login
+      password  substack  login
+      session   include   login
+    ''
+  );
 }
