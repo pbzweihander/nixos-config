@@ -22,6 +22,7 @@
   services = {
     xserver = {
       enable = false;
+      xkb.options = "ctrl:nocaps,korean:ralt_hangul,korean:rctrl_hanja";
       excludePackages = with pkgs; [ xterm ];
     };
   };
