@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ pkgs, inputs, ... }:
 {
   imports = [
     ../../home/profiles/basic.nix
@@ -16,4 +16,8 @@
       categories = [ "Game" ];
     };
   };
+
+  home.file.".links/nix-citizen-wine-astral/bin".source = "${
+    inputs.nix-citizen.packages.${pkgs.system}.wine-astral
+  }/bin";
 }
