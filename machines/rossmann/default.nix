@@ -45,9 +45,10 @@ in
   };
 
   environment.systemPackages = with pkgs; [
-    opentrack
+    gamemode
     lact
     nix-citizen.packages.${system}.star-citizen
+    opentrack
   ];
 
   nix.settings = {
