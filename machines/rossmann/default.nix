@@ -47,7 +47,26 @@ in
   environment.systemPackages = with pkgs; [
     gamemode
     lact
-    nix-citizen.packages.${system}.star-citizen
+    (nix-citizen.packages.${system}.star-citizen.override (prev: {
+      gameScopeEnable = true;
+      gameScopeArgs = [
+        "--borderless"
+        "--fullscreen"
+        "-W"
+        "3840"
+        "-H"
+        "2160"
+        "-r"
+        "160"
+        "--hdr-enabled"
+        "--adaptive-sync"
+        "--prefer-output"
+        "DP-1"
+        "--force-grab-cursor"
+        "--mouse-sensitivity"
+        "2"
+      ];
+    }))
     opentrack
   ];
 
