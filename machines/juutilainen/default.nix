@@ -27,6 +27,7 @@ in
     btrfs.autoScrub.enable = true;
     fstrim.enable = true;
     fprintd.enable = true;
+    xserver.xkb.options = "ctrl:nocaps,korean:ralt_hangul,korean:rctrl_hanja";
   };
 
   time.timeZone = "Asia/Seoul";

@@ -26,6 +26,10 @@ in
 
   services = {
     btrfs.autoScrub.enable = true;
+    input-remapper = {
+      enable = true;
+      enableUdevRules = true;
+    };
     tailscale.enable = true;
   };
 
@@ -45,8 +49,6 @@ in
   };
 
   environment.systemPackages = with pkgs; [
-    gamemode
-    lact
     (nix-citizen.packages.${system}.star-citizen.override (prev: {
       gameScopeEnable = true;
       gameScopeArgs = [
@@ -67,6 +69,21 @@ in
         "2"
       ];
     }))
+    (
+      (mumble.overrideAttrs (prev: {
+        postFixup =
+          prev.postFixup
+          + ''
+            wrapProgram $out/bin/mumble \
+              --set XDG_SESSION_TYPE x11
+          '';
+      })).override
+      {
+        speechdSupport = true;
+      }
+    )
+    gamemode
+    lact
     opentrack
   ];
 

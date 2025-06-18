@@ -18,7 +18,10 @@ in
     ../../profiles/dev.nix
   ];
 
-  services.btrfs.autoScrub.enable = true;
+  services = {
+    btrfs.autoScrub.enable = true;
+    xserver.xkb.options = "ctrl:nocaps,korean:ralt_hangul,korean:rctrl_hanja";
+  };
 
   environment.systemPackages = with pkgs; [ libmbim ];
 
