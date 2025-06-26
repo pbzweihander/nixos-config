@@ -14,5 +14,6 @@
     shell = pkgs.fish;
     uid = 1000;
     createHome = true;
+    openssh.authorizedKeys.keyFiles = [ ../authorized_keys ];
   };
 }

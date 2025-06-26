@@ -31,6 +31,12 @@ in
       enableUdevRules = true;
     };
     tailscale.enable = true;
+    openssh = {
+      enable = true;
+      settings = {
+        PasswordAuthentication = false;
+      };
+    };
   };
 
   time.timeZone = "Asia/Seoul";
