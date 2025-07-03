@@ -24,6 +24,7 @@
         terraform = pkgs.terraform-versions.${version};
       in
       {
+        formatter = pkgs.nixfmt-rfc-style;
         devShells.default = pkgs.mkShell { nativeBuildInputs = [ terraform ]; };
       }
     );

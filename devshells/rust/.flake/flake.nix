@@ -24,6 +24,7 @@
         rust-toolchain = pkgs.rust-bin.stable.${version}.default;
       in
       {
+        formatter = pkgs.nixfmt-rfc-style;
         devShells.default = pkgs.mkShell { nativeBuildInputs = [ rust-toolchain ]; };
       }
     );

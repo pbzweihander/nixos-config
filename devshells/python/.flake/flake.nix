@@ -21,6 +21,7 @@
         # python3 = nixpkgs-python.packages.${system}.${version};
       in
       {
+        formatter = pkgs.nixfmt-rfc-style;
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = with pkgs; [
             python3

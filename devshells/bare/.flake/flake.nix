@@ -17,6 +17,7 @@
         pkgs = import nixpkgs { inherit system overlays; };
       in
       {
+        formatter = pkgs.nixfmt-rfc-style;
         devShells.default = pkgs.mkShell { nativeBuildInputs = with pkgs; [ ]; };
       }
     );
