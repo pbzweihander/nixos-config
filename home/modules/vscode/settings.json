@@ -513,5 +513,9 @@
   },
   "window.commandCenter": false,
   "workbench.colorTheme": "Dimidium",
-  "workbench.layoutControl.enabled": false
+  "workbench.layoutControl.enabled": false,
+  "remote.SSH.useLocalServer": false,
+  "remote.SSH.remotePlatform": {
+    "rossmann": "linux"
+  }
 }
