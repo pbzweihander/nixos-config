@@ -10,6 +10,10 @@
         hostname = "gitlab.com";
         user = "git";
       };
+      rossmann = {
+        hostname = "192.168.8.247"; # via tailscale
+        user = "pbzweihander";
+      };
     };
   };
 }
