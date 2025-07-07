@@ -443,6 +443,7 @@
   "editor.fontLigatures": true,
   "editor.fontSize": 14,
   "editor.formatOnSave": true,
+  "editor.inlayHints.enabled": "onUnlessPressed",
   "editor.inlineSuggest.enabled": false,
   "editor.inlineSuggest.suppressSuggestions": true,
   "editor.language.brackets": [
