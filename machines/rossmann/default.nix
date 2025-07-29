@@ -45,13 +45,15 @@ in
 
   networking = {
     hostName = hostname;
-    firewall.allowedUDPPorts = [
-      2934
-      2935
-      9987
-      9988
-      9989
-    ];
+    firewall = {
+      allowedUDPPortRanges = [
+        {
+          # Steam Game client
+          from = 27005;
+          to = 27032;
+        }
+      ];
+    };
   };
 
   environment.systemPackages = with pkgs; [
