@@ -18,6 +18,7 @@
   environment.systemPackages = with pkgs; [
     gamescope
     lutris
+    unstable.nexusmods-app-unfree
     prismlauncher
     steamtinkerlaunch
     vesktop
