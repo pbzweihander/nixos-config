@@ -7,13 +7,15 @@
     ../../home/profiles/gaming.nix
   ];
 
-  xdg.desktopEntries = {
+  systemd.user.services = {
     # Use steam launch option `DISPLAY=:1 %command%`
     gamescope = {
-      name = "Gamescope";
-      exec = "${pkgs.coreutils}/bin/env DXVK_HDR=1 ${pkgs.gamescope}/bin/gamescope --borderless --fullscreen -W 3840 -H 2160 -r 160 --hdr-enabled --adaptive-sync --prefer-output DP-1";
-      terminal = false;
-      categories = [ "Game" ];
+      Service = {
+        Type = "simple";
+        Restart = "always";
+        ExecStart = "${pkgs.gamescope}/bin/gamescope --borderless --fullscreen -W 3840 -H 2160 -r 160 --hdr-enabled --backend wayland --adaptive-sync --prefer-output DP-1";
+        Environment = "DXVK_HDR=1";
+      };
     };
   };
 
