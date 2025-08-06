@@ -79,12 +79,10 @@ in
     }))
     (
       (mumble.overrideAttrs (prev: {
-        postFixup =
-          prev.postFixup
-          + ''
-            wrapProgram $out/bin/mumble \
-              --set XDG_SESSION_TYPE x11
-          '';
+        postFixup = prev.postFixup + ''
+          wrapProgram $out/bin/mumble \
+            --set XDG_SESSION_TYPE x11
+        '';
       })).override
       {
         speechdSupport = true;
@@ -119,7 +117,7 @@ in
   hardware.cpu.amd.updateMicrocode = true;
 
   boot = {
-    kernelPackages = pkgs.linuxPackages_latest;
+    # kernelPackages = pkgs.linuxPackages_latest;
     kernel.sysctl = {
       "vm.max_map_count" = 16777216;
       "fs.file-max" = 524288;
