@@ -91,6 +91,7 @@ in
     gamemode
     lact
     opentrack
+    p7zip
   ];
 
   nix.settings = {
