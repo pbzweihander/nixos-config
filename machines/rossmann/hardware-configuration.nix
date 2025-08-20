@@ -38,6 +38,8 @@
 
   boot.initrd.luks.devices."cryptroot".device =
     "/dev/disk/by-uuid/b7cc38fb-34e8-4a00-862f-593f51123c6e";
+  boot.initrd.luks.devices."cryptexternal1".device =
+    "/dev/disk/by-uuid/cb986847-d0b4-4a92-acc3-0135c51ff8c0";
 
   fileSystems."/efi" = {
     device = "/dev/disk/by-uuid/EB6E-E1B0";
@@ -77,6 +79,15 @@
 
   fileSystems."/home/pbzweihander/.local/share/Steam" = {
     device = "/dev/disk/by-uuid/56af2d9f-6239-4953-a236-1040dae35d21";
+    fsType = "btrfs";
+    options = [
+      "subvol=steam"
+      "noatime"
+    ];
+  };
+
+  fileSystems."/mnt/external1/steam" = {
+    device = "/dev/disk/by-uuid/a3e40f47-9fd0-4ad0-9089-0f605453dd9a";
     fsType = "btrfs";
     options = [
       "subvol=steam"
