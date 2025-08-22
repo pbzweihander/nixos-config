@@ -13,8 +13,9 @@
   };
   environment.systemPackages = with pkgs; [
     ardour
+    geonkick
+    lsp-plugins
     rtaudio
     surge-XT
-    lsp-plugins
   ];
 }
