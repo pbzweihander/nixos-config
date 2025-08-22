@@ -14,5 +14,7 @@
   environment.systemPackages = with pkgs; [
     ardour
     rtaudio
+    surge-XT
+    lsp-plugins
   ];
 }
