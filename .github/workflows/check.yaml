@@ -20,4 +20,4 @@ jobs:
     - run: nix fmt -- --check .
     - run: nix run nixpkgs#statix -- check --ignore hardware-configuration.nix
     - uses: DeterminateSystems/flake-checker-action@main
-    - run: nix flake check --no-build --all-systems
+    - run: nix flake check --all-systems
