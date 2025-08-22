@@ -17,8 +17,6 @@ jobs:
     - uses: cachix/install-nix-action@v31
       with:
         github_access_token: ${{ secrets.GITHUB_TOKEN }}
-    - name: Print nixpkgs version
-      run: nix-instantiate --eval -E '(import <nixpkgs> {}).lib.version'
     - run: nix fmt -- --check .
     - run: nix run nixpkgs#statix -- check --ignore hardware-configuration.nix
     - uses: DeterminateSystems/flake-checker-action@main
