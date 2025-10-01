@@ -1,12 +1,16 @@
 { pkgs, ... }:
 {
   programs.virt-manager.enable = true;
-  users.groups.libvirtd.members = [ "pbzweihander" ];
+  users.groups = {
+    kvm.members = [ "pbzweihander" ];
+    libvirtd.members = [ "pbzweihander" ];
+  };
   virtualisation = {
     libvirtd = {
       enable = true;
       qemu = {
         package = pkgs.qemu_kvm;
+        runAsRoot = true;
         swtpm.enable = true;
         ovmf = {
           packages = [

@@ -92,6 +92,7 @@ in
     lact
     opentrack
     p7zip
+    quickemu
   ];
 
   nix.settings = {
@@ -124,4 +125,6 @@ in
       "fs.file-max" = 524288;
     };
   };
+
+  virtualisation.spiceUSBRedirection.enable = true;
 }
