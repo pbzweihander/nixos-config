@@ -22,6 +22,7 @@ in
     ../../profiles/work.nix
 
     ../../modules/via.nix
+    ../../modules/daw.nix
   ];
 
   services = {
