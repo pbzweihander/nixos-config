@@ -47,6 +47,7 @@
         stash = "false";
       };
       push.default = "simple";
+      rebase.autoSquash = true;
     };
     ignores = [
       ".node-version"
