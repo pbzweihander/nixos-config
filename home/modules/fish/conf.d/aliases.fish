@@ -113,5 +113,9 @@ abbr -a noba "nh os boot --ask"
 abbr -a '?' nix-locate
 
 # vscode
+abbr -a zd zeditor
+abbr -a zd. "zeditor ."
+
+# vscode
 abbr -a vc code
 abbr -a vc. "code -- ."
