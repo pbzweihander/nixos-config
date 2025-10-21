@@ -1,11 +1,13 @@
 {
+  "selection_highlight": true,
+  "cursor_blink": false,
   "edit_predictions": {
     "mode": "subtle",
     "copilot": {
       "proxy": null,
       "proxy_no_verify": null
     },
-    "enabled_in_assistant": false
+    "enabled_in_text_threads": false
   },
   "features": {
     "edit_prediction_provider": "zed"
@@ -40,7 +42,8 @@
     }
   },
   "inlay_hints": {
-    "enabled": true
+    "enabled": true,
+    "show_background": true
   },
   "show_whitespaces": "boundary",
   "wrap_guides": [80, 100],
@@ -49,16 +52,15 @@
   },
   "theme": {
     "mode": "dark",
-    "light": "dimidium",
-    "dark": "dimidium"
+    "light": "Dimidium",
+    "dark": "Dimidium"
   },
   "vim_mode": true,
-  "assistant": {
+  "agent": {
     "default_model": {
       "provider": "openai",
       "model": "o3-mini"
     },
-    "version": "2",
     "enabled": true
   },
   "ui_font_family": "Sarasa UI K",
