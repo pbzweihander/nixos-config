@@ -48,5 +48,12 @@
       "space g": "git_panel::ToggleFocus",
       "space o": "outline_panel::ToggleFocus"
     }
+  },
+  {
+    "context": "VimControl && vim_mode == visual && !menu",
+    "bindings": {
+      ">": "editor::Indent",
+      "<": "editor::Outdent"
+    }
   }
 ]
