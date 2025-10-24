@@ -14,10 +14,10 @@ in
 
     ../../profiles/basic.nix
     ../../profiles/graphical.nix
-    ../../profiles/kde.nix
     ../../profiles/dev.nix
     ../../profiles/work.nix
 
+    ../../modules/kde.nix
     ../../modules/via.nix
   ];
 

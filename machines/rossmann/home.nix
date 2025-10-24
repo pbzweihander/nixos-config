@@ -3,8 +3,9 @@
   imports = [
     ../../home/profiles/basic.nix
     ../../home/profiles/graphical.nix
-    ../../home/profiles/kde.nix
     ../../home/profiles/gaming.nix
+
+    ../../home/modules/kde.nix
   ];
 
   systemd.user.services = {
