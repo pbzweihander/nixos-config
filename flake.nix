@@ -30,6 +30,11 @@
       url = "github:LovingMelody/nix-citizen";
       inputs.nix-gaming.follows = "nix-gaming";
     };
+
+    aagl = {
+      url = "github:ezKEa/aagl-gtk-on-nix/release-25.05";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
