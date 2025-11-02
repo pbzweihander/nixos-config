@@ -17,6 +17,7 @@
     prismlauncher
     steamtinkerlaunch
     vesktop
+    xivlauncher
 
     unstable.nexusmods-app-unfree
   ];
