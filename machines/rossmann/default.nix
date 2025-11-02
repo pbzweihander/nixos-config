@@ -61,6 +61,7 @@ in
 
   environment.systemPackages = with pkgs; [
     (nix-citizen.packages.${system}.star-citizen.override (prev: {
+      preCommands = "env DISPLAY=:0 opentrack -platform xcb &";
       gameScopeEnable = true;
       gameScopeArgs = [
         "--borderless"

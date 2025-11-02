@@ -57,10 +57,6 @@
   },
   "vim_mode": true,
   "agent": {
-    "default_model": {
-      "provider": "openai",
-      "model": "o3-mini"
-    },
     "enabled": true
   },
   "ui_font_family": "Sarasa UI K",
