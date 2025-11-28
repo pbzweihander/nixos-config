@@ -43,6 +43,8 @@ abbr -a svi "sudo --preserve-env vim"
 
 # helix
 abbr -a shx "sudo --preserve-env hx"
+abbr -a h hx
+abbr -a h. "hx ."
 
 # systemctl
 abbr -a sctl "sudo systemctl"
