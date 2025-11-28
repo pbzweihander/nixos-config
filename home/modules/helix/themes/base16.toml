@@ -9,17 +9,18 @@
 "ui.popup" = { bg = "black" }
 "ui.window" = { fg = "gray" }
 "ui.text.focus" = { modifiers = ["reversed"] }
-"ui.virtual.ruler" = { bg = "gray" }
+"ui.virtual.ruler" = { underline = { color = "gray", style = "double_line" } }
 "ui.virtual.whitespace" = { fg = "gray" }
 "ui.virtual.indent-guide" = { fg = "gray" }
-"ui.virtual.inlay-hint" = { fg = "gray" }
+"ui.virtual.inlay-hint" = { fg = "light-gray", modifiers = ["dim", "italic"] }
 "ui.virtual.wrap" = "gray"
 "ui.virtual.jump-label" = { fg = "light-yellow", bg = "gray"}
 "ui.menu" = { bg = "black" }
 "ui.menu.selected" = { modifiers = ["reversed"] }
 "ui.selection" = { bg = "gray" }
 "ui.highlight" = { bg = "gray" }
-"ui.cursorline.primary" = { underline = { color = "gray", style = "line" } }
+"ui.cursorline.primary" = { underline = { color = "gray", style = "dashed" } }
+"ui.cursorcolumn.primary" = { underline = { color = "gray", style = "dashed" } }
 
 "warning" = "light-yellow"
 "error" = "light-red"
@@ -37,7 +38,7 @@
 "constant" = "light-green"
 "constant.character.escape" = "light-yellow"
 "string"  = "light-green"
-"comment" = { fg = "gray", modifiers = ["italic"] }
+"comment" = { fg = "light-gray", modifiers = ["italic", "dim"] }
 "variable" = "light-gray"
 # "label" = ""
 "punctuation" = "light-magenta"

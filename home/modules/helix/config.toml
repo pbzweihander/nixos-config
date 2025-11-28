@@ -1,21 +1,31 @@
 theme = "base16"
 
 [editor]
-mouse = false
-middle-click-paste = false
 auto-pairs = false
 color-modes = true
+cursorcolumn = true
 cursorline = true
-rulers = [80, 100]
+end-of-line-diagnostics = "hint"
+middle-click-paste = false
+mouse = false
+popup-border = "all"
+rulers = [60, 80, 100, 120]
 
 [editor.lsp]
-display-messages = true
 display-inlay-hints = true
+display-messages = true
+goto-reference-include-declaration = false
 
 [editor.cursor-shape]
 normal = "block"
 insert = "bar"
-select = "block"
+select = "underline"
+
+[editor.file-picker]
+hidden = false
+git-ignore = false
+git-global = false
+git-exclude = false
 
 [editor.whitespace.render]
 space = "all"
@@ -30,6 +40,10 @@ skip-levels = 1
 
 [editor.smart-tab]
 enable = false
+
+[editor.inline-diagnostics]
+cursor-line = "info"
+other-lines = "warning"
 
 [keys.normal]
 H = "extend_char_left"

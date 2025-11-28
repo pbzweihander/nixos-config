@@ -1,0 +1,5 @@
+.direnv/
+.git/
+node_modules/
+__pycache__/
+target/
