@@ -8,7 +8,7 @@ cursorline = true
 end-of-line-diagnostics = "hint"
 middle-click-paste = false
 mouse = false
-popup-border = "all"
+popup-border = "popup"
 rulers = [60, 80, 100, 120]
 
 [editor.lsp]
