@@ -16,12 +16,10 @@
       system:
       let
         version = "<version>";
-        overlays = [ nixpkgs-terraform.overlays.default ];
         pkgs = import nixpkgs {
-          inherit system overlays;
-          config.allowUnfree = true;
+          inherit system;
         };
-        terraform = pkgs.terraform-versions.${version};
+        terraform = nixpkgs-terraform.packages.${system}.${version};
       in
       {
         formatter = pkgs.nixfmt-rfc-style;
