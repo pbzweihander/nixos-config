@@ -43,7 +43,6 @@ enable = false
 
 [editor.inline-diagnostics]
 cursor-line = "info"
-other-lines = "warning"
 
 [keys.normal]
 H = "extend_char_left"
