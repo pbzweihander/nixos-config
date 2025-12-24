@@ -9,7 +9,10 @@
       fontPackages = with pkgs; [ wqy_zenhei ];
       extraCompatPackages = with pkgs; [ proton-ge-bin ];
     };
-    gamescope.enable = true;
+    gamescope = {
+      enable = true;
+      capSysNice = true;
+    };
   };
 
   environment.systemPackages = with pkgs; [
