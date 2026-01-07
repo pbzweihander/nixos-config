@@ -7,7 +7,7 @@
       addons = with pkgs; [
         fcitx5-gtk
         fcitx5-hangul
-        fcitx5-configtool
+        qt6Packages.fcitx5-configtool
       ];
       # TODO: declarative settings when home-manager fixed
       # settings = {

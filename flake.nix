@@ -1,14 +1,14 @@
 {
   inputs = {
-    flake-utils.url = "github:numtide/flake-utils";
-
-    nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-25.05";
+    nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-25.11";
     nixpkgs-unstable.url = "github:nixos/nixpkgs?ref=nixos-unstable";
+
+    systems.url = "github:nix-systems/default";
 
     nixos-hardware.url = "github:NixOs/nixos-hardware";
 
     home-manager = {
-      url = "github:nix-community/home-manager?ref=release-25.05";
+      url = "github:nix-community/home-manager?ref=release-25.11";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     plasma-manager = {
@@ -32,7 +32,7 @@
     };
 
     aagl = {
-      url = "github:ezKEa/aagl-gtk-on-nix/release-25.05";
+      url = "github:ezKEa/aagl-gtk-on-nix/release-25.11";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -41,31 +41,29 @@
     {
       self,
       nixpkgs,
-      flake-utils,
+      systems,
       ...
     }@inputs:
     let
-      inherit (self) outputs;
+      forAllSystems =
+        function: nixpkgs.lib.genAttrs (import systems) (system: function nixpkgs.legacyPackages.${system});
     in
-    flake-utils.lib.eachDefaultSystem (system: {
-      packages = import ./packages nixpkgs.legacyPackages.${system};
-      formatter = nixpkgs.legacyPackages.${system}.nixfmt-rfc-style;
-    })
-    // {
-      overlays = import ./overlays { inherit inputs; };
+    {
+      formatter = forAllSystems (pkgs: pkgs.nixfmt-rfc-style);
+
       nixosConfigurations = {
         linnamaa = nixpkgs.lib.nixosSystem {
-          specialArgs = { inherit inputs outputs; };
+          specialArgs = { inherit inputs; };
           modules = [ ./machines/linnamaa ];
         };
 
         rossmann = nixpkgs.lib.nixosSystem {
-          specialArgs = { inherit inputs outputs; };
+          specialArgs = { inherit inputs; };
           modules = [ ./machines/rossmann ];
         };
 
         juutilainen = nixpkgs.lib.nixosSystem {
-          specialArgs = { inherit inputs outputs; };
+          specialArgs = { inherit inputs; };
           modules = [ ./machines/juutilainen ];
         };
       };

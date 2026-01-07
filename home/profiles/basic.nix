@@ -1,14 +1,14 @@
 {
   imports = [
     ../modules/fish
-    ../modules/git
+    ../modules/git.nix
     ../modules/helix
-    ../modules/ssh
+    ../modules/ssh.nix
     ../modules/yamlfmt
   ];
 
   home = {
-    stateVersion = "25.05";
+    stateVersion = "25.11";
     username = "pbzweihander";
     homeDirectory = "/home/pbzweihander";
   };

@@ -1,7 +1,6 @@
 {
   pkgs,
   inputs,
-  outputs,
   ...
 }:
 with inputs;
@@ -16,14 +15,10 @@ with inputs;
     ../modules/users.nix
   ];
 
-  system.stateVersion = "25.05";
+  system.stateVersion = "25.11";
 
   nixpkgs = {
-    overlays = [
-      outputs.overlays.additions
-      outputs.overlays.modifications
-      outputs.overlays.unstable-packages
-    ];
+    overlays = [ (import ../overlays { inherit inputs; }) ];
     config.allowUnfree = true;
   };
   nix = {

@@ -1,25 +1,34 @@
 {
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=<nixos-ref>";
-    flake-utils.url = "github:numtide/flake-utils";
     nixpkgs-terraform.url = "github:stackbuilders/nixpkgs-terraform";
   };
 
   outputs =
     {
       nixpkgs,
-      flake-utils,
       nixpkgs-terraform,
       ...
     }:
-    flake-utils.lib.eachDefaultSystem (
-      system:
+    let
+      overlays = [ nixpkgs-terraform.overlays.default ];
+      forAllSystems =
+        function:
+        nixpkgs.lib.genAttrs nixpkgs.lib.systems.flakeExposed (
+          system:
+          function (
+            import nixpkgs {
+              inherit system overlays;
+              config.allowUnfree = true;
+            }
+          )
+        );
+    in
+    forAllSystems (
+      pkgs:
       let
         version = "<version>";
-        pkgs = import nixpkgs {
-          inherit system;
-        };
-        terraform = nixpkgs-terraform.packages.${system}.${version};
+        terraform = pkgs.terraform-versions.${version};
       in
       {
         formatter = pkgs.nixfmt-rfc-style;
