@@ -10,8 +10,22 @@
     };
     podman = {
       enable = true;
-      dockerSocket.enable = true;
+      defaultNetwork.settings.dns_enabled = true;
     };
+  };
+  users.users.pbzweihander = {
+    subUidRanges = [
+      {
+        startUid = 100000;
+        count = 65536;
+      }
+    ];
+    subGidRanges = [
+      {
+        startGid = 100000;
+        count = 65536;
+      }
+    ];
   };
 
   environment.systemPackages = with pkgs; [
