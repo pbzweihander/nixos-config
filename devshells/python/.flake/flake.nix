@@ -23,18 +23,20 @@
           )
         );
     in
-    forAllSystems (pkgs: {
-      formatter = pkgs.nixfmt-rfc-style;
-      devShells.default = pkgs.mkShell {
-        nativeBuildInputs = with pkgs; [
-          python3
-          poetry
-          ruff
-          uv
-        ];
-        shellHook = ''
-          export LD_LIBRARY_PATH=${pkgs.stdenv.cc.cc.lib}/lib/
-        '';
-      };
-    });
+    {
+      formatter = forAllSystems (pkgs: pkgs.nixfmt-rfc-style);
+      devShells = forAllSystems (pkgs: {
+        default = pkgs.mkShell {
+          nativeBuildInputs = with pkgs; [
+            python3
+            poetry
+            ruff
+            uv
+          ];
+          shellHook = ''
+            export LD_LIBRARY_PATH=${pkgs.stdenv.cc.cc.lib}/lib/
+          '';
+        };
+      });
+    };
 }

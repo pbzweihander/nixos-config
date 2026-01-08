@@ -21,15 +21,17 @@
           )
         );
     in
-    forAllSystems (pkgs: {
-      formatter = pkgs.nixfmt-rfc-style;
-      devShells.default = pkgs.mkShell {
-        nativeBuildInputs = with pkgs; [
-          go
-          gopls
-          golangci-lint
-          golangci-lint-langserver
-        ];
-      };
-    });
+    {
+      formatter = forAllSystems (pkgs: pkgs.nixfmt-rfc-style);
+      devShells = forAllSystems (pkgs: {
+        default = pkgs.mkShell {
+          nativeBuildInputs = with pkgs; [
+            go
+            gopls
+            golangci-lint
+            golangci-lint-langserver
+          ];
+        };
+      });
+    };
 }

@@ -21,8 +21,10 @@
           )
         );
     in
-    forAllSystems (pkgs: {
-      formatter = pkgs.nixfmt-rfc-style;
-      devShells.default = pkgs.mkShell { nativeBuildInputs = with pkgs; [ ]; };
-    });
+    {
+      formatter = forAllSystems (pkgs: pkgs.nixfmt-rfc-style);
+      devShells = forAllSystems (pkgs: {
+        default = pkgs.mkShell { nativeBuildInputs = with pkgs; [ ]; };
+      });
+    };
 }

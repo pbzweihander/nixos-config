@@ -24,15 +24,17 @@
           )
         );
     in
-    forAllSystems (
-      pkgs:
-      let
-        version = "<version>";
-        terraform = pkgs.terraform-versions.${version};
-      in
-      {
-        formatter = pkgs.nixfmt-rfc-style;
-        devShells.default = pkgs.mkShell { nativeBuildInputs = [ terraform ]; };
-      }
-    );
+    {
+      formatter = forAllSystems (pkgs: pkgs.nixfmt-rfc-style);
+      devShells = forAllSystems (
+        pkgs:
+        let
+          version = "<version>";
+          terraform = pkgs.terraform-versions.${version};
+        in
+        {
+          default = pkgs.mkShell { nativeBuildInputs = [ terraform ]; };
+        }
+      );
+    };
 }

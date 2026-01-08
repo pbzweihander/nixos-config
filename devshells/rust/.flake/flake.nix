@@ -26,15 +26,17 @@
           )
         );
     in
-    forAllSystems (
-      pkgs:
-      let
-        version = "<version>";
-        rust-toolchain = pkgs.rust-bin.stable.${version}.default;
-      in
-      {
-        formatter = pkgs.nixfmt-rfc-style;
-        devShells.default = pkgs.mkShell { nativeBuildInputs = [ rust-toolchain ]; };
-      }
-    );
+    {
+      formatter = forAllSystems (pkgs: pkgs.nixfmt-rfc-style);
+      devShells = forAllSystems (
+        pkgs:
+        let
+          version = "<version>";
+          rust-toolchain = pkgs.rust-bin.stable.${version}.default;
+        in
+        {
+          default = pkgs.mkShell { nativeBuildInputs = [ rust-toolchain ]; };
+        }
+      );
+    };
 }
