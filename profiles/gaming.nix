@@ -15,13 +15,15 @@
     };
   };
 
-  environment.systemPackages = with pkgs; [
-    lutris
-    prismlauncher
-    steamtinkerlaunch
-    vesktop
-    xivlauncher
-
-    unstable.nexusmods-app-unfree
-  ];
+  environment.systemPackages =
+    (with pkgs; [
+      lutris
+      prismlauncher
+      steamtinkerlaunch
+      vesktop
+      xivlauncher
+    ])
+    ++ (with pkgs.unstable; [
+      protonplus
+    ]);
 }
