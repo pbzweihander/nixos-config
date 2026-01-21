@@ -215,6 +215,22 @@
         "type": "github"
       }
     },
+    "nixpkgs-chromium-fix": {
+      "locked": {
+        "lastModified": 1768786349,
+        "narHash": "sha256-yl8lxBR+wEgvpLig1WtMj+IhQ5tLh2JM6u30DqEvIik=",
+        "owner": "nixos",
+        "repo": "nixpkgs",
+        "rev": "ae2975e0e5d1a83d7c89abcb5725f6eeb88a2de4",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nixos",
+        "ref": "ae2975e0e5d1a83d7c89abcb5725f6eeb88a2de4",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
     "nixpkgs-lib": {
       "locked": {
         "lastModified": 1765674936,
@@ -326,6 +342,7 @@
         "nix-index-database": "nix-index-database",
         "nixos-hardware": "nixos-hardware",
         "nixpkgs": "nixpkgs_4",
+        "nixpkgs-chromium-fix": "nixpkgs-chromium-fix",
         "nixpkgs-unstable": "nixpkgs-unstable",
         "plasma-manager": "plasma-manager",
         "systems": "systems_2"

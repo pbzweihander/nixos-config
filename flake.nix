@@ -2,6 +2,7 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-25.11";
     nixpkgs-unstable.url = "github:nixos/nixpkgs?ref=nixos-unstable";
+    nixpkgs-chromium-fix.url = "github:nixos/nixpkgs?ref=ae2975e0e5d1a83d7c89abcb5725f6eeb88a2de4";
 
     systems.url = "github:nix-systems/default";
 

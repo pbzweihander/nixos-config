@@ -30,4 +30,10 @@ final: prev: {
     inherit (prev.stdenv.hostPlatform) system;
     config.allowUnfree = true;
   };
+
+  chromium-fixed =
+    (import inputs.nixpkgs-chromium-fix {
+      inherit (prev.stdenv.hostPlatform) system;
+      config.allowUnfree = true;
+    }).chromium;
 }

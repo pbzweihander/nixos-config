@@ -92,11 +92,14 @@ in
         speechdSupport = true;
       }
     )
+
     gamemode
     lact
     opentrack
     p7zip
     quickemu
+
+    chromium-fixed
   ];
 
   nix.settings = {
