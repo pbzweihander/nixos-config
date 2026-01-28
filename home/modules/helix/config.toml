@@ -94,8 +94,10 @@ g = { "k" = "goto_file_start", "j" = "goto_last_line" }
 "A-N" = "extend_search_prev"
 "A-n" = "search_prev"
 
-"m" = "match_brackets"
-"M" = ["select_mode", "match_brackets", "normal_mode"]
+"m" = "select_textobject_inner"
+"M" = "select_textobject_around"
+"A-m" = "match_brackets"
+"A-M" = ["select_mode", "match_brackets", "normal_mode"]
 
 [keys.select]
 g = { "k" = "goto_file_start", "j" = "goto_last_line" }
