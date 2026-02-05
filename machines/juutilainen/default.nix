@@ -19,6 +19,7 @@ in
 
     ../../modules/kde.nix
     ../../modules/via.nix
+    ../../modules/photo.nix
   ];
 
   services = {

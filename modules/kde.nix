@@ -21,6 +21,7 @@ with inputs;
 
   environment = {
     plasma6.excludePackages = with pkgs.kdePackages; [
+      elisa
       konsole
       oxygen
     ];

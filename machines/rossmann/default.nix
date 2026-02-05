@@ -23,6 +23,7 @@ in
     ../../modules/kde.nix
     ../../modules/via.nix
     ../../modules/daw.nix
+    ../../modules/photo.nix
 
     aagl.nixosModules.default
   ];
