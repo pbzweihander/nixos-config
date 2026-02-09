@@ -28,7 +28,10 @@
   fileSystems."/" = {
     device = "/dev/disk/by-uuid/319bd95c-0cd0-4a71-b1d9-6184ed3a81b4";
     fsType = "btrfs";
-    options = [ "subvol=system" ];
+    options = [
+      "subvol=system"
+      "noatime"
+    ];
   };
 
   boot.initrd.luks.devices."cryptroot" = {

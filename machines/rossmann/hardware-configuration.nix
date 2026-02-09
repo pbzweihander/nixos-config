@@ -36,10 +36,15 @@
     ];
   };
 
-  boot.initrd.luks.devices."cryptroot".device =
-    "/dev/disk/by-uuid/b7cc38fb-34e8-4a00-862f-593f51123c6e";
-  boot.initrd.luks.devices."cryptexternal1".device =
-    "/dev/disk/by-uuid/cb986847-d0b4-4a92-acc3-0135c51ff8c0";
+  boot.initrd.luks.devices."cryptroot" = {
+    device = "/dev/disk/by-uuid/b7cc38fb-34e8-4a00-862f-593f51123c6e";
+    bypassWorkqueues = true;
+    allowDiscards = true;
+  };
+  boot.initrd.luks.devices."cryptexternal1" = {
+    device = "/dev/disk/by-uuid/cb986847-d0b4-4a92-acc3-0135c51ff8c0";
+    allowDiscards = true;
+  };
 
   fileSystems."/efi" = {
     device = "/dev/disk/by-uuid/EB6E-E1B0";

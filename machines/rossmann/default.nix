@@ -29,7 +29,10 @@ in
   ];
 
   services = {
-    btrfs.autoScrub.enable = true;
+    btrfs.autoScrub = {
+      enable = true;
+      fileSystems = [ "/" ];
+    };
     input-remapper = {
       enable = true;
       enableUdevRules = true;
