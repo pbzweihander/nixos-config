@@ -23,7 +23,10 @@ in
   ];
 
   services = {
-    btrfs.autoScrub.enable = true;
+    btrfs.autoScrub = {
+      enable = true;
+      fileSystems = [ "/" ];
+    };
     fstrim.enable = true;
     xserver.xkb.options = "ctrl:nocaps,korean:ralt_hangul,korean:rctrl_hanja";
     tailscale.enable = true;

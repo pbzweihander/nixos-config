@@ -31,31 +31,46 @@
     options = [ "subvol=system" ];
   };
 
-  boot.initrd.luks.devices."cryptroot".device =
-    "/dev/disk/by-uuid/b32a0711-7ff9-41d1-a5cf-556135a4488f";
+  boot.initrd.luks.devices."cryptroot" = {
+    device = "/dev/disk/by-uuid/b32a0711-7ff9-41d1-a5cf-556135a4488f";
+    bypassWorkqueues = true;
+    allowDiscards = true;
+  };
 
   fileSystems."/var/log" = {
     device = "/dev/disk/by-uuid/319bd95c-0cd0-4a71-b1d9-6184ed3a81b4";
     fsType = "btrfs";
-    options = [ "subvol=log" ];
+    options = [
+      "subvol=log"
+      "noatime"
+    ];
   };
 
   fileSystems."/nix" = {
     device = "/dev/disk/by-uuid/319bd95c-0cd0-4a71-b1d9-6184ed3a81b4";
     fsType = "btrfs";
-    options = [ "subvol=nix" ];
+    options = [
+      "subvol=nix"
+      "noatime"
+    ];
   };
 
   fileSystems."/home" = {
     device = "/dev/disk/by-uuid/319bd95c-0cd0-4a71-b1d9-6184ed3a81b4";
     fsType = "btrfs";
-    options = [ "subvol=home" ];
+    options = [
+      "subvol=home"
+      "noatime"
+    ];
   };
 
   fileSystems."/swap" = {
     device = "/dev/disk/by-uuid/319bd95c-0cd0-4a71-b1d9-6184ed3a81b4";
     fsType = "btrfs";
-    options = [ "subvol=swap" ];
+    options = [
+      "subvol=swap"
+      "noatime"
+    ];
   };
 
   fileSystems."/efi" = {
