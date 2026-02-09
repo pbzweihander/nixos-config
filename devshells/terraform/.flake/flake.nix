@@ -33,7 +33,12 @@
           terraform = pkgs.terraform-versions.${version};
         in
         {
-          default = pkgs.mkShell { nativeBuildInputs = [ terraform ]; };
+          default = pkgs.mkShell {
+            nativeBuildInputs = with pkgs; [
+              terraform
+              terraform-ls
+            ];
+          };
         }
       );
     };
