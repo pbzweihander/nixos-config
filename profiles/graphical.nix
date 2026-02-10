@@ -11,7 +11,7 @@
       gimp
       inkscape
       kdePackages.kcalc
-      spotify
+      spotify-qt
       vlc
       vscode
       wl-clipboard

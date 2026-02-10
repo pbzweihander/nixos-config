@@ -36,6 +36,11 @@
       url = "github:ezKEa/aagl-gtk-on-nix/release-25.11";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    nixos-apple-silicon = {
+      url = "github:nix-community/nixos-apple-silicon";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -66,6 +71,11 @@
         juutilainen = nixpkgs.lib.nixosSystem {
           specialArgs = { inherit inputs; };
           modules = [ ./machines/juutilainen ];
+        };
+
+        schnaufer = nixpkgs.lib.nixosSystem {
+          specialArgs = { inherit inputs; };
+          modules = [ ./machines/schnaufer ];
         };
       };
     };

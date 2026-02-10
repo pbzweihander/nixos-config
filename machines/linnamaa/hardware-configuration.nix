@@ -28,8 +28,11 @@
     ];
   };
 
-  boot.initrd.luks.devices."cryptroot".device =
-    "/dev/disk/by-uuid/f682b3a2-7821-41aa-a611-b5ebd796b3dc";
+  boot.initrd.luks.devices."cryptroot" = {
+    device = "/dev/disk/by-uuid/f682b3a2-7821-41aa-a611-b5ebd796b3dc";
+    bypassWorkqueues = true;
+    allowDiscards = true;
+  };
 
   fileSystems."/nix" = {
     device = "/dev/disk/by-uuid/d7f9e473-c9f3-49e5-a7a3-0dcbd8e096ca";

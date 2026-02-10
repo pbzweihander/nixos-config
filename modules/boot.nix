@@ -1,3 +1,4 @@
+{ lib, ... }:
 {
   boot = {
     loader = {
@@ -6,7 +7,7 @@
         editor = false;
       };
       efi = {
-        canTouchEfiVariables = true;
+        canTouchEfiVariables = lib.mkDefault true;
         efiSysMountPoint = "/efi";
       };
     };

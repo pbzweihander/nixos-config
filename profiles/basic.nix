@@ -41,7 +41,6 @@ with inputs;
   services = {
     fstrim.enable = true;
     fwupd.enable = true;
-    keybase.enable = true;
     logrotate.checkConfig = false;
     lorri.enable = true;
   };
@@ -85,10 +84,8 @@ with inputs;
     pciutils
     pwgen
     python3
-    rar
     ripgrep
     statix
-    unrar
     unzip
     usbutils
     uv

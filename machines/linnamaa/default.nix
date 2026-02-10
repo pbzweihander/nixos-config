@@ -19,8 +19,13 @@ in
     ../../modules/kde.nix
   ];
 
+  nixpkgs.hostPlatform = "x86_64-linux";
+
   services = {
-    btrfs.autoScrub.enable = true;
+    btrfs.autoScrub = {
+      enable = true;
+      fileSystems = [ "/" ];
+    };
     xserver.xkb.options = "ctrl:nocaps,korean:ralt_hangul,korean:rctrl_hanja";
   };
 
