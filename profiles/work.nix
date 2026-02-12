@@ -4,4 +4,12 @@
     (if stdenv.hostPlatform.system == "aarch64-linux" then unstable.slacky else slack)
     oci-cli
   ];
+  services.netbird = {
+    enable = true;
+    ui.enable = true;
+    clients.default = {
+      openFirewall = true;
+      openInternalFirewall = true;
+    };
+  };
 }

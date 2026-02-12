@@ -17,6 +17,7 @@ in
     ../../profiles/dev.nix
 
     ../../modules/kde.nix
+    ../../modules/wifi.nix
   ];
 
   nixpkgs.hostPlatform = "x86_64-linux";

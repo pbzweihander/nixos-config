@@ -18,8 +18,9 @@ in
     ../../profiles/work.nix
 
     ../../modules/kde.nix
-    ../../modules/via.nix
     ../../modules/photo.nix
+    ../../modules/via.nix
+    ../../modules/wifi.nix
   ];
 
   nixpkgs.hostPlatform = "x86_64-linux";

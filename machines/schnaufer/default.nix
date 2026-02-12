@@ -20,6 +20,7 @@ in
 
     ../../modules/kde.nix
     ../../modules/photo.nix
+    ../../modules/wifi.nix
   ];
 
   nixpkgs.hostPlatform = "aarch64-linux";
