@@ -26,14 +26,18 @@ final: prev: {
         old.installPhase;
   });
 
+  spotify-qt = prev.spotify-qt.overrideAttrs (old: {
+    version = "4.0.2-466aa01";
+    src = final.fetchFromGitHub {
+      owner = "kraxarn";
+      repo = "spotify-qt";
+      rev = "466aa01d3d790efbb60a8a2e3a4942cd347f3e91";
+      hash = "sha256-V45LdbK4V5Lehfm8+eyeJdKKqx89gGbKCPyK+4xBBVA=";
+    };
+  });
+
   unstable = import inputs.nixpkgs-unstable {
     inherit (prev.stdenv.hostPlatform) system;
     config.allowUnfree = true;
   };
-
-  chromium-fixed =
-    (import inputs.nixpkgs-chromium-fix {
-      inherit (prev.stdenv.hostPlatform) system;
-      config.allowUnfree = true;
-    }).chromium;
 }

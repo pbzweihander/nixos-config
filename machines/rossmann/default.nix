@@ -102,8 +102,6 @@ in
     opentrack
     p7zip
     quickemu
-
-    chromium-fixed
   ];
 
   nix.settings = {
