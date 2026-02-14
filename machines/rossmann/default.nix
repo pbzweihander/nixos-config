@@ -127,7 +127,10 @@ in
     enable = true;
   };
 
-  hardware.cpu.amd.updateMicrocode = true;
+  hardware = {
+    cpu.amd.updateMicrocode = true;
+    amdgpu.opencl.enable = true;
+  };
 
   boot = {
     # kernelPackages = pkgs.linuxPackages_latest;
