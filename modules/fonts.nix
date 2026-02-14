@@ -8,6 +8,7 @@
       sarasa-gothic
       source-han-sans
       nerd-fonts.iosevka
+      pretendard
     ];
     fontconfig = {
       enable = true;
