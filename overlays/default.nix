@@ -27,11 +27,11 @@ final: prev: {
   });
 
   spotify-qt = prev.spotify-qt.overrideAttrs (old: {
-    version = "4.0.2-466aa01";
+    version = "4.0.2-14d2ae6";
     src = final.fetchFromGitHub {
       owner = "kraxarn";
       repo = "spotify-qt";
-      rev = "466aa01d3d790efbb60a8a2e3a4942cd347f3e91";
+      rev = "14d2ae6d41c7f3943827b930cf868499f7cff85d";
       hash = "sha256-V45LdbK4V5Lehfm8+eyeJdKKqx89gGbKCPyK+4xBBVA=";
     };
   });
