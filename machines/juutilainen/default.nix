@@ -1,5 +1,6 @@
 {
   inputs,
+  pkgs,
   ...
 }:
 with inputs;
@@ -19,7 +20,6 @@ in
 
     ../../modules/kde.nix
     ../../modules/photo.nix
-    ../../modules/via.nix
     ../../modules/wifi.nix
   ];
 
@@ -41,7 +41,12 @@ in
 
   networking.hostName = hostname;
 
-  hardware.bluetooth.enable = true;
+  hardware = {
+    bluetooth.enable = true;
+    graphics.extraPackages = with pkgs; [
+      intel-compute-runtime
+    ];
+  };
 
   boot.kernel.sysctl = {
     "vm.max_map_count" = 16777216;
