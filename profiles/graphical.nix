@@ -11,6 +11,7 @@
       gimp
       inkscape
       kdePackages.kcalc
+      librespot
       spotify-qt
       vlc
       vscode

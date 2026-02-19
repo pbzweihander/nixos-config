@@ -32,7 +32,7 @@ final: prev: {
       owner = "kraxarn";
       repo = "spotify-qt";
       rev = "14d2ae6d41c7f3943827b930cf868499f7cff85d";
-      hash = "sha256-V45LdbK4V5Lehfm8+eyeJdKKqx89gGbKCPyK+4xBBVA=";
+      hash = "sha256-Gn7jwQ3sT+05UPU5jYrD9l5PPqPNcbQxlUZkD4RTz5A=";
     };
   });
 
