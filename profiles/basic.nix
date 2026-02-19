@@ -76,6 +76,7 @@ with inputs;
     file
     fzf
     helix
+    helix-assist
     jaq
     lsd
     nil

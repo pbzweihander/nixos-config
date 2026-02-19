@@ -12,6 +12,19 @@ haskell.plugin.rename.config.diff = true
 [language-server.nil.config]
 nil.formatting = { command = ["nixfmt"] }
 
+[language-server.helix-assist]
+command = "bash"
+args = ["-c", """
+helix-assist \
+  --enable-completion=false \
+  --handler=openai \
+  --fetch-timeout=20000 \
+  --completion-timeout=20000 \
+  --openai-model="gpt-5.2-codex" \
+  --openai-reasoning-effort=low \
+  --openai-key="$(cat ~/.config/helix-assist/openai.key | xargs)"
+"""]
+
 [[language]]
 name = "haskell"
 auto-format = true
@@ -29,3 +42,15 @@ indent = { tab-width = 2, unit = "  " }
 name = "yaml"
 auto-format = true
 formatter = { command = "yamlfmt", args = ["-in"] }
+
+[[language]]
+name = "go"
+language-servers = ["gopls", "golangci-lint-lsp", "helix-assist"]
+
+[[language]]
+name = "rust"
+language-servers = ["rust-analyzer", "helix-assist"]
+
+[[language]]
+name = "hcl"
+language-servers = ["terraform-ls", "helix-assist"]
