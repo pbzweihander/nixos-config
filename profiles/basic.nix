@@ -87,6 +87,7 @@ with inputs;
     python3
     ripgrep
     statix
+    unrar
     unzip
     usbutils
     uv
