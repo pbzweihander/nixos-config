@@ -17,7 +17,7 @@
     openssh.authorizedKeys.keyFiles = [
       (builtins.fetchurl {
         url = "https://github.com/pbzweihander.keys";
-        sha256 = "sha256:1zydkj8f4xpsv2p1vx8kndmpwlhlhxi7l9hmr55n7y5glszn05ci";
+        sha256 = "sha256:1rkqq8mn7c3w9183ypyd5padw1wlfbj3kfan14x558x3z128hn4w";
       })
     ];
   };

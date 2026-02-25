@@ -1,6 +1,7 @@
 {
   pkgs,
   inputs,
+  lib,
   ...
 }:
 with inputs;
@@ -18,7 +19,7 @@ with inputs;
   system.stateVersion = "25.11";
 
   nixpkgs = {
-    overlays = [ (import ../overlays { inherit inputs; }) ];
+    overlays = [ (import ../overlays { inherit inputs lib; }) ];
     config.allowUnfree = true;
   };
   nix = {

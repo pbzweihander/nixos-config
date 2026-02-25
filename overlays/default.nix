@@ -1,4 +1,4 @@
-{ inputs }:
+{ inputs, lib }:
 final: prev: {
   sddm-arona = prev.callPackage ./sddm-arona { };
 
@@ -29,12 +29,12 @@ final: prev: {
   });
 
   spotify-qt = prev.spotify-qt.overrideAttrs (old: {
-    version = "4.0.2-14d2ae6";
+    version = "4.0.2-cbbbb8b";
     src = final.fetchFromGitHub {
       owner = "kraxarn";
       repo = "spotify-qt";
-      rev = "14d2ae6d41c7f3943827b930cf868499f7cff85d";
-      hash = "sha256-Gn7jwQ3sT+05UPU5jYrD9l5PPqPNcbQxlUZkD4RTz5A=";
+      rev = "cbbbb8b0d10bb22fd37fa8df47f05a923d74e2b8";
+      hash = "sha256-ldFMAQBl/95YpZHF8N7A4AcfGJF+q28YPH9xUufcYDw=";
     };
   });
 
