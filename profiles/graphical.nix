@@ -6,17 +6,26 @@
   ];
 
   environment = {
-    systemPackages = with pkgs; [
-      alacritty
-      gimp
-      inkscape
-      kdePackages.kcalc
-      librespot
-      spotify-qt
-      vlc
-      vscode
-      wl-clipboard
-    ];
+    systemPackages =
+      with pkgs;
+      [
+        alacritty
+        gimp
+        inkscape
+        kdePackages.kcalc
+        vlc
+        vscode
+        wl-clipboard
+      ]
+      ++ (
+        if stdenv.hostPlatform.system == "aarch64-linux" then
+          [
+            librespot
+            spotify-qt
+          ]
+        else
+          [ spotify ]
+      );
     sessionVariables.NIXOS_OZONE_WL = "1";
   };
 
