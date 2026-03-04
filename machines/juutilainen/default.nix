@@ -20,6 +20,7 @@ in
 
     ../../modules/kde.nix
     ../../modules/photo.nix
+    ../../modules/via.nix
     ../../modules/wifi.nix
   ];
 

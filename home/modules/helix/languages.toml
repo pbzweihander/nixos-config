@@ -54,3 +54,11 @@ language-servers = ["rust-analyzer", "helix-assist"]
 [[language]]
 name = "hcl"
 language-servers = ["terraform-ls", "helix-assist"]
+
+[[language]]
+name = "bash"
+language-servers = ["bash-language-server", "helix-assist"]
+
+[[language]]
+name = "markdown"
+language-servers = ["helix-assist"]
