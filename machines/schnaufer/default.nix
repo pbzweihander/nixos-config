@@ -23,8 +23,6 @@ in
     ../../modules/wifi.nix
   ];
 
-  nixpkgs.hostPlatform = "aarch64-linux";
-
   services = {
     btrfs.autoScrub = {
       enable = true;
@@ -38,7 +36,17 @@ in
 
   home-manager.users.pbzweihander = import ./home.nix;
 
-  networking.hostName = hostname;
+  networking = {
+    hostName = hostname;
+    wireless.iwd = {
+      enable = true;
+      settings.General.EnableNetworkConfiguration = true;
+    };
+    networkmanager = {
+      enable = true;
+      wifi.backend = "iwd";
+    };
+  };
 
   nix.settings = {
     extra-substituters = [ "https://nixos-apple-silicon.cachix.org" ];

@@ -20,8 +20,6 @@ in
     ../../modules/wifi.nix
   ];
 
-  nixpkgs.hostPlatform = "x86_64-linux";
-
   services = {
     btrfs.autoScrub = {
       enable = true;

@@ -17,6 +17,7 @@
   boot.kernelModules = [ ];
   boot.extraModulePackages = [ ];
   boot.loader.efi.canTouchEfiVariables = false;
+  boot.kernelParams = [ "hid_apple.swap_opt_cmd=1" ];
 
   fileSystems."/" = {
     device = "/dev/mapper/cryptroot";
