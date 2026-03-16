@@ -1,0 +1,30 @@
+Subject: [PATCH] arm64: dts: apple: t600x-j314-j316: Fix HDMI resume issue
+
+Keep both ATC3 power domains always-on to fix HDMI suspend/resume issues
+on MacBook Pro (14/16-inch, 2021). The ps_atc3_common domain alone is not
+sufficient - the ps_atc3_usb_aon domain also needs to stay powered for
+proper HDMI resume functionality.
+
+
+---
+ arch/arm64/boot/dts/apple/t600x-j314-j316.dtsi | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/apple/t600x-j314-j316.dtsi b/arch/arm64/boot/dts/apple/t600x-j314-j316.dtsi
+index 8d030df13bf5..d230ffc09f8c 100644
+--- a/arch/arm64/boot/dts/apple/t600x-j314-j316.dtsi
++++ b/arch/arm64/boot/dts/apple/t600x-j314-j316.dtsi
+@@ -483,9 +483,10 @@ dwc3_2_ss: endpoint {
+ /*
+  * ps_atc3_usb_aon power-domain is always-on to keep dwc3 working over suspend.
+  * atc3 is used exclusively for the DP-to-HDMI so do not keep this always on.
++ * TODO: Temporarily keeping both power domains always-on for HDMI resume fix
+  */
+ &ps_atc3_usb_aon {
+-	/delete-property/ apple,always-on;
++	/* /delete-property/ apple,always-on; */
+ };
+ 
+ /* ATC3 is used for DisplayPort -> HDMI only */
+-- 
+2.43.0

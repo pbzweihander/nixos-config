@@ -70,4 +70,11 @@ in
       };
     };
   };
+
+  boot.kernelPatches = [
+    {
+      name = "hdmi-resume-fix";
+      patch = ./hdmi-resume-fix.patch;
+    }
+  ];
 }
