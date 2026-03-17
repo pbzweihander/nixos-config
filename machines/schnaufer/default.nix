@@ -69,6 +69,7 @@ in
         '';
       };
     };
+    graphics.extraPackages = with pkgs; [ mesa.opencl ];
   };
 
   boot.kernelPatches = [
