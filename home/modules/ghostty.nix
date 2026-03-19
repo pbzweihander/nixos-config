@@ -2,8 +2,21 @@
   programs.ghostty = {
     enable = true;
     settings = {
+      app-notifications = "no-clipboard-copy";
       background-opacity = 0.9;
+      copy-on-select = false;
       font-family = "Sarasa Term K";
+      gtk-titlebar-style = "tabs";
+      resize-overlay = "never";
+      window-decoration = "none";
+
+      keybind = [
+        "ctrl+shift+h=goto_split:left"
+        "ctrl+shift+j=goto_split:down"
+        "ctrl+shift+k=goto_split:up"
+        "ctrl+shift+l=goto_split:right"
+      ];
+
       foreground = "#bab7b6";
       background = "#141414";
       cursor-color = "#37e57b";
