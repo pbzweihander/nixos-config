@@ -2,6 +2,7 @@
   programs.ghostty = {
     enable = true;
     settings = {
+      background-opacity = 0.9;
       font-family = "Sarasa Term K";
       foreground = "#bab7b6";
       background = "#141414";

@@ -78,7 +78,7 @@
           "Meta+Esc"
         ];
       };
-      "services/Alacritty.desktop"."New" = "Meta+Return";
+      "services/Ghostty.desktop".Launch = "Meta+Return";
     };
     spectacle.shortcuts = {
       captureEntireDesktop = "Meta+Shift+Print";
@@ -91,7 +91,7 @@
     };
     configFile = {
       "dolphinrc"."DetailsMode"."ExpandableFolders" = false;
-      "kdeglobals"."General"."TerminalApplication" = "alacritty";
+      "kdeglobals"."General"."TerminalApplication" = "ghostty";
       "kwinrc"."Effect-overview"."BorderActivate" = 9;
       "kwinrc"."Wayland"."InputMethod[$e]" =
         "/run/current-system/sw/share/applications/fcitx5-wayland-launcher.desktop";

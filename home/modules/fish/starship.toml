@@ -13,11 +13,24 @@ repo_root_style = "bold cyan"
 fish_style_pwd_dir_length = 3
 
 [git_branch]
-format = '[$branch(:$remote_branch)]($style) '
+format = '[$branch(:$remote_branch)]($style) '
+
+[git_status]
+format = '[$all_status$ahead_behind]($style)  '
+conflicted = '󰘕'
+ahead = ''
+behind = ''
+diverged = ''
+untracked = ''
+stashed = ''
+modified = ''
+staged = ''
+renamed = ''
+deleted = ''
 
 [kubernetes]
 disabled = false
-format = '[☸$context(\($namespace\))]($style) '
+format = '[$context(\($namespace\))]($style) '
 
 [time]
 disabled = false
@@ -25,9 +38,34 @@ format = '[$time]($style) '
 
 [shlvl]
 disabled = false
-format = '[↕️$shlvl]($style) '
+format = '[󰹹$shlvl]($style) '
 
 [nix_shell]
+disabled = true
+
+[direnv]
 disabled = false
-heuristic = true
-format = '[❄️nix]($style) '
+format = '[$loaded]($style) '
+allowed_msg = ''
+not_allowed_msg = ''
+denied_msg = ''
+loaded_msg = '󱥾direnv'
+unloaded_msg = ''
+
+[golang]
+format = '[$version]($style) '
+
+[rust]
+format = '[$version]($style) '
+
+[package]
+disabled = true
+
+[terraform]
+disabled = true
+
+[nodejs]
+format = '[($version)]($style) '
+
+[cmd_duration]
+format = '[󰔛$duration]($style) '
