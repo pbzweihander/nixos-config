@@ -10,6 +10,7 @@
       with pkgs;
       [
         alacritty
+        ghostty
         gimp
         inkscape
         kdePackages.kcalc
