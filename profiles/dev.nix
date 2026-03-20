@@ -37,6 +37,10 @@
     kubernetes-helm
     yaml-language-server
 
+    # shell
+    bash-language-server
+    shfmt
+
     # etc
     yamlfmt
   ];

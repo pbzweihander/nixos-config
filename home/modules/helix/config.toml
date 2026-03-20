@@ -85,6 +85,7 @@ g = { "k" = "goto_file_start", "j" = "goto_last_line" }
 "A-j" = "join_selections"
 
 "A-ret" = "vsplit"
+"S-A-ret" = "hsplit"
 
 "C-s" = ":write"
 

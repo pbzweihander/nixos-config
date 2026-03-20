@@ -11,6 +11,8 @@
       window-decoration = "none";
 
       keybind = [
+        "ctrl+alt+enter=new_split:right"
+        "ctrl+shift+alt+enter=new_split:down"
         "ctrl+shift+h=goto_split:left"
         "ctrl+shift+j=goto_split:down"
         "ctrl+shift+k=goto_split:up"
