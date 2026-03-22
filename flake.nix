@@ -4,7 +4,7 @@
     nixpkgs-unstable.url = "github:nixos/nixpkgs?ref=nixos-unstable";
 
     systems.url = "github:nix-systems/default";
-
+    srvos.url = "github:nix-community/srvos";
     nixos-hardware.url = "github:NixOs/nixos-hardware";
 
     home-manager = {

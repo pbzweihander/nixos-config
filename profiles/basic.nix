@@ -10,6 +10,8 @@ with inputs;
     ../modules/boot.nix
     ../modules/networking.nix
 
+    srvos.nixosModules.common
+    srvos.nixosModules.mixins-nix-experimental
     home-manager.nixosModules.home-manager
     nix-index-database.nixosModules.nix-index
 
