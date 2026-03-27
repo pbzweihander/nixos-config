@@ -46,8 +46,8 @@
           src = pkgs.fetchFromGitHub {
             owner = "pbzweihander";
             repo = "fish-plugin-git";
-            rev = "ed55f74105f115035e77c8f13919926613da3f4b";
-            hash = "sha256-xlrOZ/uM/eeLm9nNAuoQkTrCMbdNQ9rn1qdg0sp/EP8=";
+            rev = "ba99954df5a600a878fa839c9023d0f8dbee0b9d";
+            hash = "sha256-z9Bv+TiWbkuHllTNCGdZL1ABHK098csWX1cGmi04G8U=";
           };
         }
         {
