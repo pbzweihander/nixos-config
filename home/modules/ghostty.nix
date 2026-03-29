@@ -8,7 +8,7 @@
       font-family = "Sarasa Term K";
       gtk-titlebar-style = "tabs";
       resize-overlay = "never";
-      window-decoration = "none";
+      window-decoration = "client";
 
       keybind = [
         "ctrl+alt+enter=new_split:right"
