@@ -17,6 +17,7 @@
         "ctrl+shift+j=goto_split:down"
         "ctrl+shift+k=goto_split:up"
         "ctrl+shift+l=goto_split:right"
+        "ctrl+shift+q=unbind"
       ];
 
       foreground = "#bab7b6";
