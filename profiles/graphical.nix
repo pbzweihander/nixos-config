@@ -13,6 +13,7 @@
         gimp
         inkscape
         kdePackages.kcalc
+        kdePackages.kolourpaint
         vlc
         vscode
         wl-clipboard
