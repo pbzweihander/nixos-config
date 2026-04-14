@@ -9,7 +9,6 @@
     systemPackages =
       with pkgs;
       [
-        alacritty
         ghostty
         gimp
         inkscape
