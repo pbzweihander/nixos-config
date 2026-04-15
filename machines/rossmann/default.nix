@@ -6,6 +6,26 @@
 with inputs;
 let
   hostname = "rossmann";
+  gameScopeArgs = [
+    "--borderless"
+    "--fullscreen"
+    "-W"
+    "3840"
+    "-H"
+    "2160"
+    "-r"
+    "160"
+    "--hdr-enabled"
+    "--adaptive-sync"
+    "--prefer-output"
+    "DP-1"
+    "--mouse-sensitivity"
+    "3.5"
+    "--force-grab-cursor"
+    "--cursor-scale-height"
+    "1080"
+    "--hdr-debug-force-output"
+  ];
 in
 {
   imports = [
@@ -65,25 +85,12 @@ in
 
   environment.systemPackages = with pkgs; [
     (nix-citizen.packages.${stdenv.hostPlatform.system}.star-citizen.override (prev: {
-      preCommands = "env DISPLAY=:0 opentrack -platform xcb &";
+      inherit gameScopeArgs;
+      preCommands = ''
+        export DXVK_HDR=1
+        env DISPLAY=:0 opentrack -platform xcb &
+      '';
       gameScopeEnable = true;
-      gameScopeArgs = [
-        "--borderless"
-        "--fullscreen"
-        "-W"
-        "3840"
-        "-H"
-        "2160"
-        "-r"
-        "160"
-        "--hdr-enabled"
-        "--adaptive-sync"
-        "--prefer-output"
-        "DP-1"
-        "--force-grab-cursor"
-        "--mouse-sensitivity"
-        "2"
-      ];
     }))
     (
       (mumble.overrideAttrs (prev: {
@@ -142,5 +149,10 @@ in
 
   virtualisation.spiceUSBRedirection.enable = true;
 
-  programs.honkers-railway-launcher.enable = true;
+  programs = {
+    honkers-railway-launcher.enable = true;
+
+    # Use steam launch option `gamescope -- env DXVK_HDR=1 %command%` for HDR
+    gamescope.args = gameScopeArgs;
+  };
 }
