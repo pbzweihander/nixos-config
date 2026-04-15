@@ -3,6 +3,7 @@
     git = {
       enable = true;
       settings = {
+        advice.skippedCherryPicks = false;
         user = {
           email = "pbzweihander@protonmail.com";
           name = "pbzweihander";
