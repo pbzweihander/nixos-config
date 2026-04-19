@@ -16,17 +16,17 @@ fish_style_pwd_dir_length = 3
 format = '[$branch(:$remote_branch)]($style) '
 
 [git_status]
-format = '([$ahead_behind($all_status )]($style) )'
-conflicted = '󰘕'
-ahead = ''
-behind = ''
-diverged = ''
-untracked = ''
-stashed = ''
-modified = ''
-staged = ''
-renamed = ''
-deleted = ''
+format = '[$ahead_behind$all_status]($style) '
+conflicted = '󰘕 '
+ahead = ' '
+behind = ' '
+diverged = ' '
+untracked = ' '
+stashed = ' '
+modified = ' '
+staged = ' '
+renamed = ' '
+deleted = ' '
 
 [kubernetes]
 disabled = false
