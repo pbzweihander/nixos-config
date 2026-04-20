@@ -97,6 +97,7 @@ with inputs;
     vim
     wget
     xh
+    yq-go
     zip
   ];
 }
