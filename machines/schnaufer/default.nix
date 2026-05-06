@@ -71,11 +71,4 @@ in
     };
     graphics.extraPackages = with pkgs; [ mesa.opencl ];
   };
-
-  boot.kernelPatches = [
-    {
-      name = "hdmi-resume-fix";
-      patch = ./hdmi-resume-fix.patch;
-    }
-  ];
 }
