@@ -43,5 +43,6 @@
 
     # etc
     yamlfmt
+    unstable.codex
   ];
 }
