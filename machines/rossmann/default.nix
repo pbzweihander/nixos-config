@@ -57,7 +57,6 @@ in
       enable = true;
       enableUdevRules = true;
     };
-    tailscale.enable = true;
     openssh = {
       enable = true;
       settings = {
