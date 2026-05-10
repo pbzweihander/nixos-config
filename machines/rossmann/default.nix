@@ -53,10 +53,6 @@ in
       enable = true;
       fileSystems = [ "/" ];
     };
-    input-remapper = {
-      enable = true;
-      enableUdevRules = true;
-    };
     openssh = {
       enable = true;
       settings = {
