@@ -2,8 +2,6 @@
 final: prev: {
   sddm-arona = prev.callPackage ./sddm-arona { };
 
-  helix-assist = prev.callPackage ./helix-assist { };
-
   vscode = final.symlinkJoin {
     name = "vscode";
     paths = [ prev.vscode ];
