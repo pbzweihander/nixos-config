@@ -36,6 +36,7 @@
     kubectx
     kubernetes-helm
     yaml-language-server
+    unstable.kubectl-view-allocations
 
     # shell
     bash-language-server
