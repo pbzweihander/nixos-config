@@ -73,7 +73,7 @@ with inputs;
 
   environment.systemPackages = with pkgs; [
     direnv
-    dogdns
+    doggo
     eva
     fd
     file
@@ -82,7 +82,7 @@ with inputs;
     jaq
     lsd
     nil
-    nixfmt-rfc-style
+    nixfmt
     nix-tree
     pciutils
     pwgen

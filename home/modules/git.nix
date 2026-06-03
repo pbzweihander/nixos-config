@@ -36,10 +36,7 @@
           conflictstyle = "diff3";
         };
         pager = {
-          diff = "delta";
-          log = "delta";
           reflog = "delta";
-          show = "delta";
           stash = "false";
         };
         push.default = "simple";

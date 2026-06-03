@@ -16,8 +16,8 @@
 
     # node
     nodejs
-    nodePackages.typescript-language-server
     pnpm
+    typescript-language-server
     yarn
 
     # rust

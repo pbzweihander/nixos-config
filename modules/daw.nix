@@ -25,7 +25,7 @@
     geonkick
     lsp-plugins
     rtaudio
-    surge-XT
+    surge-xt
     sunvox
   ];
 }

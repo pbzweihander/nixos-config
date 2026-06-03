@@ -52,7 +52,7 @@
         function: nixpkgs.lib.genAttrs (import systems) (system: function nixpkgs.legacyPackages.${system});
     in
     {
-      formatter = forAllSystems (pkgs: pkgs.nixfmt-rfc-style);
+      formatter = forAllSystems (pkgs: pkgs.nixfmt);
 
       nixosConfigurations = {
         linnamaa = nixpkgs.lib.nixosSystem {
