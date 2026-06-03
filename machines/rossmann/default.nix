@@ -44,8 +44,6 @@ in
     ../../modules/via.nix
     ../../modules/daw.nix
     ../../modules/photo.nix
-
-    aagl.nixosModules.default
   ];
 
   services = {
@@ -144,10 +142,6 @@ in
 
   virtualisation.spiceUSBRedirection.enable = true;
 
-  programs = {
-    honkers-railway-launcher.enable = true;
-
-    # Use steam launch option `gamescope -- env DXVK_HDR=1 %command%` for HDR
-    gamescope.args = gameScopeArgs;
-  };
+  # Use steam launch option `gamescope -- env DXVK_HDR=1 %command%` for HDR
+  programs.gamescope.args = gameScopeArgs;
 }
