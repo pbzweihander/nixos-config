@@ -31,6 +31,7 @@ in
     };
     fstrim.enable = true;
     xserver.xkb.options = "ctrl:nocaps,korean:ralt_hangul,korean:rctrl_hanja";
+    tailscale.enable = true;
   };
 
   time.timeZone = "Asia/Seoul";
