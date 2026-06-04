@@ -44,6 +44,7 @@ in
     ../../modules/via.nix
     ../../modules/daw.nix
     ../../modules/photo.nix
+    ../../modules/sunshine.nix
   ];
 
   services = {
