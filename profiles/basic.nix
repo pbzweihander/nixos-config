@@ -80,6 +80,7 @@ with inputs;
     fzf
     helix
     jaq
+    jujutsu
     lsd
     nil
     nixfmt
