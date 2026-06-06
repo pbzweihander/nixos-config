@@ -60,12 +60,16 @@
     delta = {
       enable = true;
       enableGitIntegration = true;
+      enableJujutsuIntegration = true;
       options = {
         features = "decorations";
-        pager = "less -+XF -Qc";
+        navigate = true;
         side-by-side = true;
-        plus-style = "syntax green";
+
+        pager = "less -+XF -Qc";
+
         minus-style = "syntax red";
+        plus-style = "syntax green";
       };
     };
   };
