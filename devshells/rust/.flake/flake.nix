@@ -32,7 +32,12 @@
         pkgs:
         let
           version = "<version>";
-          rust-toolchain = pkgs.rust-bin.stable.${version}.default;
+          rust-toolchain = pkgs.rust-bin.stable.${version}.default.override {
+            extensions = [
+              "rust-analyzer"
+              "rust-src"
+            ];
+          };
         in
         {
           default = pkgs.mkShell { nativeBuildInputs = [ rust-toolchain ]; };
