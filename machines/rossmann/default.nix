@@ -100,6 +100,7 @@ in
     )
 
     gamemode
+    heroic
     lact
     opentrack
     p7zip
