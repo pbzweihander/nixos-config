@@ -6,6 +6,20 @@
 with inputs;
 let
   hostname = "schnaufer";
+  widevine-firefox =
+    with pkgs;
+    stdenv.mkDerivation {
+      name = "widevine-firefox";
+      version = widevine-cdm.version;
+      buildCommand = ''
+        mkdir -p $out/gmp-widevinecdm/system-installed
+        ln -s "${widevine-cdm}/share/google/chrome/WidevineCdm/manifest.json" $out/gmp-widevinecdm/system-installed/manifest.json
+        ln -s "${widevine-cdm}/share/google/chrome/WidevineCdm/_platform_specific/linux_arm64/libwidevinecdm.so" $out/gmp-widevinecdm/system-installed/libwidevinecdm.so
+      '';
+      meta = widevine-cdm.meta // {
+        platforms = [ "aarch64-linux" ];
+      };
+    };
 in
 {
   imports = [
@@ -70,5 +84,14 @@ in
       };
     };
     graphics.extraPackages = with pkgs; [ mesa.opencl ];
+  };
+
+  environment = {
+    systemPackages = [
+      widevine-firefox
+    ];
+    sessionVariables = {
+      MOZ_GMP_PATH = "${widevine-firefox}/gmp-widevinecdm/system-installed";
+    };
   };
 }

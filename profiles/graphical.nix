@@ -18,15 +18,7 @@
         vscode
         wl-clipboard
       ]
-      ++ (
-        if stdenv.hostPlatform.system == "aarch64-linux" then
-          [
-            librespot
-            spotify-qt
-          ]
-        else
-          [ spotify ]
-      );
+      ++ (if stdenv.hostPlatform.system == "aarch64-linux" then [ ] else [ spotify ]);
     sessionVariables.NIXOS_OZONE_WL = "1";
   };
 
