@@ -10,7 +10,7 @@ let
     with pkgs;
     stdenv.mkDerivation {
       name = "widevine-firefox";
-      version = widevine-cdm.version;
+      inherit (widevine-cdm) version;
       buildCommand = ''
         mkdir -p $out/gmp-widevinecdm/system-installed
         ln -s "${widevine-cdm}/share/google/chrome/WidevineCdm/manifest.json" $out/gmp-widevinecdm/system-installed/manifest.json
