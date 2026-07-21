@@ -147,4 +147,6 @@ in
 
   # Use steam launch option `gamescope -- env DXVK_HDR=1 %command%` for HDR
   programs.gamescope.args = gameScopeArgs;
+
+  users.groups.input.members = [ "pbzweihander" ];
 }
