@@ -6,7 +6,11 @@
   ];
   services.netbird = {
     enable = true;
-    ui.enable = true;
+    package = pkgs.netbird-update.netbird;
+    ui = {
+      enable = true;
+      package = pkgs.netbird-update.netbird-ui;
+    };
     clients.default = {
       openFirewall = true;
       openInternalFirewall = true;

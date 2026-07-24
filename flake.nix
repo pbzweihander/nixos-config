@@ -38,6 +38,8 @@
       url = "github:nix-community/nixos-apple-silicon";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
+
+    nixpkgs-netbird-update.url = "github:K900/nixpkgs?ref=netbird-0.75-rc";
   };
 
   outputs =

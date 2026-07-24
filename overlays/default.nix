@@ -40,4 +40,9 @@ final: prev: {
     inherit (prev.stdenv.hostPlatform) system;
     config.allowUnfree = true;
   };
+
+  netbird-update = import inputs.nixpkgs-netbird-update {
+    inherit (prev.stdenv.hostPlatform) system;
+    config.allowUnfree = true;
+  };
 }
