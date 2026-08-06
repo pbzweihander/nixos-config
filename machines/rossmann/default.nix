@@ -110,6 +110,7 @@ in
     opentrack
     p7zip
     quickemu
+    xsane
   ];
 
   nix.settings = {
@@ -124,6 +125,26 @@ in
       "ezkea.cachix.org-1:ioBmUbJTZIKsHmWWXPe1FSFbeVe+afhfgqgTSNd34eI="
     ];
   };
+
+  nixpkgs.config.packageOverrides =
+    pkgs:
+    let
+      gimpPython = pkgs.python3.withPackages (
+        ps: with ps; [
+          pygobject3
+        ]
+      );
+      gimpWithPython = pkgs.gimp.overrideAttrs (old: {
+        preFixup = (old.preFixup or "") + ''
+          gappsWrapperArgs+=(
+            --prefix PATH : "${gimpPython}/bin"
+          )
+        '';
+      });
+    in
+    {
+      gimp = gimpWithPython;
+    };
 
   systemd.services = {
     lact = {
@@ -154,6 +175,12 @@ in
   hardware = {
     cpu.amd.updateMicrocode = true;
     amdgpu.opencl.enable = true;
+    sane = {
+      enable = true;
+      extraBackends = [
+        pkgs.epsonscan2
+      ];
+    };
   };
 
   boot = {
@@ -169,5 +196,9 @@ in
   # Use steam launch option `gamescope -- env DXVK_HDR=1 %command%` for HDR
   programs.gamescope.args = gameScopeArgs;
 
-  users.groups.input.members = [ "pbzweihander" ];
+  users.users."pbzweihander".extraGroups = [
+    "input"
+    "scanner"
+    "lp"
+  ];
 }
