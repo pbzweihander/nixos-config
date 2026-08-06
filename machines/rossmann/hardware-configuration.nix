@@ -19,8 +19,11 @@
     "sd_mod"
   ];
   boot.initrd.kernelModules = [ ];
-  boot.kernelModules = [ "kvm-amd" ];
-  boot.extraModulePackages = [ ];
+  boot.kernelModules = [
+    "kvm-amd"
+    "evdi"
+  ];
+  boot.extraModulePackages = [ config.boot.kernelPackages.evdi ];
   boot.resumeDevice = "/dev/disk/by-uuid/56af2d9f-6239-4953-a236-1040dae35d21";
   boot.kernelParams = [
     "resume-offset=21964032"

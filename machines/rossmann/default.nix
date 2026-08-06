@@ -68,6 +68,10 @@ in
   networking = {
     hostName = hostname;
     firewall = {
+      allowedUDPPorts = [
+        # DCS-BIOS
+        5010
+      ];
       allowedUDPPortRanges = [
         {
           # Steam Game client
@@ -99,6 +103,7 @@ in
       }
     )
 
+    displaylink
     gamemode
     heroic
     lact
@@ -120,14 +125,30 @@ in
     ];
   };
 
-  systemd.services.lact = {
-    description = "AMDGPU Control Daemon";
-    after = [ "multi-user.target" ];
-    wantedBy = [ "multi-user.target" ];
-    serviceConfig = {
-      ExecStart = "${pkgs.lact}/bin/lact daemon";
+  systemd.services = {
+    lact = {
+      description = "AMDGPU Control Daemon";
+      after = [ "multi-user.target" ];
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig = {
+        ExecStart = "${pkgs.lact}/bin/lact daemon";
+      };
+      enable = true;
     };
-    enable = true;
+    displaylink-server = {
+      enable = true;
+      requires = [ "systemd-udevd.service" ];
+      after = [ "systemd-udevd.service" ];
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = "${pkgs.displaylink}/bin/DisplayLinkManager";
+        User = "root";
+        Group = "root";
+        Restart = "on-failure";
+        RestartSec = 5;
+      };
+    };
   };
 
   hardware = {
