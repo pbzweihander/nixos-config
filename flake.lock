@@ -266,22 +266,6 @@
         "type": "github"
       }
     },
-    "nixpkgs-netbird-update": {
-      "locked": {
-        "lastModified": 1784831881,
-        "narHash": "sha256-Neh5rU2ckwFJY96IFBgIzwEFwhWBg5T9DA9vZHpE48Y=",
-        "owner": "K900",
-        "repo": "nixpkgs",
-        "rev": "c2d75211345b0ab33507b7c8c191277edb46dcd4",
-        "type": "github"
-      },
-      "original": {
-        "owner": "K900",
-        "ref": "netbird-0.75-rc",
-        "repo": "nixpkgs",
-        "type": "github"
-      }
-    },
     "nixpkgs-unstable": {
       "locked": {
         "lastModified": 1780243769,
@@ -378,7 +362,6 @@
         "nixos-apple-silicon": "nixos-apple-silicon",
         "nixos-hardware": "nixos-hardware",
         "nixpkgs": "nixpkgs_3",
-        "nixpkgs-netbird-update": "nixpkgs-netbird-update",
         "nixpkgs-unstable": "nixpkgs-unstable",
         "plasma-manager": "plasma-manager",
         "srvos": "srvos",
