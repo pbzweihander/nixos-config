@@ -91,26 +91,15 @@ in
       '';
       gameScopeEnable = true;
     }))
-    (
-      (mumble.overrideAttrs (prev: {
-        postFixup = prev.postFixup + ''
-          wrapProgram $out/bin/mumble \
-            --set XDG_SESSION_TYPE x11
-        '';
-      })).override
-      {
-        speechdSupport = true;
-      }
-    )
 
     displaylink
     gamemode
     heroic
     lact
+    naps2
     opentrack
     p7zip
     quickemu
-    xsane
   ];
 
   nix.settings = {
@@ -125,26 +114,6 @@ in
       "ezkea.cachix.org-1:ioBmUbJTZIKsHmWWXPe1FSFbeVe+afhfgqgTSNd34eI="
     ];
   };
-
-  nixpkgs.config.packageOverrides =
-    pkgs:
-    let
-      gimpPython = pkgs.python3.withPackages (
-        ps: with ps; [
-          pygobject3
-        ]
-      );
-      gimpWithPython = pkgs.gimp.overrideAttrs (old: {
-        preFixup = (old.preFixup or "") + ''
-          gappsWrapperArgs+=(
-            --prefix PATH : "${gimpPython}/bin"
-          )
-        '';
-      });
-    in
-    {
-      gimp = gimpWithPython;
-    };
 
   systemd.services = {
     lact = {
@@ -180,6 +149,7 @@ in
       extraBackends = [
         (pkgs.epsonscan2.override {
           withNonFreePlugins = true;
+          withGui = false;
         })
       ];
     };
