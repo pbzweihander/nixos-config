@@ -178,7 +178,9 @@ in
     sane = {
       enable = true;
       extraBackends = [
-        pkgs.epsonscan2
+        (pkgs.epsonscan2.override {
+          withNonFreePlugins = true;
+        })
       ];
     };
   };
