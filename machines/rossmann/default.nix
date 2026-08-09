@@ -40,11 +40,12 @@ in
     ../../profiles/gaming.nix
     ../../profiles/work.nix
 
-    ../../modules/kde.nix
-    ../../modules/via.nix
     ../../modules/daw.nix
+    ../../modules/kde.nix
     ../../modules/photo.nix
+    ../../modules/scanner.nix
     ../../modules/sunshine.nix
+    ../../modules/via.nix
   ];
 
   services = {
@@ -99,7 +100,6 @@ in
     gamemode
     heroic
     lact
-    naps2
     opentrack
     p7zip
     quickemu
@@ -147,15 +147,6 @@ in
   hardware = {
     cpu.amd.updateMicrocode = true;
     amdgpu.opencl.enable = true;
-    sane = {
-      enable = true;
-      extraBackends = [
-        (pkgs.epsonscan2.override {
-          withNonFreePlugins = true;
-          withGui = false;
-        })
-      ];
-    };
   };
 
   boot = {
@@ -173,7 +164,5 @@ in
 
   users.users."pbzweihander".extraGroups = [
     "input"
-    "scanner"
-    "lp"
   ];
 }
