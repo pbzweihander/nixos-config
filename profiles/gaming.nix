@@ -1,4 +1,7 @@
-{ pkgs, ... }:
+{ pkgs, inputs, ... }:
+let
+  mv = inputs.multiverse.multiverse.${pkgs.stdenv.hostPlatform.system};
+in
 {
   programs = {
     steam = {
@@ -34,7 +37,7 @@
       vesktop
       xivlauncher
     ])
-    ++ (with pkgs.unstable; [
+    ++ (with mv.tip; [
       protonplus
     ]);
 }

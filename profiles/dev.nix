@@ -1,4 +1,7 @@
-{ pkgs, ... }:
+{ pkgs, inputs, ... }:
+let
+  mv = inputs.multiverse.multiverse.${pkgs.stdenv.hostPlatform.system};
+in
 {
   imports = [
     ../modules/container.nix
@@ -33,10 +36,10 @@
     helm-ls
     kubectl
     kubectl-node-shell
+    kubectl-view-allocations
     kubectx
     kubernetes-helm
     yaml-language-server
-    unstable.kubectl-view-allocations
 
     # shell
     bash-language-server
@@ -49,6 +52,6 @@
         mdformat-gfm
       ]
     ))
-    unstable.codex
+    mv.tip.codex
   ];
 }

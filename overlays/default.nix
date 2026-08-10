@@ -35,9 +35,4 @@ final: prev: {
       hash = "sha256-5stDBpt+TJGihrmEVt0kB4Aiez7wIpqm4P6RnSDquxM=";
     };
   });
-
-  unstable = import inputs.nixpkgs-unstable {
-    inherit (prev.stdenv.hostPlatform) system;
-    config.allowUnfree = true;
-  };
 }
