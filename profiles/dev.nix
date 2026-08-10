@@ -44,6 +44,11 @@
 
     # etc
     yamlfmt
+    (mdformat.withPlugins (
+      ps: with ps; [
+        mdformat-gfm
+      ]
+    ))
     unstable.codex
   ];
 }

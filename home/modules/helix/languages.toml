@@ -29,3 +29,8 @@ indent = { tab-width = 2, unit = "  " }
 name = "yaml"
 auto-format = true
 formatter = { command = "yamlfmt", args = ["-in"] }
+
+[[language]]
+name = "markdown"
+auto-format = true
+formatter = { command = "mdformat", args = ["-"] }
