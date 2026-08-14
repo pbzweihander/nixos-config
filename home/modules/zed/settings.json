@@ -1,93 +1,16 @@
 {
-  "selection_highlight": true,
   "cursor_blink": false,
-  "edit_predictions": {
-    "mode": "subtle",
-    "copilot": {
-      "proxy": null,
-      "proxy_no_verify": null
-    },
-    "enabled_in_text_threads": false
+  "vim": {
+    "use_system_clipboard": "never"
   },
-  "features": {
-    "edit_prediction_provider": "zed"
-  },
-  "active_pane_modifiers": {
-    "border_size": 0.5
-  },
+  "helix_mode": true,
+  "vim_mode": false,
+  "base_keymap": "VSCode",
   "buffer_font_family": "Sarasa Mono K",
-  "buffer_font_size": 16,
-  "tabs": {
-    "file_icons": true,
-    "git_status": true,
-    "show_diagnostics": "all"
-  },
-  "file_scan_exclusions": [
-    "**/.git",
-    "**/.svn",
-    "**/.hg",
-    "**/.jj",
-    "**/CVS",
-    "**/.DS_Store",
-    "**/Thumbs.db",
-    "**/.classpath",
-    "**/.settings",
-    "**/.flake",
-    "**/.direnv",
-    "**/.envrc"
-  ],
-  "diagnostics": {
-    "inline": {
-      "enabled": true
-    }
-  },
-  "inlay_hints": {
-    "enabled": true,
-    "show_background": true
-  },
-  "show_whitespaces": "boundary",
-  "wrap_guides": [80, 100],
-  "terminal": {
-    "font_family": "Sarasa Term K"
-  },
-  "theme": {
-    "mode": "dark",
-    "light": "Dimidium",
-    "dark": "Dimidium"
-  },
-  "vim_mode": true,
-  "agent": {
-    "enabled": true
-  },
   "ui_font_family": "Sarasa UI K",
-  "ui_font_size": 14,
-  "languages": {
-    "Nix": {
-      "tab_size": 2,
-      "language_servers": ["nil", "!nixd"]
-    },
-    "YAML": {
-      "tab_size": 2,
-      "formatter": {
-        "external": {
-          "command": "yamlfmt",
-          "arguments": ["-in"]
-        }
-      }
-    },
-    "HTML": { "tab_size": 2 },
-    "Astro": { "tab_size": 2 }
-  },
-  "file_types": {
-    "Nix": ["nix"]
-  },
-  "lsp": {
-    "nil": {
-      "initialization_options": {
-        "formatting": {
-          "command": ["nixfmt"]
-        }
-      }
-    }
-  }
+  "show_wrap_guides": true,
+  "ui_font_size": 16,
+  "buffer_font_size": 15,
+  "theme": "Dimidium",
+  "wrap_guides": [60, 80, 100, 120],
 }

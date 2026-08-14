@@ -1,4 +1,7 @@
-{ pkgs, ... }:
+{ pkgs, inputs, ... }:
+let
+  mv = inputs.multiverse.multiverse.${pkgs.stdenv.hostPlatform.system};
+in
 {
   imports = [
     ../modules/sound.nix
@@ -18,6 +21,7 @@
         vscode
         wl-clipboard
       ]
+      ++ (with mv.tip; [ zed-editor ])
       ++ (if stdenv.hostPlatform.system == "aarch64-linux" then [ ] else [ spotify ]);
     sessionVariables.NIXOS_OZONE_WL = "1";
   };
