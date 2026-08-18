@@ -73,14 +73,11 @@ in
     bluetooth.enable = true;
     asahi = {
       enable = true;
-      peripheralFirmwareDirectory = pkgs.requireFile {
-        name = "asahi";
-        hashMode = "recursive";
-        hash = "sha256:0rqqg1lafmk4fgjqbm0n2zyiv4p4d337h596p83bd3vwslkrri17";
-        message = ''
-          nix-store --add-fixed sha256 --recursive <efi>/asahi
-          nix-store --query --hash /nix/<output>
-        '';
+      peripheralFirmwareDirectory = builtins.fetchTree {
+        type = "path";
+        path = "/efi/vendorfw";
+        # nix hash path /efi/vendorfw
+        narHash = "sha256-tTQYYxEOWTYCePwohNVzJhf2rbBmRt2fJzgDfGa7tlE=";
       };
     };
     graphics.extraPackages = with pkgs; [ mesa.opencl ];
