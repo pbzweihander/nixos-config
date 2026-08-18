@@ -20,6 +20,8 @@ in
         vlc
         vscode
         wl-clipboard
+
+        bubblewrap # needed by zed
       ]
       ++ (with mv.tip; [ zed-editor ])
       ++ (if stdenv.hostPlatform.system == "aarch64-linux" then [ ] else [ spotify ]);
