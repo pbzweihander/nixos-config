@@ -73,6 +73,7 @@
     ".config/fish/functions/ds.fish".source = ./functions/ds.fish;
     ".config/fish/functions/jp.fish".source = ./functions/jp.fish;
     ".config/fish/functions/kind-with-registry.fish".source = ./functions/kind-with-registry.fish;
+    ".config/fish/functions/zg.fish".source = ./functions/zg.fish;
     ".config/starship.toml".source = ./starship.toml;
   };
 }
