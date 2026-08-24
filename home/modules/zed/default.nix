@@ -1,6 +1,8 @@
+{ multiverse, ... }:
 {
   programs.zed-editor = {
     enable = true;
+    package = multiverse.instance.fast.tip.zed-editor;
     userSettings = {
       format_on_save = "on";
       cli_default_open_behavior = "existing_window";

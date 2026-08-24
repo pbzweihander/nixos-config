@@ -1,11 +1,16 @@
 {
   pkgs,
   inputs,
+  config,
   lib,
   ...
 }:
 with inputs;
 {
+  disabledModules = [
+    "services/networking/netbird.nix"
+  ];
+
   imports = [
     ../modules/boot.nix
     ../modules/networking.nix
@@ -14,6 +19,7 @@ with inputs;
     srvos.nixosModules.mixins-nix-experimental
     home-manager.nixosModules.home-manager
     nix-index-database.nixosModules.nix-index
+    multiverse.nixosModules.default
 
     ../modules/users.nix
   ];
@@ -54,6 +60,7 @@ with inputs;
     backupFileExtension = "home-manager-backup";
     extraSpecialArgs = {
       inherit inputs;
+      multiverse = config.multiverse;
     };
   };
 
@@ -100,4 +107,13 @@ with inputs;
     yq-go
     zip
   ];
+
+  multiverse = {
+    enable = true;
+    config.allowUnfree = true;
+    pins = {
+      netbird = "0.77.0";
+      netbird-ui = "0.77.0";
+    };
+  };
 }

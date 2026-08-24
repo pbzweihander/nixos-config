@@ -38,6 +38,8 @@
       url = "github:nix-community/nixos-apple-silicon";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    nixpkgs-unstable.url = "github:nixos/nixpkgs?ref=nixos-unstable"; # remove when netbird module fixed
   };
 
   outputs =
@@ -56,22 +58,38 @@
       nixosConfigurations = {
         linnamaa = nixpkgs.lib.nixosSystem {
           specialArgs = { inherit inputs; };
-          modules = [ ./machines/linnamaa ];
+          modules = [
+            "${inputs.nixpkgs-unstable}/nixos/modules/services/networking/netbird.nix"
+
+            ./machines/linnamaa
+          ];
         };
 
         rossmann = nixpkgs.lib.nixosSystem {
           specialArgs = { inherit inputs; };
-          modules = [ ./machines/rossmann ];
+          modules = [
+            "${inputs.nixpkgs-unstable}/nixos/modules/services/networking/netbird.nix"
+
+            ./machines/rossmann
+          ];
         };
 
         juutilainen = nixpkgs.lib.nixosSystem {
           specialArgs = { inherit inputs; };
-          modules = [ ./machines/juutilainen ];
+          modules = [
+            "${inputs.nixpkgs-unstable}/nixos/modules/services/networking/netbird.nix"
+
+            ./machines/juutilainen
+          ];
         };
 
         schnaufer = nixpkgs.lib.nixosSystem {
           specialArgs = { inherit inputs; };
-          modules = [ ./machines/schnaufer ];
+          modules = [
+            "${inputs.nixpkgs-unstable}/nixos/modules/services/networking/netbird.nix"
+
+            ./machines/schnaufer
+          ];
         };
       };
     };

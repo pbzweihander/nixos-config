@@ -1,7 +1,4 @@
-{ pkgs, inputs, ... }:
-let
-  mv = inputs.multiverse.multiverse.${pkgs.stdenv.hostPlatform.system};
-in
+{ pkgs, config, ... }:
 {
   imports = [
     ../modules/container.nix
@@ -10,48 +7,52 @@ in
 
   programs.nix-ld.enable = true;
 
-  environment.systemPackages = with pkgs; [
-    # go
-    go
-    golangci-lint
-    golangci-lint-langserver
-    gopls
+  environment.systemPackages =
+    with pkgs;
+    [
+      # go
+      go
+      golangci-lint
+      golangci-lint-langserver
+      gopls
 
-    # node
-    nodejs
-    pnpm
-    typescript-language-server
-    yarn
+      # node
+      nodejs
+      pnpm
+      typescript-language-server
+      yarn
 
-    # rust
-    cargo
-    cargo-edit
-    cargo-sort
-    rust-analyzer
+      # rust
+      cargo
+      cargo-edit
+      cargo-sort
+      rust-analyzer
 
-    # aws
-    awscli2
+      # aws
+      awscli2
 
-    # kubernetes
-    helm-ls
-    kubectl
-    kubectl-node-shell
-    kubectl-view-allocations
-    kubectx
-    kubernetes-helm
-    yaml-language-server
+      # kubernetes
+      helm-ls
+      kubectl
+      kubectl-node-shell
+      kubectl-view-allocations
+      kubectx
+      kubernetes-helm
+      yaml-language-server
 
-    # shell
-    bash-language-server
-    shfmt
+      # shell
+      bash-language-server
+      shfmt
 
-    # etc
-    yamlfmt
-    (mdformat.withPlugins (
-      ps: with ps; [
-        mdformat-gfm
-      ]
-    ))
-    mv.tip.codex
-  ];
+      # etc
+      yamlfmt
+      (mdformat.withPlugins (
+        ps: with ps; [
+          mdformat-gfm
+        ]
+      ))
+    ]
+    ++ (with config.multiverse.instance.fast.tip; [
+      codex
+    ]);
 }

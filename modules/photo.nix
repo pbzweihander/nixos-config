@@ -1,9 +1,6 @@
-{ pkgs, inputs, ... }:
-let
-  mv = inputs.multiverse.multiverse.${pkgs.stdenv.hostPlatform.system};
-in
+{ config, ... }:
 {
   environment.systemPackages = [
-    mv.tip.darktable
+    config.multiverse.instance.fast.tip.darktable
   ];
 }

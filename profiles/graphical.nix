@@ -1,7 +1,4 @@
-{ pkgs, inputs, ... }:
-let
-  mv = inputs.multiverse.multiverse.${pkgs.stdenv.hostPlatform.system};
-in
+{ pkgs, config, ... }:
 {
   imports = [
     ../modules/sound.nix
@@ -23,7 +20,7 @@ in
 
         bubblewrap # needed by zed
       ]
-      ++ (with mv.tip; [ zed-editor ])
+      ++ (with config.multiverse.instance.fast.tip; [ zed-editor ])
       ++ (if stdenv.hostPlatform.system == "aarch64-linux" then [ ] else [ spotify ]);
     sessionVariables.NIXOS_OZONE_WL = "1";
   };
