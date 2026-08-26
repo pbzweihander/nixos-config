@@ -5,7 +5,8 @@
     package = multiverse.instance.fast.tip.zed-editor;
     userSettings = {
       format_on_save = "on";
-      cli_default_open_behavior = "existing_window";
+      default_open_behavior = "new_window";
+      cli_default_open_behavior = "new_window";
       project_panel = {
         dock = "left";
       };
@@ -78,12 +79,6 @@
         context = "(vim_mode == helix_normal || vim_mode == helix_select) && !menu";
         unbind = {
           "ctrl-s" = "editor::SaveLocation";
-        };
-      }
-      {
-        context = "VimControl && !menu";
-        bindings = {
-          "shift-b" = "editor::SelectToPreviousWordStart";
         };
       }
       {
