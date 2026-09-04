@@ -79,7 +79,10 @@
     ];
   };
 
-  swapDevices = [ { device = "/swap/swapfile"; } ];
+  swapDevices = [
+    { device = "/swap/swapfile"; }
+    { device = "/swap/swapfile2"; }
+  ];
 
   nixpkgs.hostPlatform = lib.mkDefault "aarch64-linux";
 }
