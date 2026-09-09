@@ -1,6 +1,6 @@
-{ config, ... }:
+{ pkgs, ... }:
 {
   environment.systemPackages = [
-    config.multiverse.instance.fast.tip.darktable
+    pkgs.darktable
   ];
 }
