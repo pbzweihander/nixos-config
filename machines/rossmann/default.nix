@@ -59,6 +59,10 @@ in
         PasswordAuthentication = false;
       };
     };
+    udev.extraRules = ''
+      # Thrustmaster T Rudder
+      ATTRS{idVendor}=="044f", ATTRS{idProduct}=="b679", MODE="0660", TAG+="uaccess", ENV{ID_CLASS}="joystick", ENV{ID_INPUT_JOYSTICK}="1"
+    '';
   };
 
   time.timeZone = "Asia/Seoul";
