@@ -52,7 +52,8 @@
         ]
       ))
     ]
-    ++ (with config.multiverse.instance.fast.tip; [
+    ++ (with config.multiverse.instance.tip; [
       codex
+      claude-code
     ]);
 }
