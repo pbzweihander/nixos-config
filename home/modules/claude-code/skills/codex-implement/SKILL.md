@@ -47,8 +47,17 @@ it up front when the task needs it, and say so in the spec:
 - Needs network: installing or updating dependencies (`npm install`, `cargo add`,
   `pip install`, `go get`, `nix build` of new inputs), fetching schemas or fixtures,
   calling an external API, cloning anything.
-- No network: pure code edits, running existing tests, builds whose dependencies are
-  already vendored or cached.
+- Also needs network: anything that opens an IP socket, **even on localhost**. With
+  network off, the sandbox refuses to create the socket at all
+  (`PermissionError: [Errno 1] Operation not permitted`). This covers tests that
+  start an HTTP server or router, integration tests against a local database or
+  mock server, dev servers, and port checks.
+- No network: pure code edits, unit tests that never open a socket, builds whose
+  dependencies are already vendored or cached.
+
+If the acceptance commands run tests, check whether they open sockets before
+deciding: look for test servers, `listen`/`bind`, `127.0.0.1` or `localhost`, and
+test-container or database fixtures.
 
 When needed, add `-c sandbox_workspace_write.network_access=true`. Prefer this
 over `--sandbox danger-full-access`, which removes the filesystem sandbox as well.
@@ -111,34 +120,42 @@ review in step 2; never pass both.
 
 `codex-monitor.sh` runs `codex-latest.sh exec --json` with your arguments, saves the
 raw events to `<run dir>/events.jsonl` and stderr to `<run dir>/stderr.log`, and
-prints one line per event through `jq`. `codex-latest.sh` builds
-`github:nixos/nixpkgs/nixos-unstable#codex` with nix and runs that binary; only if
+prints only the events that may need your attention, one line each, through `jq`.
+`codex-latest.sh` builds `github:nixos/nixpkgs/nixos-unstable#codex` with nix and
+runs that binary; only if
 the nix build fails does it fall back to the locally installed `codex`. It logs which
 one it used to `stderr.log`; mention that in your report. Prefix the command with
 `CODEX_LATEST_FORCE_LOCAL=1` to skip nix when the user asks for the local one.
 
 Event lines:
 
-| Line | Meaning |
-|---|---|
-| `[msg] ...` | codex said something (plan, status, final answer) |
-| `[cmd rc=0] ...` / `[cmd FAIL rc=N] ...` | a shell command finished |
-| `[edit] update <path>` | codex changed files (`add`, `update`, `delete`) |
-| `[plan d/n] ...` | codex's todo list, d of n done |
-| `[search]`, `[mcp ...]` | web search or MCP tool call |
-| `[ERROR] ...` | a non-fatal error, such as a dropped stream codex retries |
-| `[DONE] ...` / `[FAILED] ...` | the turn ended, successfully or not |
-| `[EXIT] codex rc=N` | always last; the stream then ends |
+| Line | Meaning | What to do |
+|---|---|---|
+| `[FAIL rc=N] <cmd> :: <last output line>` | A command failed. Sent once per distinct command. | Usually nothing; codex fixes its own failures. |
+| `[BLOCKED rc=N] <cmd> :: <line>` | The failure looks like a sandbox denial: DNS or network errors, `Operation not permitted`, read-only filesystem. | codex cannot fix this. If the spec needs it, stop and resume with the missing flag. |
+| `[STUCK?] same command failed 3 times: <cmd>` | codex keeps retrying one failing command. | Read the raw events; stop it if it is going nowhere. |
+| `[QUIET] no codex events for <time>; still running: <cmd>` | Nothing new for `CODEX_QUIET_SECS` (default 600). Sent once per silent stretch. | Normal for a long test suite or the first nix build. A server started in the foreground that never returns is a hang: stop it. |
+| `[plan d/n] next: <item>` | codex's todo list advanced. | Nothing. |
+| `[FAIL mcp] <server>.<tool>` | An MCP tool call failed. | Usually nothing. |
+| `[ERROR] ...` | A non-fatal error, such as a dropped stream codex retries. | Nothing unless it repeats. |
+| `[DONE] N cmds (M failed), K files changed, ...` | The turn completed. | Wait for `[EXIT]`. |
+| `[FAILED] ...` | The turn failed, or codex exited without finishing one. | Read the reason; see below. |
+| `[EXIT] codex rc=N` | Always last; the stream then ends. | Go to step 4. |
+
+Not sent: successful commands, codex's messages, per-file edits, and web searches.
+Exit code 1 from `rg`, `grep`, `test`, `diff`, or `cmp` counts as "no match" and is
+not reported as a failure. Everything is still in `events.jsonl`.
 
 While it runs:
 
-- Do not narrate routine events to the user. Relay only milestones or problems
-  they would act on.
+- Act only on `[BLOCKED]`, `[STUCK?]`, a `[QUIET]` that points at a hang, and
+  `[FAILED]`. To stop codex, use TaskStop on the monitor task, then resume as in
+  step 4.
+- Tell the user about those same events and what you decided. Do not relay the rest.
 - Do not poll or sleep. Keep doing independent work, or wait for events.
-- If codex is plainly stuck, stop it with TaskStop and go to step 4 rather than
-  letting it burn time. Stuck means the same command failing over and over,
-  sandbox denials such as `Operation not permitted` or network errors while network
-  is off, or edits outside the spec's area.
+- File edits are not shown live. Check for edits outside the spec's area in step 4.
+- If the project's test suite routinely runs longer than ten minutes, prefix the
+  command with `CODEX_QUIET_SECS=<seconds>` to raise the threshold.
 - After `[EXIT]`, go to step 4. The stream ends by itself; no TaskStop needed.
 
 Other useful flags:
@@ -163,8 +180,8 @@ After codex finishes:
    outside the allowed area, new dependencies, deleted tests, leftover
    `.codex/rules` files you created.
 
-The progress lines are truncated. For the full output of the commands that failed,
-read the raw events (use `nix run nixpkgs#jq --` in place of `jq` if it is not
+The progress lines are truncated and skip most events. For the full output of the
+commands that failed, read the raw events (use `nix run nixpkgs#jq --` in place of `jq` if it is not
 installed):
 
 ```bash
