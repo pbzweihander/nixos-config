@@ -1,3 +1,4 @@
+.claude/worktrees/
 .direnv/
 .git/
 node_modules/
