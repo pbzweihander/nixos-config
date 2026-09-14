@@ -1,5 +1,6 @@
 {
   imports = [
+    ../modules/claude-code
     ../modules/fish
     ../modules/git.nix
     ../modules/helix
