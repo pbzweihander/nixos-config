@@ -86,66 +86,111 @@ trust override above. Remove the file after the run unless the user wants to kee
 ## 3. Run codex
 
 Make sure the working tree is clean or that the user knows uncommitted changes
-exist, so the review diff is meaningful. Then run codex from the project root with
-the spec on stdin:
+exist, so the review diff is meaningful. Pick a run directory
+`<scratchpad>/codex-run-<slug>`; the runner creates it.
 
-```bash
-~/.claude/skills/codex-implement/scripts/codex-latest.sh exec \
-  --sandbox workspace-write \
-  -C "<project root>" \
-  -o "<scratchpad>/codex-last-<slug>.md" \
-  [-m <model>] \
-  [-c sandbox_workspace_write.network_access=true] \
-  [-c 'projects."<project root>".trust_level="trusted"'] \
-  - < "<scratchpad>/codex-spec-<slug>.md"
-```
+Start codex with the **Monitor** tool, not a background Bash call, so every codex
+step arrives in this session as a notification while it works:
+
+- `command`:
+  ```bash
+  ~/.claude/skills/codex-implement/scripts/codex-monitor.sh "<run dir>" \
+    --sandbox workspace-write \
+    -C "<project root>" \
+    -o "<run dir>/last.md" \
+    [-m <model>] \
+    [-c sandbox_workspace_write.network_access=true] \
+    [-c 'projects."<project root>".trust_level="trusted"'] \
+    - < "<scratchpad>/codex-spec-<slug>.md"
+  ```
+- `description`: `codex: <slug>`
+- `persistent`: `true`, because a codex run can exceed Monitor's one-hour timeout.
 
 Replace `--sandbox workspace-write` with `--approve-for-me` when you chose auto
 review in step 2; never pass both.
 
-`codex-latest.sh` builds `github:nixos/nixpkgs/nixos-unstable#codex` with nix and
-runs that binary. Only if the nix build fails does it fall back to the locally
-installed `codex`. It logs which one it used on stderr; mention that in your report.
-Set `CODEX_LATEST_FORCE_LOCAL=1` to skip nix when the user asks for the local one.
+`codex-monitor.sh` runs `codex-latest.sh exec --json` with your arguments, saves the
+raw events to `<run dir>/events.jsonl` and stderr to `<run dir>/stderr.log`, and
+prints one line per event through `jq`. `codex-latest.sh` builds
+`github:nixos/nixpkgs/nixos-unstable#codex` with nix and runs that binary; only if
+the nix build fails does it fall back to the locally installed `codex`. It logs which
+one it used to `stderr.log`; mention that in your report. Prefix the command with
+`CODEX_LATEST_FORCE_LOCAL=1` to skip nix when the user asks for the local one.
 
-Run it in the background: the first nix build can take a minute and the codex run
-itself can take many minutes. Wait for the completion notification. Do not poll.
+Event lines:
+
+| Line | Meaning |
+|---|---|
+| `[msg] ...` | codex said something (plan, status, final answer) |
+| `[cmd rc=0] ...` / `[cmd FAIL rc=N] ...` | a shell command finished |
+| `[edit] update <path>` | codex changed files (`add`, `update`, `delete`) |
+| `[plan d/n] ...` | codex's todo list, d of n done |
+| `[search]`, `[mcp ...]` | web search or MCP tool call |
+| `[ERROR] ...` | a non-fatal error, such as a dropped stream codex retries |
+| `[DONE] ...` / `[FAILED] ...` | the turn ended, successfully or not |
+| `[EXIT] codex rc=N` | always last; the stream then ends |
+
+While it runs:
+
+- Do not narrate routine events to the user. Relay only milestones or problems
+  they would act on.
+- Do not poll or sleep. Keep doing independent work, or wait for events.
+- If codex is plainly stuck, stop it with TaskStop and go to step 4 rather than
+  letting it burn time. Stuck means the same command failing over and over,
+  sandbox denials such as `Operation not permitted` or network errors while network
+  is off, or edits outside the spec's area.
+- After `[EXIT]`, go to step 4. The stream ends by itself; no TaskStop needed.
 
 Other useful flags:
 
 - `--add-dir <dir>` when codex must write outside the project root.
 - `--skip-git-repo-check` when the target is not a git repository.
 
-If codex exits non-zero or the last message reports it could not finish, read its
-output first. If it was blocked by the sandbox (network refused, permission denied
-outside the workspace), do not rewrite the spec: resume the same session with the
-missing flag added (see step 4). Otherwise fix the spec or environment and run
-again. Do not silently take over the implementation yourself on the first failure.
+If codex failed (`[FAILED]`, or `[EXIT]` with a non-zero rc), read the reason
+first. If it was blocked by the sandbox, do not rewrite the spec: resume the same
+session with the missing flag added (see step 4). Otherwise fix the spec or
+environment and run again. Do not silently take over the implementation yourself
+on the first failure.
 
 ## 4. Review
 
 After codex finishes:
 
-1. Read `codex-last-<slug>.md` for codex's summary and any caveats it raised.
+1. Read `<run dir>/last.md` for codex's summary and any caveats it raised.
 2. Run `git status` and `git diff` and read the whole diff.
 3. Run every acceptance command from the spec yourself.
 4. Check the diff against the spec: missing requirements, scope creep, changed files
    outside the allowed area, new dependencies, deleted tests, leftover
    `.codex/rules` files you created.
 
-For small problems, fix them directly. For larger gaps, send a follow-up to the same
-codex session instead of starting over, carrying the same flags plus any that were
-missing:
+The progress lines are truncated. For the full output of the commands that failed,
+read the raw events (use `nix run nixpkgs#jq --` in place of `jq` if it is not
+installed):
 
 ```bash
-~/.claude/skills/codex-implement/scripts/codex-latest.sh exec \
-  --sandbox workspace-write \
-  -C "<project root>" \
-  [-c sandbox_workspace_write.network_access=true] \
-  resume --last "<what is wrong and what to change>"
+jq -r 'select(.type == "item.completed" and .item.type == "command_execution"
+  and .item.exit_code != 0) | "$ \(.item.command)\n\(.item.aggregated_output)"' \
+  "<run dir>/events.jsonl"
 ```
 
-Flags must come before `resume`; `resume` itself only accepts `-c`, `--last`, and
+For small problems, fix them directly. For larger gaps, send a follow-up to the same
+codex session instead of starting over. Use Monitor again, with a new run directory,
+the same flags as the first run plus any that were missing, and `resume --last` at
+the end:
+
+```bash
+~/.claude/skills/codex-implement/scripts/codex-monitor.sh "<run dir>-2" \
+  --sandbox workspace-write \
+  -C "<project root>" \
+  -o "<run dir>-2/last.md" \
+  [-c sandbox_workspace_write.network_access=true] \
+  resume --last "<what is wrong and what to change>" </dev/null
+```
+
+Keep the `</dev/null`: without a spec on stdin, codex would otherwise wait for more
+input on it.
+
+All flags must come before `resume`; `resume` itself only accepts `-c`, `--last`, and
 `-i`. Use `--approve-for-me` instead of `--sandbox` here too if that is what the
 first run used.
 

@@ -86,8 +86,7 @@ with inputs;
     file
     fzf
     helix
-    jaq
-    jujutsu
+    jq
     lsd
     nil
     nixfmt
