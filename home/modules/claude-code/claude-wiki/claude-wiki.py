@@ -257,9 +257,28 @@ def cmd_tags(root, db, args):
         print(f"{label}: " + (", ".join(f"{k} ({n})" for k, n in counts.most_common()) or "none"))
 
 
+def wiki_paths(root, paths):
+    """Command-line paths (absolute, or relative to the wiki root) as root-relative paths."""
+    rels = []
+    for p in paths:
+        path = Path(p).expanduser()
+        path = path if path.is_absolute() else root / path
+        try:
+            rels.append(path.resolve().relative_to(root.resolve()).as_posix())
+        except ValueError:
+            sys.exit(f"claude-wiki: {p} is not inside the wiki ({root})")
+    return rels
+
+
 def cmd_sync(root, db, args):
-    git(root, "add", "-A")
-    changes = [line.split("\t") for line in git(root, "diff", "--cached", "--name-status").stdout.splitlines()]
+    # With paths, commit only those, so one session does not commit another session's
+    # unfinished edits under its own message. Without paths, commit everything.
+    pathspec = ["--", *wiki_paths(root, args.paths)] if args.paths else []
+    git(root, "add", "-A", *pathspec)
+    changes = [
+        line.split("\t")
+        for line in git(root, "diff", "--cached", "--name-status", *pathspec).stdout.splitlines()
+    ]
     if not changes:
         print("nothing to commit")
         return
@@ -275,8 +294,12 @@ def cmd_sync(root, db, args):
     message = args.message or "wiki: " + ", ".join(summary[:5]) + (
         f" (+{len(summary) - 5} more)" if len(summary) > 5 else ""
     )
-    git(root, "commit", "-q", "-m", message, "-m", "\n".join(summary))
+    git(root, "commit", "-q", "-m", message, "-m", "\n".join(summary), *pathspec)
     print(f"committed: {message}")
+    if pathspec:
+        others = [line[3:] for line in git(root, "status", "--porcelain").stdout.splitlines()]
+        if others:
+            print("left uncommitted (other sessions' changes): " + ", ".join(others))
 
 
 def current_project():
@@ -379,6 +402,9 @@ def main():
     context = sub.add_parser("context", help="session start summary (used by the SessionStart hook)")
     context.add_argument("-n", type=int, default=10, help="max pages per section (default 10)")
     sync = sub.add_parser("sync", help="index pages and commit changes to the wiki's git repo")
+    sync.add_argument(
+        "paths", nargs="*", help="commit only these pages (absolute or relative to the wiki root); default: all changes"
+    )
     sync.add_argument("-m", "--message", help="commit message (default: list of changed pages)")
     sync.add_argument("--rebuild", action="store_true", help="rebuild the index from scratch")
     args = parser.parse_args()

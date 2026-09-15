@@ -109,11 +109,13 @@ claude-wiki tags                                                                
      from their file name.
    - `status`: `open` or `done`, follow-ups only.
    - `created`: today's date. The update date comes from the file mtime.
-3. **Run `claude-wiki sync -m "<short summary>"`** after every write. It indexes the
-   pages and commits them to the wiki's git repository. It warns about pages outside
-   `pages/<type>/` and about frontmatter that is missing, is not valid YAML, or lacks
-   a required field; fix those pages. If another session left uncommitted changes,
-   they are committed along with yours.
+3. **Run `claude-wiki sync -m "<short summary>" <pages>`** after every write, passing
+   every page you created, edited, or deleted (absolute paths, or relative to the wiki
+   root). It indexes the pages and commits only those, so other sessions' unfinished
+   edits stay out of your commit. It warns about pages outside `pages/<type>/` and
+   about frontmatter that is missing, is not valid YAML, or lacks a required field;
+   fix those pages. Plain `claude-wiki sync` commits every change; it is only needed
+   to pick up edits left behind by a session that ended without syncing.
 
 Write in English; quote commands, identifiers, and error messages verbatim, even ones
 in another language. Make every page readable on its own.
@@ -121,5 +123,6 @@ in another language. Make every page readable on its own.
 ## Maintenance
 
 - `claude-wiki sync --rebuild` rebuilds the index from scratch.
-- Deleting or renaming a page is a normal file operation followed by `claude-wiki sync`.
+- Deleting or renaming a page is a normal file operation followed by
+  `claude-wiki sync <old and new paths>`.
 - History of the wiki itself: `git -C ~/.local/share/claude-wiki log`.

@@ -90,4 +90,17 @@ cd "$HOME/demo-worktree"
 check "a worktree resolves to its main repository" "Current project: demo" "$wiki" context
 cd /
 check "context outside a repository" "Shared wiki: 8 pages" "$wiki" context
+
+# sync with paths commits only those pages and leaves other sessions' edits alone
+printf -- '---\ntitle: mine\ncreated: 2026-09-16\n---\nmine\n' >"$P/knowledge/mine.md"
+printf -- '---\ntitle: theirs\ncreated: 2026-09-16\n---\ntheirs\n' >"$P/knowledge/theirs.md"
+out=$("$wiki" sync "$P/knowledge/mine.md" 2>&1)
+check "sync with an absolute path commits that page" "committed: wiki: add knowledge/mine" echo "$out"
+check "sync with a path reports what it left" "left uncommitted.*theirs.md" echo "$out"
+check "other sessions' pages stay uncommitted" "knowledge/theirs.md" git -C "$CLAUDE_WIKI_DIR" status --porcelain
+check_not "the commit excludes other pages" "theirs" git -C "$CLAUDE_WIKI_DIR" show --stat HEAD
+rm "$P/knowledge/mine.md"
+check "sync with a root-relative path commits a deletion" "delete knowledge/mine" \
+  "$wiki" sync pages/knowledge/mine.md
+check "sync without paths commits the rest" "add knowledge/theirs" "$wiki" sync
 echo "claude-wiki smoke test passed"
