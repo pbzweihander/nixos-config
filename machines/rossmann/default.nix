@@ -52,7 +52,6 @@ in
       enable = true;
       fileSystems = [ "/" ];
     };
-    tailscale.enable = true;
     openssh = {
       enable = true;
       settings = {

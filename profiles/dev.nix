@@ -56,4 +56,6 @@
       codex
       claude-code
     ]);
+
+  services.tailscale.enable = true;
 }
