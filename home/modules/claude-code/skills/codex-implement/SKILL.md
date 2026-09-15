@@ -38,15 +38,42 @@ Keep the spec short enough to read in a few minutes. Show the user the spec path
 
 Decide these while writing the spec, not after codex fails.
 
-**Model.** Omit `-m` unless the user names a model; the default comes from
-`~/.codex/config.toml`. If the user names one, pass `-m <model>`.
+**Model and reasoning effort.** When the user names a model or a thinking/reasoning
+effort ("gpt-5.5로", "effort high", "xhigh로 돌려"), always pass it explicitly as a
+flag, on the first run and on every resume:
+
+- model: `-m <model>`
+- effort: `-c model_reasoning_effort=<effort>`
+
+Pass it even when it matches the current default in `~/.codex/config.toml`. That
+default can change, and an explicit flag keeps what the user asked for visible in the
+command and in your report. Never pass only one of the two when the user asked for
+both.
+
+Supported efforts differ by model. Check them in codex's model cache:
+
+```bash
+jq -c '.models[] | {slug, efforts: [.supported_reasoning_levels[]? | .effort // .]}' \
+  ~/.codex/models_cache.json
+```
+
+If the requested effort is not supported by that model, or the user gave only a vague
+phrase ("더 깊게 생각해"), pick the closest supported value and tell the user which
+one you used. When the user names neither, omit both flags so the config default
+applies.
 
 **Network.** The workspace-write sandbox blocks outbound network by default. Enable
 it up front when the task needs it, and say so in the spec:
 
 - Needs network: installing or updating dependencies (`npm install`, `cargo add`,
-  `pip install`, `go get`, `nix build` of new inputs), fetching schemas or fixtures,
-  calling an external API, cloning anything.
+  `pip install`, `go get`), fetching schemas or fixtures, calling an external API,
+  cloning anything.
+- Needs network: **any nix command** (`nix develop`, `nix build`, `nix run`,
+  `nix shell`, `nix flake check`, `nix eval`, direnv with `use flake`), even when
+  everything is already in the store. nix talks to the daemon over a unix socket,
+  and with network off the sandbox blocks `connect()` on every socket:
+  `cannot connect to socket at '/nix/var/nix/daemon-socket/socket': Operation not permitted`.
+  If the project builds or tests through a flake devShell, enable network.
 - Also needs network: anything that opens an IP socket, **even on localhost**. With
   network off, the sandbox refuses to create the socket at all
   (`PermissionError: [Errno 1] Operation not permitted`). This covers tests that
@@ -108,6 +135,7 @@ step arrives in this session as a notification while it works:
     -C "<project root>" \
     -o "<run dir>/last.md" \
     [-m <model>] \
+    [-c model_reasoning_effort=<effort>] \
     [-c sandbox_workspace_write.network_access=true] \
     [-c 'projects."<project root>".trust_level="trusted"'] \
     - < "<scratchpad>/codex-spec-<slug>.md"
@@ -121,6 +149,10 @@ review in step 2; never pass both.
 `codex-monitor.sh` runs `codex-latest.sh exec --json` with your arguments, saves the
 raw events to `<run dir>/events.jsonl` and stderr to `<run dir>/stderr.log`, and
 prints only the events that may need your attention, one line each, through `jq`.
+It also always passes `--add-dir ~/.cache/nix`: nix's eval and fetcher caches are
+SQLite files there, and without it every nix command in the sandbox fails with
+`attempt to write a readonly database`. So do not tell codex to move the nix cache
+or set `XDG_CACHE_HOME`; the warm cache is already usable.
 `codex-latest.sh` builds `github:nixos/nixpkgs/nixos-unstable#codex` with nix and
 runs that binary; only if
 the nix build fails does it fall back to the locally installed `codex`. It logs which
@@ -200,6 +232,8 @@ the end:
   --sandbox workspace-write \
   -C "<project root>" \
   -o "<run dir>-2/last.md" \
+  [-m <model>] \
+  [-c model_reasoning_effort=<effort>] \
   [-c sandbox_workspace_write.network_access=true] \
   resume --last "<what is wrong and what to change>" </dev/null
 ```
@@ -209,7 +243,8 @@ input on it.
 
 All flags must come before `resume`; `resume` itself only accepts `-c`, `--last`, and
 `-i`. Use `--approve-for-me` instead of `--sandbox` here too if that is what the
-first run used.
+first run used. Repeat the user's `-m` and `model_reasoning_effort` on every resume;
+do not rely on the resumed session remembering them.
 
 Then review again.
 
@@ -217,5 +252,5 @@ Then review again.
 
 Tell the user, in this order: whether the acceptance commands pass, which codex
 binary ran (nix unstable or local fallback), which flags you chose and why (model,
-network, approve-for-me, trust), what codex changed, what you changed after review,
-and anything left open. Do not commit unless asked.
+reasoning effort, network, approve-for-me, trust), what codex changed, what you
+changed after review, and anything left open. Do not commit unless asked.

@@ -8,7 +8,7 @@ def unwrap:
   | sub("^\\S*bash -lc (?<b>\\S+)$"; "\(.b)"; "p");
 def lastline: [splits("\n") | select(test("\\S"))] | last // "";
 def note: lastline | short(140) | if . == "" then "" else " :: " + . end;
-def blocked: test("Operation not permitted|Permission denied|Read-only file system|Could not resolve|Temporary failure in name resolution|Name or service not known|Network is unreachable|EAI_AGAIN|ENOTFOUND"; "i");
+def blocked: test("Operation not permitted|Permission denied|Read-only file system|readonly database|Could not resolve|Temporary failure in name resolution|Name or service not known|Network is unreachable|EAI_AGAIN|ENOTFOUND"; "i");
 # exit 1 from search/compare tools means "no match" or "differs", not an error
 def nomatch: .exit_code == 1 and (.command | unwrap | test("(^|[|;&(]\\s*)(rg|grep|egrep|fgrep|test|\\[|diff|cmp)\\s"));
 

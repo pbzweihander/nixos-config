@@ -33,7 +33,13 @@ watch_quiet() {
 watch_quiet &
 watcher=$!
 
-"$codex_latest" exec --json "$@" 2>"$dir/stderr.log" \
+# nix keeps its eval/fetcher caches as SQLite files under ~/.cache/nix; the sandbox
+# makes them read-only, and every nix command then fails with "attempt to write a
+# readonly database". Keep them writable so codex reuses the warm cache.
+nix_cache="${XDG_CACHE_HOME:-$HOME/.cache}/nix"
+mkdir -p "$nix_cache"
+
+"$codex_latest" exec --json --add-dir "$nix_cache" "$@" 2>"$dir/stderr.log" \
   | tee "$dir/events.jsonl" \
   | "${jq_cmd[@]}" -n -r --unbuffered -f "$here/codex-progress.jq"
 rc=${PIPESTATUS[0]}
