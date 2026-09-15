@@ -73,11 +73,18 @@ in
     bluetooth.enable = true;
     asahi = {
       enable = true;
-      peripheralFirmwareDirectory = builtins.fetchTree {
-        type = "path";
-        path = "/efi/vendorfw";
+      # requireFile rather than builtins.fetchTree: the firmware is needed only when
+      # building, so other machines and CI can still evaluate this configuration.
+      peripheralFirmwareDirectory = pkgs.requireFile {
+        name = "vendorfw";
+        hashMode = "recursive";
         # nix hash path /efi/vendorfw
-        narHash = "sha256-tTQYYxEOWTYCePwohNVzJhf2rbBmRt2fJzgDfGa7tlE=";
+        hash = "sha256-tTQYYxEOWTYCePwohNVzJhf2rbBmRt2fJzgDfGa7tlE=";
+        message = ''
+          Add the Asahi peripheral firmware from the ESP to the store:
+            nix-store --add-fixed sha256 --recursive /efi/vendorfw
+          If the firmware changed, update the hash with `nix hash path /efi/vendorfw`.
+        '';
       };
     };
     graphics.extraPackages = with pkgs; [ mesa.opencl ];
