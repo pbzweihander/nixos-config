@@ -60,7 +60,7 @@ with inputs;
     backupFileExtension = "home-manager-backup";
     extraSpecialArgs = {
       inherit inputs;
-      multiverse = config.multiverse;
+      inherit (config) multiverse;
     };
   };
 
