@@ -40,6 +40,8 @@ let
       "Bash(${config.home.homeDirectory}/${codexMonitor} *)"
       # codex-implement reads codex's JSON event log with jq
       "Bash(jq *)"
+      # rules/nix.md has every session lint the Nix code it changes
+      "Bash(statix check *)"
     ];
     # Keep the command string stable: array entries are unioned on merge, so a
     # changed command would be added next to the old one instead of replacing it.
@@ -56,36 +58,39 @@ let
   };
 in
 {
-  home.packages = [ claude-wiki ];
+  home = {
+    packages = [ claude-wiki ];
 
-  home.file = {
-    # A user-level rule rather than ~/.claude/CLAUDE.md, which stays editable (/memory).
-    ".claude/rules/claude-wiki.md".source = ./rules/claude-wiki.md;
-    ".claude/skills/claude-wiki".source = ./skills/claude-wiki;
-    ".claude/skills/codex-implement".source = ./skills/codex-implement;
+    file = {
+      # User-level rules rather than ~/.claude/CLAUDE.md, which stays editable (/memory).
+      ".claude/rules/claude-wiki.md".source = ./rules/claude-wiki.md;
+      ".claude/rules/nix.md".source = ./rules/nix.md;
+      ".claude/skills/claude-wiki".source = ./skills/claude-wiki;
+      ".claude/skills/codex-implement".source = ./skills/codex-implement;
+    };
+
+    # Same approach as programs.zed-editor's mutableUserSettings, except that arrays
+    # (permission rules, hooks) are unioned instead of replaced, so entries added at
+    # runtime survive. Entries removed here are not removed from the file.
+    activation.claudeCodeSettings = lib.hm.dag.entryAfter [ "linkGeneration" ] ''
+      settings=${lib.escapeShellArg "${config.home.homeDirectory}/.claude/settings.json"}
+      mkdir -p "$(dirname "$settings")"
+      [ -e "$settings" ] || echo '{}' > "$settings"
+      if merged="$(${lib.getExe pkgs.jq} --slurpfile static ${
+        (pkgs.formats.json { }).generate "claude-code-settings.json" settings
+      } '
+        def merge($b):
+          if type == "object" and ($b | type) == "object" then
+            reduce ($b | keys_unsorted[]) as $k (.; .[$k] |= merge($b[$k]))
+          elif type == "array" and ($b | type) == "array" then
+            reduce $b[] as $x (.; if index([$x]) then . else . + [$x] end)
+          else $b end;
+        merge($static[0])
+      ' "$settings")"; then
+        printf '%s\n' "$merged" > "$settings"
+      else
+        warnEcho "$settings is not valid JSON; not merging Claude Code settings"
+      fi
+    '';
   };
-
-  # Same approach as programs.zed-editor's mutableUserSettings, except that arrays
-  # (permission rules, hooks) are unioned instead of replaced, so entries added at
-  # runtime survive. Entries removed here are not removed from the file.
-  home.activation.claudeCodeSettings = lib.hm.dag.entryAfter [ "linkGeneration" ] ''
-    settings=${lib.escapeShellArg "${config.home.homeDirectory}/.claude/settings.json"}
-    mkdir -p "$(dirname "$settings")"
-    [ -e "$settings" ] || echo '{}' > "$settings"
-    if merged="$(${lib.getExe pkgs.jq} --slurpfile static ${
-      (pkgs.formats.json { }).generate "claude-code-settings.json" settings
-    } '
-      def merge($b):
-        if type == "object" and ($b | type) == "object" then
-          reduce ($b | keys_unsorted[]) as $k (.; .[$k] |= merge($b[$k]))
-        elif type == "array" and ($b | type) == "array" then
-          reduce $b[] as $x (.; if index([$x]) then . else . + [$x] end)
-        else $b end;
-      merge($static[0])
-    ' "$settings")"; then
-      printf '%s\n' "$merged" > "$settings"
-    else
-      warnEcho "$settings is not valid JSON; not merging Claude Code settings"
-    fi
-  '';
 }
