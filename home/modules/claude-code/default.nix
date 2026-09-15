@@ -24,15 +24,22 @@ let
       '';
 
   wikiDir = "${config.xdg.dataHome}/claude-wiki";
+  codexMonitor = ".claude/skills/codex-implement/scripts/codex-monitor.sh";
 
   # Merged into ~/.claude/settings.json on activation instead of linked from the store:
   # Claude Code writes that file itself (/config, /model, /permissions).
   settings = {
     permissions.allow = [
-      "Bash(claude-wiki:*)"
+      "Bash(claude-wiki *)"
       # a leading `//` marks an absolute path in permission rules
       "Read(/${wikiDir}/**)"
       "Edit(/${wikiDir}/**)"
+      # codex-implement starts this with the Monitor tool, which uses Bash rules. Whether
+      # `~` is expanded before matching is undocumented, so allow both spellings.
+      "Bash(~/${codexMonitor} *)"
+      "Bash(${config.home.homeDirectory}/${codexMonitor} *)"
+      # codex-implement reads codex's JSON event log with jq
+      "Bash(jq *)"
     ];
     # Keep the command string stable: array entries are unioned on merge, so a
     # changed command would be added next to the old one instead of replacing it.

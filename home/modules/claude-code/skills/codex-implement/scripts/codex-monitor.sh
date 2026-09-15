@@ -1,13 +1,24 @@
 #!/usr/bin/env bash
 # Run `codex exec --json` and print only important progress lines, for Claude Code's Monitor tool.
-# usage: codex-monitor.sh <run-dir> <codex exec args...>   (stdin is passed through to codex)
+# usage: codex-monitor.sh [--local] [--quiet-secs N] <run-dir> <codex exec args...>
+#   (stdin is passed through to codex)
 # Writes <run-dir>/events.jsonl (raw events) and <run-dir>/stderr.log (nix build + codex stderr).
-# Prints [QUIET] when codex has emitted nothing for CODEX_QUIET_SECS (default 600).
+# Prints [QUIET] when codex has emitted nothing for --quiet-secs seconds (default 600).
+# --local skips the nixpkgs-unstable build and runs the locally installed codex.
 set -uo pipefail
 here="$(dirname "$(readlink -f "$0")")"
 codex_latest="${CODEX_LATEST:-$here/codex-latest.sh}"
 quiet_secs="${CODEX_QUIET_SECS:-600}"
 quiet_poll="${CODEX_QUIET_POLL:-60}"
+# Options are flags rather than env var prefixes: a `FOO=1 cmd` prefix keeps the command
+# from matching Claude Code's Bash allow rule for this script.
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --quiet-secs) quiet_secs="$2"; shift 2 ;;
+    --local) export CODEX_LATEST_FORCE_LOCAL=1; shift ;;
+    *) break ;;
+  esac
+done
 dir="$1"; shift
 mkdir -p "$dir"
 : > "$dir/events.jsonl"

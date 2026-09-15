@@ -146,6 +146,11 @@ step arrives in this session as a notification while it works:
 Replace `--sandbox workspace-write` with `--approve-for-me` when you chose auto
 review in step 2; never pass both.
 
+Start the command with exactly `~/.claude/skills/codex-implement/scripts/codex-monitor.sh`
+and never prefix it with env var assignments. Nix-managed settings allow that command
+without a prompt, and a `FOO=1 …` prefix breaks the match. Runner options go right
+after the script name, before the run directory.
+
 `codex-monitor.sh` runs `codex-latest.sh exec --json` with your arguments, saves the
 raw events to `<run dir>/events.jsonl` and stderr to `<run dir>/stderr.log`, and
 prints only the events that may need your attention, one line each, through `jq`.
@@ -156,8 +161,8 @@ or set `XDG_CACHE_HOME`; the warm cache is already usable.
 `codex-latest.sh` builds `github:nixos/nixpkgs/nixos-unstable#codex` with nix and
 runs that binary; only if
 the nix build fails does it fall back to the locally installed `codex`. It logs which
-one it used to `stderr.log`; mention that in your report. Prefix the command with
-`CODEX_LATEST_FORCE_LOCAL=1` to skip nix when the user asks for the local one.
+one it used to `stderr.log`; mention that in your report. Pass `--local` before the
+run directory to skip nix when the user asks for the local one.
 
 Event lines:
 
@@ -166,7 +171,7 @@ Event lines:
 | `[FAIL rc=N] <cmd> :: <last output line>` | A command failed. Sent once per distinct command. | Usually nothing; codex fixes its own failures. |
 | `[BLOCKED rc=N] <cmd> :: <line>` | The failure looks like a sandbox denial: DNS or network errors, `Operation not permitted`, read-only filesystem. | codex cannot fix this. If the spec needs it, stop and resume with the missing flag. |
 | `[STUCK?] same command failed 3 times: <cmd>` | codex keeps retrying one failing command. | Read the raw events; stop it if it is going nowhere. |
-| `[QUIET] no codex events for <time>; still running: <cmd>` | Nothing new for `CODEX_QUIET_SECS` (default 600). Sent once per silent stretch. | Normal for a long test suite or the first nix build. A server started in the foreground that never returns is a hang: stop it. |
+| `[QUIET] no codex events for <time>; still running: <cmd>` | Nothing new for `--quiet-secs` seconds (default 600). Sent once per silent stretch. | Normal for a long test suite or the first nix build. A server started in the foreground that never returns is a hang: stop it. |
 | `[plan d/n] next: <item>` | codex's todo list advanced. | Nothing. |
 | `[FAIL mcp] <server>.<tool>` | An MCP tool call failed. | Usually nothing. |
 | `[ERROR] ...` | A non-fatal error, such as a dropped stream codex retries. | Nothing unless it repeats. |
@@ -186,8 +191,8 @@ While it runs:
 - Tell the user about those same events and what you decided. Do not relay the rest.
 - Do not poll or sleep. Keep doing independent work, or wait for events.
 - File edits are not shown live. Check for edits outside the spec's area in step 4.
-- If the project's test suite routinely runs longer than ten minutes, prefix the
-  command with `CODEX_QUIET_SECS=<seconds>` to raise the threshold.
+- If the project's test suite routinely runs longer than ten minutes, pass
+  `--quiet-secs <seconds>` before the run directory to raise the threshold.
 - After `[EXIT]`, go to step 4. The stream ends by itself; no TaskStop needed.
 
 Other useful flags:
