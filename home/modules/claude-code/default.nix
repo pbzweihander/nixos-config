@@ -5,23 +5,24 @@
   ...
 }:
 let
-  claude-wiki =
-    pkgs.runCommand "claude-wiki"
-      {
-        nativeBuildInputs = [
-          pkgs.makeWrapper
-          pkgs.ruff
-          pkgs.git
-        ];
-      }
-      ''
-        ruff check --no-cache --select E9,F ${./claude-wiki/claude-wiki.py}
-        install -Dm755 ${./claude-wiki/claude-wiki.py} $out/libexec/claude-wiki.py
-        makeWrapper ${pkgs.python3.withPackages (ps: [ ps.pyyaml ])}/bin/python3 $out/bin/claude-wiki \
-          --add-flags $out/libexec/claude-wiki.py \
-          --suffix PATH : ${lib.makeBinPath [ pkgs.git ]}
-        bash ${./claude-wiki/smoke-test.sh} $out/bin/claude-wiki
-      '';
+  claude-wiki = pkgs.rustPlatform.buildRustPackage {
+    pname = "claude-wiki";
+    version = "0.1.0";
+    src = ./claude-wiki;
+    cargoLock.lockFile = ./claude-wiki/Cargo.lock;
+    nativeBuildInputs = [ pkgs.makeWrapper ];
+    postInstall = ''
+      wrapProgram $out/bin/claude-wiki \
+        --suffix PATH : ${lib.makeBinPath [ pkgs.git ]}
+    '';
+    doInstallCheck = true;
+    nativeInstallCheckInputs = [ pkgs.git ];
+    installCheckPhase = ''
+      runHook preInstallCheck
+      bash smoke-test.sh $out/bin/claude-wiki
+      runHook postInstallCheck
+    '';
+  };
 
   wikiDir = "${config.xdg.dataHome}/claude-wiki";
   codexMonitor = ".claude/skills/codex-implement/scripts/codex-monitor.sh";
@@ -51,6 +52,18 @@ let
           {
             type = "command";
             command = "claude-wiki context";
+          }
+        ];
+      }
+    ];
+    # Keep the command string stable: array entries are unioned on merge, so a
+    # changed command would be added next to the old one instead of replacing it.
+    hooks.UserPromptSubmit = [
+      {
+        hooks = [
+          {
+            type = "command";
+            command = "claude-wiki remind";
           }
         ];
       }

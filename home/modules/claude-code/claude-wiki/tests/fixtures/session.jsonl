@@ -1,0 +1,9 @@
+{"type":"user","sessionId":"fixture-session","uuid":"u1","timestamp":"2026-09-16T10:00:00Z","cwd":"/repos/demo/.claude/worktrees/task","gitBranch":"feature","message":{"content":"How does the orbital cache recover?"}}
+{"type":"assistant","sessionId":"fixture-session","uuid":"a1","timestamp":"2026-09-16T10:01:00Z","cwd":"/repos/demo/.claude/worktrees/task","gitBranch":"feature","message":{"content":[{"type":"thinking","thinking":"thinkinghiddenonly"},{"type":"tool_use","input":{"command":"toolusehiddenonly"}},{"type":"text","text":"The orbital cache recovery uses a journal. Credential example: ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}]}}
+{"type":"user","sessionId":"fixture-session","uuid":"u2","timestamp":"2026-09-16T10:02:00Z","cwd":"/repos/demo","gitBranch":"feature","message":{"content":[{"type":"tool_result","content":"resulthiddenonly"},{"type":"text","text":"The journal recovers cleanly."}]}}
+{"type":"assistant","sessionId":"fixture-session","uuid":"a2","timestamp":"2026-09-16T10:03:00Z","cwd":"/repos/demo","gitBranch":"feature","message":{"content":[{"type":"text","text":"Recovery verification is complete."}]}}
+{"type":"user","sessionId":"fixture-session","uuid":"meta","timestamp":"2026-09-16T10:04:00Z","cwd":"/repos/demo","gitBranch":"feature","isMeta":true,"message":{"content":"metahiddenonly"}}
+{"type":"assistant","sessionId":"fixture-session","uuid":"side","timestamp":"2026-09-16T10:05:00Z","cwd":"/repos/demo","gitBranch":"feature","isSidechain":true,"message":{"content":[{"type":"text","text":"sidehiddenonly"}]}}
+{"type":"user","sessionId":"fixture-session","uuid":"wrapper","timestamp":"2026-09-16T10:06:00Z","cwd":"/repos/demo","gitBranch":"feature","message":{"content":"<command>commandhiddenonly</command>"}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"missinghiddenonly"}]}}
+not JSON
