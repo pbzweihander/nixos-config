@@ -240,6 +240,9 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
                         extra += &format!(", {x}");
                     }
                 }
+                if row.backlinks > 0 && matches!(row.kind.as_str(), "knowledge" | "followups") {
+                    extra += &format!(", linked by {}", row.backlinks);
+                }
                 items.push(format!(
                     "- {}: {} ({}, {}{extra})",
                     row.path,

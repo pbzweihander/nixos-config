@@ -82,6 +82,30 @@ claude-wiki tags                                                                
   project, tags, and a snippet with matches in `[brackets]`. Read the page with the
   Read tool before relying on it.
 
+## Links
+
+Link related pages in the body with `[[type/slug]]`, for example
+`[[knowledge/nix-sandbox]]`. The type is `knowledge`, `projects`, `followups`, or
+`history`; the slug uses lowercase letters, digits, dots, underscores, and hyphens.
+A link resolves to `pages/<type>/<slug>.md`. Optional display text is allowed:
+`[[knowledge/nix-sandbox|sandbox notes]]`. Frontmatter, fenced code blocks, and
+inline code are excluded; repeated links count once, and self-links are ignored.
+
+- A follow-up links the knowledge page that produced it.
+- A history entry links every page it created or updated.
+- A knowledge page links the pages that are its background or that it supersedes.
+- A project overview links its 4 to 6 most important knowledge pages.
+
+`claude-wiki links <page>` shows outgoing links and backlinks, with titles or
+`[missing]` for absent targets. Blocked titles are replaced by `[BLOCKED: <category>]`.
+`links`, `sync`, and `check` all accept a page as `type/slug`, as a path relative
+to the wiki root, or as an absolute path; `links` also accepts a quoted
+`'[[type/slug]]'`.
+Search and list show `linked by N` when other pages link to a result; knowledge
+and follow-up entries in context show it too. `claude-wiki check` warns about
+broken links against the working tree. Sync warns too, and reports incoming links
+before committing a deletion or rename so that references can be updated.
+
 ## Past sessions
 
 When the wiki has no page on a topic, search past Claude Code sessions:
@@ -167,8 +191,9 @@ in another language. Make every page readable on its own.
 ## Validation and blocked pages
 
 `claude-wiki check [paths...]` performs the same validation without committing
-(default: all pages). It exits 0 when clean, 1 for frontmatter or overview-budget
-warnings, and 2 for security findings. `sync` commits with warnings but exits 2
+(default: all pages). It exits 0 when clean, 1 for frontmatter, overview-budget,
+or broken-link warnings, and 2 for security findings. `sync` commits with validation
+warnings and exits 1, but exits 2
 without committing if a selected page has findings.
 
 Full page text, including frontmatter, is scanned for instruction overrides,

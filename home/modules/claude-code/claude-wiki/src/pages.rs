@@ -2,6 +2,7 @@ use anyhow::Result;
 use regex::Regex;
 use serde_yaml_ng::{Mapping, Value};
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     sync::LazyLock,
@@ -11,6 +12,9 @@ pub const TYPES: [&str; 4] = ["knowledge", "projects", "followups", "history"];
 static FRONTMATTER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)\A---\n(.*?)\n---\n?").unwrap());
 static HEADING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^#\s+(.+)$").unwrap());
+static LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[\[([^\[\]\r\n]*)\]\]").unwrap());
+static TARGET: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\A([a-z]+)/([a-z0-9._-]+)\z").unwrap());
 
 #[derive(Default, Debug)]
 pub struct Page {
@@ -22,6 +26,70 @@ pub struct Page {
     pub created: String,
     pub body: String,
     pub problems: Vec<String>,
+    pub links: Vec<String>,
+}
+
+pub fn link_path(target: &str) -> Option<String> {
+    let captures = TARGET.captures(target)?;
+    TYPES
+        .contains(&&captures[1])
+        .then(|| format!("pages/{target}.md"))
+}
+
+fn parse_links(body: &str, rel: &str) -> Vec<String> {
+    let mut prose = String::new();
+    let mut fence = None;
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        let marker = trimmed.as_bytes().first().copied().unwrap_or_default();
+        let run = trimmed.bytes().take_while(|b| *b == marker).count();
+        if let Some((opening, length)) = fence {
+            if marker == opening && run >= length && trimmed[run..].trim().is_empty() {
+                fence = None;
+            }
+            // Keep separated prose from accidentally forming a link across a fence.
+            prose.push('\n');
+        } else if matches!(marker, b'`' | b'~') && run >= 3 {
+            fence = Some((marker, run));
+            prose.push('\n');
+        } else {
+            prose.push_str(line);
+            prose.push('\n');
+        }
+    }
+    // Code spans close only with a backtick run of the same length. Unmatched
+    // backticks remain prose, and spans may cross line boundaries.
+    let mut visible = String::new();
+    let mut rest = prose.as_str();
+    while let Some(start) = rest.find('`') {
+        visible.push_str(&rest[..start]);
+        rest = &rest[start..];
+        let length = rest.bytes().take_while(|b| *b == b'`').count();
+        let mut end = length;
+        let mut closing = None;
+        while let Some(next) = rest[end..].find('`') {
+            let next = end + next;
+            let run = rest[next..].bytes().take_while(|b| *b == b'`').count();
+            end = next + run;
+            if run == length {
+                closing = Some(end);
+                break;
+            }
+        }
+        if let Some(end) = closing {
+            visible.push('\n');
+            rest = &rest[end..];
+        } else {
+            visible.push_str(&rest[..length]);
+            rest = &rest[length..];
+        }
+    }
+    visible.push_str(rest);
+    let mut seen = HashSet::new();
+    LINK.captures_iter(&visible)
+        .filter_map(|c| link_path(c[1].split('|').next().unwrap()))
+        .filter(|path| path != rel && seen.insert(path.clone()))
+        .collect()
 }
 
 pub fn page_type(rel: &str) -> &str {
@@ -127,6 +195,7 @@ pub fn parse(text: &str, rel: &str) -> Page {
         page.project = stem.to_string();
     }
     page.created = get("created");
+    page.links = parse_links(&page.body, rel);
     page
 }
 
@@ -153,6 +222,47 @@ pub fn markdown_files(dir: &Path) -> Result<Vec<PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn links_resolve_in_first_appearance_order() {
+        let page = parse(
+            "---\ntitle: '[[knowledge/frontmatter]]'\ncreated: 2026-09-16\n---\n\
+             [[knowledge/foo|the foo page]] [[projects/demo]] [[followups/a_1.2-b]]\n\
+             [[history/2026-09-16-x]] [[knowledge/foo]] [[knowledge/self]]\n\
+             [[invalid/foo]] [[knowledge/Upper]] [[knowledge/a/b]] [[knowledge/]]\n\
+             [[knowledge/a b]] [[knowledge/foo#anchor]] [[ knowledge/foo]]",
+            "pages/knowledge/self.md",
+        );
+        assert_eq!(
+            page.links,
+            [
+                "pages/knowledge/foo.md",
+                "pages/projects/demo.md",
+                "pages/followups/a_1.2-b.md",
+                "pages/history/2026-09-16-x.md",
+            ]
+        );
+    }
+
+    #[test]
+    fn links_exclude_code() {
+        let body = "[[knowledge/before]] `[[knowledge/inline]]`\n\
+                    ``a ` [[knowledge/double]]``\n\
+                    ```markdown\n[[knowledge/fenced]]\n```\n\
+                    ````\n```\n[[knowledge/long-fence]]\n````\n\
+                    ~~~\n[[knowledge/tilde-fence]]\n~~~\n\
+                    `multiline\n[[knowledge/multiline]]`\n\
+                    [[knowledge/after]] `unmatched [[knowledge/unmatched]]\n\
+                    ```\n[[knowledge/unclosed-fence]]";
+        assert_eq!(
+            parse_links(body, ""),
+            [
+                "pages/knowledge/before.md",
+                "pages/knowledge/after.md",
+                "pages/knowledge/unmatched.md",
+            ]
+        );
+    }
+
     #[test]
     fn frontmatter_and_fallbacks() {
         let p = parse(

@@ -1,5 +1,6 @@
-use crate::{context, expand_home, git, pages, scan};
+use crate::{context, expand_home, git, index, pages, scan};
 use anyhow::{bail, Result};
+use rusqlite::Connection;
 use std::{
     fs,
     path::{Component, Path, PathBuf},
@@ -33,7 +34,10 @@ pub fn wiki_paths(root: &Path, paths: &[String]) -> Result<Vec<String>> {
     paths
         .iter()
         .map(|p| {
-            let path = expand_home(Path::new(p));
+            // Accept the `type/slug` form that links and `links` output use, so a
+            // path copied from there works for sync and check as well.
+            let p = pages::link_path(p).unwrap_or_else(|| p.to_owned());
+            let path = expand_home(Path::new(&p));
             let path = resolve(&if path.is_absolute() {
                 path
             } else {
@@ -51,7 +55,7 @@ pub fn wiki_paths(root: &Path, paths: &[String]) -> Result<Vec<String>> {
         .collect()
 }
 
-fn validate(rel: &str, text: &str) -> i32 {
+fn validate(root: &Path, rel: &str, text: &str) -> i32 {
     let page = pages::parse(text, rel);
     let mut code = 0;
     if pages::page_type(rel).is_empty() {
@@ -64,6 +68,12 @@ fn validate(rel: &str, text: &str) -> i32 {
     for problem in page.problems {
         eprintln!("warning: {rel} {}", scan::redact(&problem));
         code = 1;
+    }
+    for target in page.links {
+        if !root.join(&target).is_file() {
+            eprintln!("warning: {rel}: link to {target}, which does not exist");
+            code = 1;
+        }
     }
     let budget = context::overview_budget();
     let length = page.body.chars().count();
@@ -98,6 +108,7 @@ pub fn check(root: &Path, paths: &[String]) -> Result<i32> {
     let mut code = 0;
     for path in selected {
         code = code.max(validate(
+            root,
             &path.strip_prefix(root)?.to_string_lossy(),
             &pages::read(&path)?,
         ));
@@ -105,7 +116,7 @@ pub fn check(root: &Path, paths: &[String]) -> Result<i32> {
     Ok(code)
 }
 
-pub fn sync(root: &Path, paths: &[String], message: Option<&str>) -> Result<i32> {
+pub fn sync(root: &Path, db: &Connection, paths: &[String], message: Option<&str>) -> Result<i32> {
     let rels = wiki_paths(root, paths)?;
     let pathspec: Vec<&str> = if paths.is_empty() {
         vec![]
@@ -123,10 +134,14 @@ pub fn sync(root: &Path, paths: &[String], message: Option<&str>) -> Result<i32>
     let changes = run(&["diff", "--cached", "--name-status", "-z"])?;
     let fields: Vec<_> = changes.split('\0').filter(|s| !s.is_empty()).collect();
     let mut changes = vec![];
+    let mut removed = vec![];
     let mut i = 0;
     while i < fields.len() {
         let status = fields[i];
         let count = if status.starts_with(['R', 'C']) { 2 } else { 1 };
+        if status.starts_with(['D', 'R']) {
+            removed.push(fields[i + 1]);
+        }
         changes.push((status, fields[i + count]));
         i += count + 1;
     }
@@ -141,10 +156,20 @@ pub fn sync(root: &Path, paths: &[String], message: Option<&str>) -> Result<i32>
         }
         // Validate exactly the staged content that a commit without paths uses.
         let text = git(root, &["show", &format!(":{rel}")])?;
-        code = code.max(validate(rel, &text));
+        code = code.max(validate(root, rel, &text));
     }
     if code == 2 {
         return Ok(2);
+    }
+    for rel in removed {
+        let sources = index::linked_from(db, rel)?;
+        if !sources.is_empty() {
+            eprintln!(
+                "warning: {rel} is linked from {} pages: {}",
+                sources.len(),
+                sources.join(", ")
+            );
+        }
     }
     let summary: Vec<_> = changes
         .iter()
@@ -188,5 +213,5 @@ pub fn sync(root: &Path, paths: &[String], message: Option<&str>) -> Result<i32>
             );
         }
     }
-    Ok(0)
+    Ok(code)
 }

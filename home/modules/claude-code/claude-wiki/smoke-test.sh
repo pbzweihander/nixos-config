@@ -33,6 +33,13 @@ check_not() { # check_not <what> <pattern> <command...>: the output must not con
   ! grep -q -- "$pattern" <<<"$out" || fail "$what" "$*" "$out"
 }
 
+expect_code() { # expect_code <exit status> <command...>
+  local expected=$1 code=0
+  shift
+  out=$("$@" 2>&1) || code=$?
+  [ "$code" -eq "$expected" ] || fail "expected exit $expected, got $code" "$*" "$out"
+}
+
 check "empty wiki" "no pages" "$wiki" list
 
 cat >"$P/knowledge/nix-sandbox.md" <<'EOF'
@@ -70,7 +77,7 @@ printf -- '---\ntitle: no status\nproject: demo\ncreated: 2026-09-16\n---\nbody\
 printf 'no frontmatter\n' >"$P/knowledge/bare.md"
 printf -- '---\ntitle: [unclosed\n---\nbody\n' >"$P/history/2026-09-16-bad.md"
 
-out=$("$wiki" sync 2>&1)
+expect_code 1 "$wiki" sync
 check "sync warns about a page without frontmatter" "bare.md has no frontmatter" echo "$out"
 check "sync warns about a follow-up without status" "no-status.md has no status" echo "$out"
 check "sync committed everything" "nothing to commit" "$wiki" sync
@@ -110,12 +117,6 @@ check "sync with a root-relative path commits a deletion" "delete knowledge/mine
 check "sync without paths commits the rest" "add knowledge/theirs" "$wiki" sync
 
 
-expect_code() { # expect_code <exit status> <command...>
-  local expected=$1 code=0
-  shift
-  out=$("$@" 2>&1) || code=$?
-  [ "$code" -eq "$expected" ] || fail "expected exit $expected, got $code" "$*" "$out"
-}
 
 printf -- '---\ntitle: safe title\ncreated: 2026-09-16\n---\nghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n' >"$P/knowledge/secret.md"
 head_before=$(git -C "$CLAUDE_WIKI_DIR" rev-parse HEAD)
@@ -146,7 +147,8 @@ check "outside paths refused" 'not inside the wiki' echo "$out"
   printf -- '---\ntitle: demo\ncreated: 2026-09-16\n---\n'
   for ((i=0; i<40; i++)); do printf '%099d\n' 0; done
 } >"$P/projects/demo.md"
-check "oversized overview warning" 'body is 4000 chars; only the first 3000' "$wiki" sync pages/projects/demo.md
+expect_code 1 "$wiki" sync pages/projects/demo.md
+check "oversized overview warning" 'body is 4000 chars; only the first 3000' echo "$out"
 cd "$HOME/demo"
 check "overview gauge" 'Project overview (pages/projects/demo.md) \[2,999/3,000 chars\]' "$wiki" context
 check "overview truncation" 'more chars in the page; shorten the page to fit' "$wiki" context
@@ -219,4 +221,84 @@ for ((i=1; i<=15; i++)); do
 done
 out=$(printf 'invalid json' | "$wiki" remind 2>/dev/null)
 [ -z "$out" ] || fail "remind printed an error to stdout" remind "$out"
+# Links are indexed from prose, and warnings must not prevent commits.
+cat >"$P/history/link-source.md" <<'EOF'
+---
+title: link source
+created: 2026-09-16
+---
+[[knowledge/nix-sandbox]] [[knowledge/nix-sandbox|same page]]
+[[knowledge/missing]]
+```markdown
+[[knowledge/replica-notes]] [[knowledge/fenced-missing]]
+```
+`[[knowledge/inline-missing]]`
+EOF
+expect_code 1 "$wiki" check pages/history/link-source.md
+check "broken link warning names source and target" 'warning: pages/history/link-source.md: link to pages/knowledge/missing.md, which does not exist' echo "$out"
+check_not "code links produce no warnings" 'fenced-missing\|inline-missing' echo "$out"
+expect_code 1 "$wiki" sync pages/history/link-source.md
+check "sync warns about broken links" 'link to pages/knowledge/missing.md, which does not exist' echo "$out"
+check "sync commits despite broken links" 'committed:' echo "$out"
+check "warning commit contains the source" 'link-source.md' git -C "$CLAUDE_WIKI_DIR" show --stat HEAD
+out=$("$wiki" links pages/knowledge/nix-sandbox.md)
+check "backlink appears under linked from" 'linked from:' echo "$out"
+[ "${out#*linked from:}" = $'\n- pages/history/link-source.md: link source' ] || fail "backlink section" links "$out"
+for page in knowledge/nix-sandbox '[[knowledge/nix-sandbox]]' "$P/knowledge/nix-sandbox.md" '~/wiki/pages/knowledge/nix-sandbox.md'; do
+  check "links accepts $page" 'pages/history/link-source.md: link source' "$wiki" links "$page"
+done
+expect_code 1 "$wiki" links knowledge/absent
+check "missing page error" '^claude-wiki: no such page$' echo "$out"
+check "outgoing title" 'pages/knowledge/nix-sandbox.md: nix commands fail' "$wiki" links history/link-source
+expect_code 1 "$wiki" check history/link-source
+check "check accepts the type/slug form" 'link to pages/knowledge/missing.md' echo "$out"
+check "outgoing missing target" 'pages/knowledge/missing.md: \[missing\]' "$wiki" links history/link-source
+check_not "fenced link not indexed" 'replica-notes' "$wiki" links history/link-source
+check "search backlink marker" 'tags=nix,sandbox; linked by 1)' "$wiki" search --tag sandbox nix
+check "list backlink marker" 'linked by 1)' "$wiki" list --tag sandbox
+check "context knowledge backlink marker" 'nix-sandbox.md:.*, linked by 1)' "$wiki" context -n 100
+check_not "fenced link not counted" 'linked by' "$wiki" list --tag postgres
+
+# Re-indexing replaces outgoing links instead of accumulating stale ones.
+printf '\n[[followups/open-task]]\n' >>"$P/history/link-source.md"
+check "context follow-up backlink marker" 'open-task.md:.*, linked by 1)' "$wiki" context -n 100
+sed -i '/followups\/open-task/d' "$P/history/link-source.md"
+check_not "removed link drops backlink count" 'linked by' "$wiki" list --type followups
+
+# Blocked titles must not leak through either direction of the graph.
+cat >"$P/knowledge/link-blocked.md" <<'EOF'
+---
+title: hidden link title
+created: 2026-09-16
+---
+ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+[[knowledge/nix-sandbox]]
+EOF
+check "blocked backlink title" 'pages/knowledge/link-blocked.md: \[BLOCKED: secret\]' "$wiki" links knowledge/nix-sandbox
+check_not "blocked backlink title hidden" 'hidden link title' "$wiki" links knowledge/nix-sandbox
+printf '\n[[knowledge/link-blocked]]\n' >>"$P/history/link-source.md"
+check "blocked outgoing title" 'pages/knowledge/link-blocked.md: \[BLOCKED: secret\]' "$wiki" links history/link-source
+check "blocked page can be traversed" 'pages/knowledge/nix-sandbox.md: nix commands fail' "$wiki" links knowledge/link-blocked
+rm "$P/knowledge/link-blocked.md"
+sed -i '/knowledge\/link-blocked/d' "$P/history/link-source.md"
+check "removed source drops backlink count" 'linked by 1)' "$wiki" list --tag sandbox
+
+# A rename reports the old target even though the refreshed index has moved it.
+mv "$P/knowledge/nix-sandbox.md" "$P/knowledge/renamed-sandbox.md"
+out=$("$wiki" sync pages/knowledge/nix-sandbox.md pages/knowledge/renamed-sandbox.md 2>&1)
+check "rename warns about incoming links" 'warning: pages/knowledge/nix-sandbox.md is linked from 1 pages: pages/history/link-source.md' echo "$out"
+check "rename still commits" 'committed:.*rename' echo "$out"
+mv "$P/knowledge/renamed-sandbox.md" "$P/knowledge/nix-sandbox.md"
+"$wiki" sync pages/knowledge/renamed-sandbox.md pages/knowledge/nix-sandbox.md >/dev/null
+head_before=$(git -C "$CLAUDE_WIKI_DIR" rev-parse HEAD)
+rm "$P/knowledge/nix-sandbox.md"
+out=$("$wiki" sync pages/knowledge/nix-sandbox.md 2>&1)
+check "deletion warns about incoming links" 'warning: pages/knowledge/nix-sandbox.md is linked from 1 pages: pages/history/link-source.md' echo "$out"
+check "deletion still commits" 'committed: wiki: delete knowledge/nix-sandbox' echo "$out"
+[ "$(git -C "$CLAUDE_WIKI_DIR" rev-parse HEAD)" != "$head_before" ] || fail "deletion made no commit" sync "$out"
+check "deleted target becomes missing" 'pages/knowledge/nix-sandbox.md: \[missing\]' "$wiki" links history/link-source
+check "deletion commit removes target" '^D.*pages/knowledge/nix-sandbox.md' git -C "$CLAUDE_WIKI_DIR" diff-tree --no-commit-id --name-status -r HEAD
+rm "$P/history/link-source.md"
+check "removed source has no links" '(none)' "$wiki" links knowledge/replica-notes
+
 echo "claude-wiki smoke test passed"

@@ -93,6 +93,9 @@ fn show(root: &Path, row: &Row, snippet: Option<String>) {
             row.tags.split_whitespace().collect::<Vec<_>>().join(",")
         ));
     }
+    if row.backlinks > 0 {
+        meta.push(format!("linked by {}", row.backlinks));
+    }
     println!("{path}\n  {}  ({})", row.title, meta.join("; "));
     if let Some(s) = snippet.filter(|s| !s.is_empty()) {
         println!("  {}", s.split_whitespace().collect::<Vec<_>>().join(" "));
@@ -117,7 +120,7 @@ pub fn search(
     let mut stmt = db.prepare(&format!("select {COLUMNS}, snippet(fts, -1, '[', ']', '…', 16) {JOIN} where fts match ?{where_sql} order by bm25(fts, 0,0,0,0,10,5,3,1) limit ?"))?;
     let rows = stmt
         .query_map(params_from_iter(args), |r| {
-            Ok((Row::read(r)?, r.get::<_, String>(8)?))
+            Ok((Row::read(r)?, r.get::<_, String>(9)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     if rows.is_empty() {

@@ -1,6 +1,7 @@
 //! Shared markdown wiki, indexed incrementally and serialized across sessions.
 mod context;
 mod index;
+mod links;
 mod pages;
 mod remind;
 mod scan;
@@ -45,6 +46,8 @@ enum Commands {
     },
     /// Tags and projects in use, with page counts
     Tags,
+    /// Outgoing links and backlinks for a page
+    Links { page: String },
     /// Index pages and commit changes to the wiki's git repo
     Sync {
         paths: Vec<String>,
@@ -159,8 +162,9 @@ fn run(command: &Commands) -> Result<i32> {
         Commands::Search { terms, n, filters } => search::search(&root, &db, terms, *n, filters)?,
         Commands::List { n, filters } => search::list(&root, &db, *n, filters)?,
         Commands::Tags => search::tags(&db)?,
+        Commands::Links { page } => links::show(&root, &db, page)?,
         Commands::Sync { paths, message, .. } => {
-            return sync::sync(&root, paths, message.as_deref())
+            return sync::sync(&root, &db, paths, message.as_deref())
         }
         Commands::Check { paths } => return sync::check(&root, paths),
         Commands::Context(args) => context::run(&root, &db, args)?,

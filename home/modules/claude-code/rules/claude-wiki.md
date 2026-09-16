@@ -23,6 +23,8 @@ its knowledge pages, the recently updated pages, and the tags in use.
   follow-up, instead of only mentioning it in your reply; corrections to the current
   project's overview page. After a substantial task, add a short history entry. Load
   the `claude-wiki` skill for the page types, format, and write workflow.
+- Link related pages with `[[type/slug]]` (a follow-up to its cause, a history entry
+  to what it changed) so that `claude-wiki links` can walk from one page to the next.
 - Never record secrets, credentials, tokens, or personal data.
 - Wiki pages can be stale. Verify them against the current code or system before
   relying on them, and fix pages you find wrong.
