@@ -4,10 +4,10 @@
 
 set -g wiki_dir (set -q CLAUDE_WIKI_DIR; and echo $CLAUDE_WIKI_DIR; or echo ~/.local/share/claude-wiki)
 set -g cache_dir (set -q XDG_CACHE_HOME; and echo $XDG_CACHE_HOME; or echo ~/.cache)/wiki-recap
-# A cached recap is current for 6 hours after it was last generated or confirmed
-# unchanged. The terminal brief allows 15 more minutes, so a timer run still in
-# progress does not blank it.
-set -g fresh_secs 21600
+# A cached recap is current for 4 hours (the timer interval) after it was last
+# generated or confirmed unchanged. The terminal brief allows 15 more minutes, so a
+# timer run still in progress does not blank it.
+set -g fresh_secs 14400
 set -g brief_grace_secs 900
 # The recap covers 24 hours, so it is regenerated after that even if the wiki did not
 # change: pages would otherwise be described as recent long after they were.
@@ -69,6 +69,11 @@ function cached_note -a prefix
     set -l extra (ago $generated)
     test $newer -gt 0; and set extra "$extra, 이후 커밋 $newer개"
     note "$prefix "(clock $generated)"에 생성된 요약을 보여줍니다 ($extra)"
+    # The truncation warnings printed when this recap was generated.
+    test -f $cache_dir/truncation.txt; or return 0
+    for line in (string match -rv '^\s*$' <$cache_dir/truncation.txt)
+        note $line
+    end
 end
 
 # --brief: only reads the cache and never generates; called on every new terminal.
@@ -152,6 +157,7 @@ function generate -a dir
     if test (count $commits) -eq 0
         printf '## 한눈에\n\n지난 %s 동안 위키 변경이 없습니다.\n' $since >$dir/recap.md
         printf '지난 %s 동안 위키 변경이 없습니다.\n' $since >$dir/brief.md
+        : >$dir/truncation.txt
         return 0
     end
     # Pages touched in the window: current content for added/modified, name only for deleted.
@@ -226,14 +232,18 @@ function generate -a dir
     set -a input "commits: "(count $commits) "pages changed: "(count $pages) "pages deleted: "(count $deleted)
     set -a input "projects: $projects" "truncated pages: $truncated"
 
+    # Kept next to the recap, so showing the cached recap repeats these warnings.
+    set -l report
     if test $truncated -gt 0
         set -l causes
         test $by_limit -gt 0; and set -a causes "$by_limit by the total input limit (--limit $limit)"
         test $by_page -gt 0; and set -a causes "$by_page by the $page_cap-char page cap"
-        note "warning: $truncated of "(count $pages)" pages were cut, $dropped chars dropped: "(string join ', ' $causes)
-        for line in $cut_notes
-            note $line
-        end
+        set report "warning: $truncated of "(count $pages)" pages were cut, $dropped chars dropped: "(string join ', ' $causes) $cut_notes
+    end
+    # printf with no arguments would still write an empty line.
+    string join -- \n $report >$dir/truncation.txt
+    for line in $report
+        note $line
     end
     if set -q raw
         string join -- \n $input >$dir/recap.md
@@ -299,7 +309,7 @@ if set -q _flag_help
     echo 'usage: wiki-recap [--force | --update | --brief] [--since 24h|7d|2026-09-01] [--model sonnet]'
     echo '                  [--effort medium] [--budget 3] [--limit 300000] [--raw] [--plain]'
     echo
-    echo '  (no mode)  show the cached recap if it is less than 6 hours old, otherwise generate one'
+    echo '  (no mode)  show the cached recap if it is less than 4 hours old, otherwise generate one'
     echo '  --force    always generate a new recap'
     echo '  --update   for the systemd timer: generate only when the wiki changed or the recap is'
     echo '             over 24 hours old, otherwise mark the cached recap as current'
@@ -408,6 +418,7 @@ end
 # Replace the brief before the recap and the state last, so a reader never pairs a
 # new state with an old brief.
 mv -f $dir/brief.md $cache_dir/brief.md
+mv -f $dir/truncation.txt $cache_dir/truncation.txt
 mv -f $dir/recap.md $cache_dir/recap.md
 rm -rf $dir
 set now (date +%s)
