@@ -5,6 +5,7 @@
     ../../home/profiles/graphical.nix
     ../../home/profiles/gaming.nix
 
+    ../../home/modules/claude-code/wiki-recap
     ../../home/modules/kde.nix
   ];
 
