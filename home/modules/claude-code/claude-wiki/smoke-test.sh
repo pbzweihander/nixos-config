@@ -8,7 +8,8 @@ fixtures=$(cd "$(dirname "${BASH_SOURCE[0]}")/tests/fixtures" && pwd)
 
 HOME=$(mktemp -d)
 export HOME CLAUDE_WIKI_DIR=$HOME/wiki
-export CLAUDE_WIKI_SESSIONS_DIR=$HOME/transcripts
+sessions_dir=$HOME/transcripts
+export CLAUDE_WIKI_SESSIONS_DIRS=$sessions_dir
 unset CLAUDE_SESSION_ID CLAUDE_WIKI_CONTEXT_BUDGET CLAUDE_WIKI_OVERVIEW_BUDGET CLAUDE_WIKI_REMIND_INTERVAL
 trap 'rm -rf "$HOME"' EXIT
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
@@ -159,18 +160,38 @@ cd /
 check "small context trims outside a repository" 'trimmed:' "$wiki" context --budget 400
 check "session database is git-ignored" 'sessions.sqlite\*' cat "$CLAUDE_WIKI_DIR/.gitignore"
 
-mkdir -p "$CLAUDE_WIKI_SESSIONS_DIR/project/subagents"
-cp "$fixtures/session.jsonl" "$CLAUDE_WIKI_SESSIONS_DIR/project/session.jsonl"
-mkdir -p "$CLAUDE_WIKI_SESSIONS_DIR/zz-continued"
+mkdir -p "$sessions_dir/project/subagents"
+cp "$fixtures/session.jsonl" "$sessions_dir/project/session.jsonl"
+mkdir -p "$sessions_dir/zz-continued"
 {
   sed -n '2p' "$fixtures/session.jsonl"
   printf '%s\n' '{"type":"user","sessionId":"outside-repository","uuid":"branchless","timestamp":"2026-09-16T12:00:00Z","message":{"content":"branchlessuniqueword"}}'
-} >"$CLAUDE_WIKI_SESSIONS_DIR/zz-continued/session.jsonl"
-printf '%s\n' '{"type":"assistant","sessionId":"nested","uuid":"n","timestamp":"2026-09-16T12:00:00Z","cwd":"/repos/demo","gitBranch":"main","message":{"content":[{"type":"text","text":"nestedhiddenonly"}]}}' >"$CLAUDE_WIKI_SESSIONS_DIR/project/subagents/nested.jsonl"
+} >"$sessions_dir/zz-continued/session.jsonl"
+printf '%s\n' '{"type":"assistant","sessionId":"nested","uuid":"n","timestamp":"2026-09-16T12:00:00Z","cwd":"/repos/demo","gitBranch":"main","message":{"content":[{"type":"text","text":"nestedhiddenonly"}]}}' >"$sessions_dir/project/subagents/nested.jsonl"
 check "assistant text search" 'session fixture-session' "$wiki" sessions 'orbital cache recovery'
 out=$("$wiki" sessions orbital --role assistant)
 [ "$(grep -c '^session ' <<<"$out")" -eq 1 ] || fail "duplicate UUID adds a session" sessions "$out"
 [ "$(grep -c '^  \[assistant ' <<<"$out")" -eq 1 ] || fail "duplicate UUID adds a hit" sessions "$out"
+
+second_sessions_dir=$HOME/second-transcripts
+mkdir -p "$second_sessions_dir/project"
+printf '%s\n' '{"type":"user","sessionId":"second-session","uuid":"second-account","timestamp":"2026-09-16T12:00:00Z","message":{"content":"cache secondaccountuniqueword"}}' >"$second_sessions_dir/project/session.jsonl"
+export CLAUDE_WIKI_SESSIONS_DIRS=$sessions_dir:$second_sessions_dir
+out=$("$wiki" sessions cache)
+check "first directory searched with second" 'session fixture-session' echo "$out"
+check "second directory searched with first" 'session second-session' echo "$out"
+[ "$(grep -c '^session ' <<<"$out")" -eq 2 ] || fail "multiple source session count" sessions "$out"
+check "second directory unique word" 'session second-session' "$wiki" sessions secondaccountuniqueword
+before_alias=$("$wiki" sessions orbital --role assistant)
+ln -s "$sessions_dir" "$HOME/transcripts-alias"
+export CLAUDE_WIKI_SESSIONS_DIRS=$sessions_dir:$second_sessions_dir:$HOME/transcripts-alias
+out=$("$wiki" sessions orbital --role assistant)
+[ "$(grep -c '^session ' <<<"$out")" -eq 1 ] || fail "symlink adds a session" sessions "$out"
+[ "$(grep -c '^  \[assistant ' <<<"$out")" -eq 1 ] || fail "symlink adds a hit" sessions "$out"
+[ "$out" = "$before_alias" ] || fail "symlink changes fixture results" sessions "$out"
+check "omitted directory drops messages" 'no sessions match' env CLAUDE_WIKI_SESSIONS_DIRS="$sessions_dir:$HOME/transcripts-alias" "$wiki" sessions secondaccountuniqueword
+check "restored directory reindexes messages" 'session second-session' "$wiki" sessions secondaccountuniqueword
+
 check "missing branch and cwd still indexes" 'session outside-repository  (, 2026-09-16..2026-09-16, )' "$wiki" sessions branchlessuniqueword
 check "missing branch and cwd text is found" '\[branchlessuniqueword\]' "$wiki" sessions branchlessuniqueword
 check "worktree project mapping" 'session fixture-session  (demo,' "$wiki" sessions orbital --project demo
@@ -188,14 +209,14 @@ check_not "role excludes user hits" '\[user ' "$wiki" sessions orbital --role as
 check "after date filter" 'no sessions match' "$wiki" sessions orbital --after 2026-09-17
 check "before date filter" 'no sessions match' "$wiki" sessions orbital --before 2026-09-16
 check "context includes adjacent messages" '    user: The journal' "$wiki" sessions orbital --role assistant --context 1
-printf '%s\n' '{"type":"assistant","sessionId":"fixture-session","uuid":"appended","timestamp":"2026-09-16T11:00:00Z","cwd":"/repos/demo","gitBranch":"feature","message":{"content":[{"type":"text","text":"appenduniqueword"}]}}' >>"$CLAUDE_WIKI_SESSIONS_DIR/project/session.jsonl"
+printf '%s\n' '{"type":"assistant","sessionId":"fixture-session","uuid":"appended","timestamp":"2026-09-16T11:00:00Z","cwd":"/repos/demo","gitBranch":"feature","message":{"content":[{"type":"text","text":"appenduniqueword"}]}}' >>"$sessions_dir/project/session.jsonl"
 check "incremental append" 'appenduniqueword' "$wiki" sessions appenduniqueword
-printf '%s' '{"type":"assistant","sessionId":"fixture-session","uuid":"partial","timestamp":"2026-09-16T11:01:00Z","cwd":"/repos/demo","gitBranch":"feature","message":{"content":[{"type":"text","text":"partialuniqueword"}]}}' >>"$CLAUDE_WIKI_SESSIONS_DIR/project/session.jsonl"
+printf '%s' '{"type":"assistant","sessionId":"fixture-session","uuid":"partial","timestamp":"2026-09-16T11:01:00Z","cwd":"/repos/demo","gitBranch":"feature","message":{"content":[{"type":"text","text":"partialuniqueword"}]}}' >>"$sessions_dir/project/session.jsonl"
 check "partial last line waits" 'no sessions match' "$wiki" sessions partialuniqueword
-printf '\n' >>"$CLAUDE_WIKI_SESSIONS_DIR/project/session.jsonl"
+printf '\n' >>"$sessions_dir/project/session.jsonl"
 check "completed partial line indexes" 'partialuniqueword' "$wiki" sessions partialuniqueword
 check "session rebuild" 'session fixture-session' "$wiki" sessions orbital --reindex
-cp "$fixtures/session.jsonl" "$CLAUDE_WIKI_SESSIONS_DIR/project/session.jsonl"
+cp "$fixtures/session.jsonl" "$sessions_dir/project/session.jsonl"
 check "truncated file drops old messages" 'no sessions match' "$wiki" sessions appenduniqueword
 check "truncated file reindexes original messages" 'session fixture-session' "$wiki" sessions orbital
 

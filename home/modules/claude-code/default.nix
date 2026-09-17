@@ -13,7 +13,10 @@ let
     nativeBuildInputs = [ pkgs.makeWrapper ];
     postInstall = ''
       wrapProgram $out/bin/claude-wiki \
-        --suffix PATH : ${lib.makeBinPath [ pkgs.git ]}
+        --suffix PATH : ${lib.makeBinPath [ pkgs.git ]} \
+        --set-default CLAUDE_WIKI_SESSIONS_DIRS ${
+          lib.escapeShellArg (lib.concatMapStringsSep ":" (dir: "${homeDir}/${dir}/projects") configDirs)
+        }
     '';
     doInstallCheck = true;
     nativeInstallCheckInputs = [ pkgs.git ];
@@ -45,7 +48,24 @@ let
           }
       '';
 
+  homeDir = config.home.homeDirectory;
   wikiDir = "${config.xdg.dataHome}/claude-wiki";
+
+  # One Claude Code config directory per account: `claude` uses ~/.claude, and the
+  # `sclaude` fish function sets CLAUDE_CONFIG_DIR to ~/.sclaude. Both get the same
+  # rules, skills, and settings; ~/.sclaude/projects is a link to ~/.claude/projects,
+  # so transcripts and auto memory are shared.
+  configDirs = [
+    ".claude"
+    ".sclaude"
+  ];
+  sharedFiles = {
+    # User-level rules rather than CLAUDE.md, which stays editable (/memory).
+    "rules/claude-wiki.md" = ./rules/claude-wiki.md;
+    "rules/nix.md" = ./rules/nix.md;
+    "skills/claude-wiki" = ./skills/claude-wiki;
+    "skills/codex-implement" = ./skills/codex-implement;
+  };
   codexMonitor = ".claude/skills/codex-implement/scripts/codex-monitor.sh";
 
   # Merged into ~/.claude/settings.json on activation instead of linked from the store:
@@ -59,7 +79,7 @@ let
       # codex-implement starts this with the Monitor tool, which uses Bash rules. Whether
       # `~` is expanded before matching is undocumented, so allow both spellings.
       "Bash(~/${codexMonitor} *)"
-      "Bash(${config.home.homeDirectory}/${codexMonitor} *)"
+      "Bash(${homeDir}/${codexMonitor} *)"
       # codex-implement reads codex's JSON event log with jq
       "Bash(jq *)"
       # rules/nix.md has every session lint the Nix code it changes
@@ -98,19 +118,22 @@ in
       wiki-recap
     ];
 
-    file = {
-      # User-level rules rather than ~/.claude/CLAUDE.md, which stays editable (/memory).
-      ".claude/rules/claude-wiki.md".source = ./rules/claude-wiki.md;
-      ".claude/rules/nix.md".source = ./rules/nix.md;
-      ".claude/skills/claude-wiki".source = ./skills/claude-wiki;
-      ".claude/skills/codex-implement".source = ./skills/codex-implement;
-    };
+    file =
+      lib.mergeAttrsList (
+        map (
+          dir:
+          lib.mapAttrs' (path: source: lib.nameValuePair "${dir}/${path}" { inherit source; }) sharedFiles
+        ) configDirs
+      )
+      // {
+        ".sclaude/projects".source = config.lib.file.mkOutOfStoreSymlink "${homeDir}/.claude/projects";
+      };
 
     # Same approach as programs.zed-editor's mutableUserSettings, except that arrays
     # (permission rules, hooks) are unioned instead of replaced, so entries added at
     # runtime survive. Entries removed here are not removed from the file.
     activation.claudeCodeSettings = lib.hm.dag.entryAfter [ "linkGeneration" ] ''
-      settings=${lib.escapeShellArg "${config.home.homeDirectory}/.claude/settings.json"}
+      for settings in ${lib.escapeShellArgs (map (dir: "${homeDir}/${dir}/settings.json") configDirs)}; do
       mkdir -p "$(dirname "$settings")"
       [ -e "$settings" ] || echo '{}' > "$settings"
       if merged="$(${lib.getExe pkgs.jq} --slurpfile static ${
@@ -128,6 +151,13 @@ in
       else
         warnEcho "$settings is not valid JSON; not merging Claude Code settings"
       fi
+      done
     '';
+  };
+
+  programs.fish.functions.sclaude = {
+    description = "Claude Code with the second account (config directory ~/.sclaude)";
+    wraps = "claude";
+    body = "env CLAUDE_CONFIG_DIR=$HOME/.sclaude claude $argv";
   };
 }

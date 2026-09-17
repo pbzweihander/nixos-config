@@ -7,6 +7,7 @@ use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
     env,
+    ffi::OsStr,
     fs::{self, File},
     io::{BufRead, BufReader, Seek, SeekFrom},
     path::{Path, PathBuf},
@@ -35,12 +36,45 @@ pub struct Args {
     pub reindex: bool,
 }
 
-fn source_dir() -> PathBuf {
-    env_path("CLAUDE_WIKI_SESSIONS_DIR").unwrap_or_else(|| {
-        env_path("CLAUDE_CONFIG_DIR")
-            .unwrap_or_else(|| home().join(".claude"))
-            .join("projects")
-    })
+fn source_dirs() -> Result<Vec<PathBuf>> {
+    let fallback = env_path("CLAUDE_CONFIG_DIR")
+        .unwrap_or_else(|| home().join(".claude"))
+        .join("projects");
+    resolve_source_dirs(
+        env::var_os("CLAUDE_WIKI_SESSIONS_DIRS").as_deref(),
+        &fallback,
+    )
+}
+
+fn resolve_source_dirs(value: Option<&OsStr>, fallback: &Path) -> Result<Vec<PathBuf>> {
+    let candidates = match value.filter(|v| !v.is_empty()) {
+        Some(value) => env::split_paths(value)
+            .filter(|p| !p.as_os_str().is_empty())
+            .collect(),
+        None => vec![fallback.to_path_buf()],
+    };
+    let mut dirs = vec![];
+    for dir in candidates {
+        let canonical = match fs::canonicalize(&dir) {
+            Ok(path) => path,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(err).with_context(|| format!("canonicalize {}", dir.display())),
+        };
+        if !dirs.contains(&canonical) {
+            dirs.push(canonical);
+        }
+    }
+    Ok(dirs)
+}
+
+// Dangling symlinks, and transcripts Claude Code removes while they are listed, are
+// skipped rather than failing the whole search.
+fn existing<T>(result: std::io::Result<T>) -> Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err.into()),
+    }
 }
 
 fn transcript_paths(dir: &Path) -> Result<Vec<PathBuf>> {
@@ -50,15 +84,28 @@ fn transcript_paths(dir: &Path) -> Result<Vec<PathBuf>> {
     }
     for project in fs::read_dir(dir)? {
         let project = project?;
-        if !project.file_type()?.is_dir() {
+        let Some(meta) = existing(fs::metadata(project.path()))? else {
+            continue;
+        };
+        if !meta.is_dir() {
             continue;
         }
-        for entry in fs::read_dir(project.path())? {
+        let Some(entries) = existing(fs::read_dir(project.path()))? else {
+            continue;
+        };
+        for entry in entries {
             let entry = entry?;
-            if entry.file_type()?.is_file()
-                && entry.path().extension().is_some_and(|e| e == "jsonl")
-            {
-                paths.push(entry.path());
+            if entry.path().extension().is_none_or(|e| e != "jsonl") {
+                continue;
+            }
+            let Some(meta) = existing(fs::metadata(entry.path()))? else {
+                continue;
+            };
+            if !meta.is_file() {
+                continue;
+            }
+            if let Some(path) = existing(fs::canonicalize(entry.path()))? {
+                paths.push(path);
             }
         }
     }
@@ -176,8 +223,13 @@ fn initialize(db: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn refresh(db: &mut Connection, dir: &Path) -> Result<()> {
-    let paths = transcript_paths(dir)?;
+fn refresh(db: &mut Connection, dirs: &[PathBuf]) -> Result<()> {
+    let mut paths = vec![];
+    for dir in dirs {
+        paths.extend(transcript_paths(dir)?);
+    }
+    paths.sort();
+    paths.dedup();
     let on_disk: HashSet<_> = paths
         .iter()
         .map(|p| p.to_string_lossy().into_owned())
@@ -304,7 +356,7 @@ pub fn run(root: &Path, args: &Args) -> Result<()> {
     let mut db = Connection::open(root.join("sessions.sqlite"))?;
     db.busy_timeout(StdDuration::from_secs(30))?;
     initialize(&db)?;
-    refresh(&mut db, &source_dir())?;
+    refresh(&mut db, &source_dirs()?)?;
     let mut stmt = db.prepare(&format!("select m.id, m.session_id, m.role, m.ts, snippet(messages_fts, 0, '[', ']', '…', 40)
         from messages_fts join messages m on m.id = messages_fts.rowid where messages_fts match ?{where_sql} order by bm25(messages_fts), m.ts, m.id"))?;
     let hits = stmt.query_map(params_from_iter(values), |r| {
@@ -392,6 +444,154 @@ pub fn run(root: &Path, args: &Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new() -> Result<Self> {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos();
+            let path = env::temp_dir().join(format!(
+                "claude-wiki-sessions-{}-{nonce}",
+                std::process::id()
+            ));
+            fs::create_dir(&path)?;
+            Ok(Self(path))
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn directory_list_parsing_and_canonicalization() -> Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let tmp = TestDir::new()?;
+        let first = tmp.0.join("first");
+        let second = tmp.0.join("second");
+        let alias = tmp.0.join("alias");
+        let missing = tmp.0.join("missing");
+        fs::create_dir(&first)?;
+        fs::create_dir(&second)?;
+        symlink(&first, &alias)?;
+        let list = env::join_paths([
+            Path::new(""),
+            &first,
+            Path::new(""),
+            &missing,
+            &second,
+            &alias,
+            &first,
+            Path::new(""),
+        ])?;
+        assert_eq!(
+            resolve_source_dirs(Some(&list), &missing)?,
+            vec![fs::canonicalize(&first)?, fs::canonicalize(&second)?]
+        );
+        for value in [None, Some(OsStr::new(""))] {
+            assert_eq!(
+                resolve_source_dirs(value, &alias)?,
+                vec![fs::canonicalize(&first)?]
+            );
+            assert!(resolve_source_dirs(value, &missing)?.is_empty());
+        }
+        assert!(resolve_source_dirs(Some(OsStr::new("::")), &first)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn symlinked_transcripts_migrate_to_canonical_paths() -> Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let tmp = TestDir::new()?;
+        let first = tmp.0.join("first");
+        let second = tmp.0.join("second");
+        let project = first.join("project");
+        fs::create_dir_all(&project)?;
+        fs::create_dir(&second)?;
+        let transcript = project.join("session.jsonl");
+        fs::write(
+            &transcript,
+            include_bytes!("../tests/fixtures/session.jsonl"),
+        )?;
+        symlink(&project, second.join("linked-project"))?;
+        symlink(&transcript, project.join("linked-session.jsonl"))?;
+        symlink(first.join("gone"), second.join("dangling-project"))?;
+        symlink(project.join("gone.jsonl"), project.join("dangling.jsonl"))?;
+        let list = env::join_paths([&first, &second])?;
+        let dirs = resolve_source_dirs(Some(&list), &first)?;
+        assert_eq!(
+            transcript_paths(&second)?,
+            vec![fs::canonicalize(&transcript)?; 2]
+        );
+        let canonical = fs::canonicalize(&transcript)?
+            .to_string_lossy()
+            .into_owned();
+        let mut db = Connection::open_in_memory()?;
+        initialize(&db)?;
+        // Simulate an older index using the symlink's path and the same UUIDs.
+        let old_path = second
+            .join("linked-project/session.jsonl")
+            .to_string_lossy()
+            .into_owned();
+        db.execute(
+            "insert into transcripts(path, offset, size, mtime_ns) values (?, 0, 0, 0)",
+            [&old_path],
+        )?;
+        for message in include_bytes!("../tests/fixtures/session.jsonl")
+            .split(|b| *b == b'\n')
+            .filter_map(parse)
+        {
+            db.execute(
+                "insert into messages(uuid, path, text) values (?, ?, ?)",
+                params![message.uuid, old_path, message.text],
+            )?;
+        }
+        for _ in 0..2 {
+            refresh(&mut db, &dirs)?;
+            assert_eq!(
+                db.query_row("select count(*) from transcripts", [], |r| r
+                    .get::<_, i64>(0))?,
+                1
+            );
+            assert_eq!(
+                db.query_row("select path from transcripts", [], |r| r
+                    .get::<_, String>(0))?,
+                canonical
+            );
+            assert_eq!(
+                db.query_row(
+                    "select count(*) from messages where path = ?",
+                    [&canonical],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                4
+            );
+            assert_eq!(
+                db.query_row(
+                    "select count(*) from messages where path != ?",
+                    [&canonical],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                0
+            );
+            assert_eq!(
+                db.query_row(
+                    "select count(*) from messages_fts where messages_fts match 'orbital'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                2
+            );
+        }
+        Ok(())
+    }
+
     #[test]
     fn defensive_fixture() {
         let messages: Vec<_> = include_bytes!("../tests/fixtures/session.jsonl")
