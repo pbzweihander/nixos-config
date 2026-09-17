@@ -24,6 +24,27 @@ let
     '';
   };
 
+  # Runs without the user's fish config: the terminal greeting calls it on every new shell.
+  wiki-recap =
+    pkgs.runCommand "wiki-recap"
+      {
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+      }
+      ''
+        install -Dm644 ${./wiki-recap/wiki-recap.fish} $out/libexec/wiki-recap.fish
+        ${lib.getExe pkgs.fish} --no-config --no-execute $out/libexec/wiki-recap.fish
+        makeWrapper ${lib.getExe pkgs.fish} $out/bin/wiki-recap \
+          --add-flags "--no-config $out/libexec/wiki-recap.fish" \
+          --suffix PATH : ${
+            lib.makeBinPath [
+              claude-wiki
+              pkgs.coreutils
+              pkgs.git
+              pkgs.util-linux
+            ]
+          }
+      '';
+
   wikiDir = "${config.xdg.dataHome}/claude-wiki";
   codexMonitor = ".claude/skills/codex-implement/scripts/codex-monitor.sh";
 
@@ -72,7 +93,10 @@ let
 in
 {
   home = {
-    packages = [ claude-wiki ];
+    packages = [
+      claude-wiki
+      wiki-recap
+    ];
 
     file = {
       # User-level rules rather than ~/.claude/CLAUDE.md, which stays editable (/memory).
@@ -106,4 +130,36 @@ in
       fi
     '';
   };
+
+  # Every 6 hours, regenerate the wiki recap if the wiki changed (claude runs only then).
+  # The brief it leaves is what new terminals show; see wiki-recap --help.
+  systemd.user = {
+    services.wiki-recap = {
+      Unit = {
+        Description = "Regenerate the claude-wiki recap";
+        StartLimitIntervalSec = "2h";
+        StartLimitBurst = 4;
+      };
+      Service = {
+        Type = "oneshot";
+        ExecStart = "${lib.getExe' wiki-recap "wiki-recap"} --update";
+        # Right after resume the network may not be up yet.
+        Restart = "on-failure";
+        RestartSec = "15min";
+        TimeoutStartSec = "20min";
+        Nice = 10;
+      };
+    };
+    timers.wiki-recap = {
+      Unit.Description = "Regenerate the claude-wiki recap every 6 hours";
+      Timer = {
+        OnCalendar = "*-*-* 03/6:00:00";
+        Persistent = true;
+        RandomizedDelaySec = "5min";
+      };
+      Install.WantedBy = [ "timers.target" ];
+    };
+  };
+
+  programs.fish.functions.fish_greeting = "wiki-recap --brief";
 }

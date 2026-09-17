@@ -38,7 +38,9 @@ when the conversation is in Korean or another language.
   how something works; the reason behind a decision. One topic per page, edited in
   place whenever it changes. Include the **exact error message** or identifiers so a
   search on them hits, how you confirmed the cause, the commands of the fix, and the
-  conditions under which it applies (versions, machines).
+  conditions under which it applies (versions, machines). When a finding changes,
+  rewrite the page to state what is true now; do not append dated "Update ..."
+  paragraphs.
 - **projects**: `<project>.md`, what a new session needs in its first minute: what
   the project is, stack, layout, how to build, test, run, and deploy it, related
   repositories and services, and gotchas. Its body is capped at 3,000 characters at
@@ -50,6 +52,10 @@ when the conversation is in Korean or another language.
   Record one instead of only mentioning leftover work in your final reply. Set
   `status: open`. Open follow-ups of the current project are printed at session
   start; when one is done, set `status: done` and add a line saying how and when.
+  Keep the page to the current state: what is left, what blocks it, and the next
+  step. Rewrite it as work progresses instead of appending progress. Measurements
+  and what was done along the way go to a history entry that links the follow-up,
+  and the follow-up links that entry.
 - **history**: after a substantial task (not a quick question), 5 to 15 lines: the
   goal, what was done and where (repository, main files), the outcome, and links to
   the knowledge pages and follow-ups it produced. A log: add entries, never rewrite
@@ -217,6 +223,9 @@ Do not evade a finding by obfuscating the same content.
   summarize durable outcomes and link to the resulting knowledge and follow-ups.
 - When the same lesson appears twice, keep one page and fix it in place instead of
   appending an "update: actually..." contradiction.
+- Knowledge and follow-up pages describe the present state, not a timeline. Rewrite
+  them in place when things change; a page that grows by dated "Update ..." or
+  timestamped paragraphs is a log, and logs belong in history entries.
 - User preferences and instructions belong only in auto memory, never in wiki
   pages. Project pages describe the project, not how the user wants to be answered.
 
