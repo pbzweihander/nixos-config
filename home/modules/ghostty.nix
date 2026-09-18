@@ -1,4 +1,15 @@
-{ config, ... }:
+{
+  config,
+  lib,
+  osConfig,
+  ...
+}:
+let
+  # The host the remote launcher connects to; on that host itself it makes no sense,
+  # so neither the extra config nor the desktop entry is installed there.
+  remoteHost = "rossmann";
+  isRemoteHost = osConfig.networking.hostName == remoteHost;
+in
 {
   programs.ghostty = {
     enable = true;
@@ -49,23 +60,28 @@
     };
   };
 
-  # `ghostty --config-file=.../ghostty/remote` starts a window whose *every* new
-  # tab and split runs this command, so a remote session does not have to be
-  # started by hand in each one. Loaded on top of the normal config.
-  xdg.configFile."ghostty/remote".text = ''
-    command = ssh rossmann
-  '';
+  # `ghostty --config-file=.../ghostty/remote` starts a window whose *every* new tab
+  # and split runs this command, so a remote session does not have to be started by
+  # hand in each one. Loaded on top of the normal config. `tmux-view` comes from
+  # ../modules/tmux.nix and attaches a per-tab view of one shared tmux session.
+  xdg.configFile = lib.optionalAttrs (!isRemoteHost) {
+    "ghostty/remote".text = ''
+      command = ssh -t ${remoteHost} tmux-view
+    '';
+  };
 
-  xdg.desktopEntries.ghostty-rossmann = {
-    name = "Ghostty (rossmann)";
-    genericName = "Terminal";
-    comment = "Ghostty window where every tab and split opens an SSH session on rossmann";
-    exec = "ghostty --config-file=${config.xdg.configHome}/ghostty/remote --gtk-single-instance=false";
-    icon = "com.mitchellh.ghostty";
-    terminal = false;
-    categories = [
-      "System"
-      "TerminalEmulator"
-    ];
+  xdg.desktopEntries = lib.optionalAttrs (!isRemoteHost) {
+    "ghostty-${remoteHost}" = {
+      name = "Ghostty (${remoteHost})";
+      genericName = "Terminal";
+      comment = "Ghostty window where every tab and split opens a tmux session on ${remoteHost}";
+      exec = "ghostty --config-file=${config.xdg.configHome}/ghostty/remote --gtk-single-instance=false";
+      icon = "com.mitchellh.ghostty";
+      terminal = false;
+      categories = [
+        "System"
+        "TerminalEmulator"
+      ];
+    };
   };
 }
