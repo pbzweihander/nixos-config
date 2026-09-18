@@ -7,13 +7,13 @@
         ForwardAgent = false;
         AddKeysToAgent = "no";
         Compression = false;
-        ServerAliveInterval = 0;
-        ServerAliveCountMax = 3;
+        ServerAliveInterval = 60;
+        ServerAliveCountMax = 5;
         HashKnownHosts = false;
         UserKnownHostsFile = "~/.ssh/known_hosts";
-        ControlMaster = "no";
-        ControlPath = "~/.ssh/master-%r@%n:%p";
-        ControlPersist = "no";
+        ControlMaster = "auto";
+        ControlPath = "~/.ssh/master-%C";
+        ControlPersist = "10m";
       };
       github = {
         Hostname = "github.com";
