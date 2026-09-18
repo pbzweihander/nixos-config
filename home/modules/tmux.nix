@@ -13,33 +13,22 @@
     '';
   };
 
-  # Attaches a throwaway view to the shared `main` session and puts it on a window no
-  # other view is showing, creating one when they are all taken. Sessions in a group
-  # share their window list but keep their own current window, so every terminal tab
-  # ends up on a different window without anything being typed, and a window freed by
-  # a closed tab is picked up again by the next one. `destroy-unattached` applies to
-  # the view only, so closing a tab leaves `main` and its processes running.
+  # One session per terminal tab. A tab takes over the first session nobody is
+  # attached to, which is the session left behind by a tab that was closed or by an
+  # ssh connection that dropped, and starts a new one only when every session is
+  # taken. Tabs therefore never show each other's screen, closing a tab leaves its
+  # session and processes running for the next one, and exiting the last shell
+  # destroys the session so the client exits and the terminal tab closes with it.
   home.packages = [
     (pkgs.writeShellScriptBin "tmux-view" ''
       T=${pkgs.tmux}/bin/tmux
 
-      # Not `new-session -A`: on an existing session that attaches the client instead
-      # of creating a view, and its -d is then read as attach-session's -d. The `=`
-      # prefix keeps `main` from matching the `main-1`, `main-2`, ... views.
-      $T has-session -t =main 2>/dev/null || $T new-session -d -s main
-
-      # windows that another attached view is currently showing
-      busy=$($T list-sessions -F '#{session_attached}:#{session_group}:#{window_index}' \
-              | awk -F: '$1 != "0" && $2 == "main" { print $3 }')
-      target=
-      for w in $($T list-windows -t =main -F '#{window_index}'); do
-        printf '%s\n' "$busy" | grep -qx "$w" || { target=$w; break; }
-      done
-
-      if [ -n "$target" ]; then
-        exec $T new-session -t =main \; set-option destroy-unattached on \; select-window -t "$target"
+      sid=$($T list-sessions -F '#{session_attached} #{session_id}' 2>/dev/null \
+             | awk '$1 == 0 { print $2; exit }')
+      if [ -n "$sid" ]; then
+        exec $T attach-session -t "$sid"
       else
-        exec $T new-session -t =main \; set-option destroy-unattached on \; new-window
+        exec $T new-session
       fi
     '')
   ];
