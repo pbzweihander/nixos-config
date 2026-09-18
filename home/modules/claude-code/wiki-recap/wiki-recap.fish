@@ -199,7 +199,7 @@ function generate -a dir
     # Share what the fixed sections leave of the budget: smallest pages first, each
     # taking at most an equal share of what is left, so the unused part of a small
     # page's share goes to the larger pages. No page gets more than $page_cap chars.
-    set -l page_cap 12000
+    set -l page_cap 20000
     set -l remaining (math $limit - (string join -- \n $input | wc -m))
     set -l pages
     set -l caps
@@ -343,7 +343,7 @@ or exit 2
 
 if set -q _flag_help
     echo 'usage: wiki-recap [--force | --update | --brief] [--since 24h|7d|2026-09-01] [--model sonnet]'
-    echo '                  [--effort medium] [--budget 3] [--limit 300000] [--raw] [--plain]'
+    echo '                  [--effort medium] [--budget 3] [--limit 1000000] [--raw] [--plain]'
     echo
     echo '  (no mode)  show the cached recap if it is less than 4 hours old, otherwise generate one'
     echo '  --force    always generate a new recap'
@@ -385,7 +385,7 @@ set -g since (set -q _flag_since; and echo $_flag_since; or echo 24h)
 set -g model (set -q _flag_model; and echo $_flag_model; or echo sonnet)
 set -g effort (set -q _flag_effort; and echo $_flag_effort; or echo medium)
 set -g budget (set -q _flag_budget; and echo $_flag_budget; or echo 3)
-set -g limit (set -q _flag_limit; and echo $_flag_limit; or echo 300000)
+set -g limit (set -q _flag_limit; and echo $_flag_limit; or echo 1000000)
 set -q _flag_raw; and set -g raw 1
 set -q _flag_plain; and set -g plain 1
 set -g deleted
@@ -459,5 +459,5 @@ mv -f $dir/recap.md $cache_dir/recap.md
 rm -rf $dir
 set now (date +%s)
 state_update generated=$now checked=$now head=$current failed= failed_reason=
-note "생성했습니다"
+note 생성했습니다
 set -q _flag_update; or cat $cache_dir/recap.md
