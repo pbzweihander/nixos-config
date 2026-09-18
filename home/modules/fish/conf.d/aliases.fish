@@ -121,3 +121,12 @@ abbr -a zd. "zeditor ."
 # vscode
 abbr -a vc code
 abbr -a vc. "code -- ."
+
+# claude
+abbr -a wr wiki-recap
+abbr -a a claude
+abbr -a sa sclaude
+abbr -a aa "claude agents"
+abbr -a saa "sclaude agents"
+abbr -a ar "claude --resume"
+abbr -a sar "sclaude --resume"
