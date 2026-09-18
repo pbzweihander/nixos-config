@@ -4,12 +4,24 @@
     enable = true;
     terminal = "tmux-256color";
     escapeTime = 10;
+    # Off by default in tmux, and home-manager writes that default out explicitly.
+    # Claude Code warns when it is off, since without the focus in and out reports it
+    # cannot tell whether its terminal is in front.
+    focusEvents = true;
     historyLimit = 50000;
     mouse = true;
     extraConfig = ''
       # ghostty installs its own terminfo on remote hosts (the ssh-terminfo shell
       # integration feature), so tell tmux the outer terminal does 24-bit colour.
       set -as terminal-features ",xterm-ghostty:RGB"
+
+      # tmux swallows the title the program inside it sets unless set-titles is on,
+      # which is why a ghostty tab stops following the remote shell once tmux is in
+      # the middle. #T is the pane title, which fish's own fish_title sets to the
+      # host, the working directory, and the command it is about to run, so this
+      # gives the same titles a plain ssh session would.
+      set -g set-titles on
+      set -g set-titles-string "#T"
     '';
   };
 
