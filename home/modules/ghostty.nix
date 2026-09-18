@@ -1,3 +1,4 @@
+{ config, ... }:
 {
   programs.ghostty = {
     enable = true;
@@ -8,6 +9,7 @@
       font-family = "Sarasa Term K";
       gtk-titlebar-style = "tabs";
       resize-overlay = "never";
+      shell-integration-features = "cursor,no-sudo,title,ssh-env,ssh-terminfo,path";
       window-decoration = "client";
 
       keybind = [
@@ -45,5 +47,25 @@
         "15=#dee3e4"
       ];
     };
+  };
+
+  # `ghostty --config-file=.../ghostty/remote` starts a window whose *every* new
+  # tab and split runs this command, so a remote session does not have to be
+  # started by hand in each one. Loaded on top of the normal config.
+  xdg.configFile."ghostty/remote".text = ''
+    command = ssh rossmann
+  '';
+
+  xdg.desktopEntries.ghostty-rossmann = {
+    name = "Ghostty (rossmann)";
+    genericName = "Terminal";
+    comment = "Ghostty window where every tab and split opens an SSH session on rossmann";
+    exec = "ghostty --config-file=${config.xdg.configHome}/ghostty/remote --gtk-single-instance=false";
+    icon = "com.mitchellh.ghostty";
+    terminal = false;
+    categories = [
+      "System"
+      "TerminalEmulator"
+    ];
   };
 }
