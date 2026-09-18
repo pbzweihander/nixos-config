@@ -23,13 +23,21 @@
     (pkgs.writeShellScriptBin "tmux-view" ''
       T=${pkgs.tmux}/bin/tmux
 
-      sid=$($T list-sessions -F '#{session_attached} #{session_id}' 2>/dev/null \
-             | awk '$1 == 0 { print $2; exit }')
+      sessions=$($T list-sessions -F '#{session_attached} #{session_id} #{session_name}' 2>/dev/null)
+
+      sid=$(printf '%s\n' "$sessions" | awk '$1 == 0 { print $2; exit }')
       if [ -n "$sid" ]; then
         exec $T attach-session -t "$sid"
-      else
-        exec $T new-session
       fi
+
+      # tmux's own default name is a counter that never reuses a number, so a tab
+      # closed and reopened a few times ends up called something like 17. Take the
+      # lowest free number instead, which keeps the names as small as the tab count.
+      n=0
+      while printf '%s\n' "$sessions" | awk '{ print $3 }' | grep -qx "$n"; do
+        n=$((n + 1))
+      done
+      exec $T new-session -s "$n"
     '')
   ];
 }
