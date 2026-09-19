@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Run `codex exec --json` and print only important progress lines, for Claude Code's Monitor tool.
-# usage: codex-monitor.sh [--local] [--quiet-secs N] <run-dir> <codex exec args...>
+# usage: codex-monitor.sh [--account NAME] [--local] [--quiet-secs N] <run-dir> <codex exec args...>
 #   (stdin is passed through to codex)
 # Writes <run-dir>/events.jsonl (raw events) and <run-dir>/stderr.log (nix build + codex stderr).
 # Prints [QUIET] when codex has emitted nothing for --quiet-secs seconds (default 600).
 # --local skips the nixpkgs-unstable build and runs the locally installed codex.
+# --account runs as another codex account: NAME is the directory ~/.<NAME> used as
+# CODEX_HOME (login, sessions and config live there), so `codex1` means ~/.codex1.
 set -uo pipefail
 here="$(dirname "$(readlink -f "$0")")"
 codex_latest="${CODEX_LATEST:-$here/codex-latest.sh}"
@@ -16,6 +18,12 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --quiet-secs) quiet_secs="$2"; shift 2 ;;
     --local) export CODEX_LATEST_FORCE_LOCAL=1; shift ;;
+    --account)
+      if [ ! -f "$HOME/.$2/auth.json" ]; then
+        echo "[FAILED] no codex account in $HOME/.$2; run 'CODEX_HOME=$HOME/.$2 codex login' first" >&2
+        exit 2
+      fi
+      export CODEX_HOME="$HOME/.$2"; shift 2 ;;
     *) break ;;
   esac
 done

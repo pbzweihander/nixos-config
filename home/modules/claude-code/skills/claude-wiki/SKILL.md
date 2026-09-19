@@ -180,6 +180,10 @@ warning reports it. Shorten the project page or lower the overview budget to fit
    - name: short lowercase kebab-case naming the topic; the project name for
      `projects`; `<YYYY-MM-DD>-<slug>` for `history`.
    - `tags`: a few lowercase words. Run `claude-wiki tags` and reuse existing tags.
+     Tag a page `personal` when it belongs to a hobby or personal project rather than
+     work; everything else is work, and `claude-wiki search --tag personal` separates
+     the two. Most work and personal pages sit in one wiki on purpose, so knowledge
+     from one can be found from the other.
    - `project`: the current project as the session start summary prints it
      (`Current project:`), which is the main checkout's directory name even inside a
      worktree. Omit it for knowledge not tied to one project. Project pages take it

@@ -155,9 +155,18 @@ in
     '';
   };
 
-  programs.fish.functions.sclaude = {
-    description = "Claude Code with the second account (config directory ~/.sclaude)";
-    wraps = "claude";
-    body = "env CLAUDE_CONFIG_DIR=$HOME/.sclaude claude $argv";
+  programs.fish.functions = {
+    sclaude = {
+      description = "Claude Code with the second account (config directory ~/.sclaude)";
+      wraps = "claude";
+      body = "env CLAUDE_CONFIG_DIR=$HOME/.sclaude claude $argv";
+    };
+    # Nothing is shared with ~/.codex: the second account is only there for when the
+    # first one runs out of usage. codex-implement reaches it with --account codex1.
+    codex1 = {
+      description = "Codex CLI with the second account (CODEX_HOME ~/.codex1)";
+      wraps = "codex";
+      body = "env CODEX_HOME=$HOME/.codex1 codex $argv";
+    };
   };
 }

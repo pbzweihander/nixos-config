@@ -164,6 +164,18 @@ the nix build fails does it fall back to the locally installed `codex`. It logs 
 one it used to `stderr.log`; mention that in your report. Pass `--local` before the
 run directory to skip nix when the user asks for the local one.
 
+**Accounts.** There is more than one codex account, each with its own usage limit:
+`codex` (the default, `~/.codex`) and `codex1` (`~/.codex1`). Start with the default
+and pass `--account codex1` before the run directory only after the default runs out.
+The runner then sets `CODEX_HOME`; it refuses with `[FAILED] no codex account in ...`
+when that account has never logged in.
+
+A usage-limit failure looks like `[FAILED]` or a non-zero `[EXIT]` whose reason in
+`<run dir>/stderr.log` or `last.md` mentions a usage or rate limit, often with a reset
+time. When that happens, rerun the **whole spec** on the next account: sessions live
+under `CODEX_HOME`, so `resume --last` cannot continue another account's run. Say in
+your report which account did the work.
+
 Event lines:
 
 | Line | Meaning | What to do |
@@ -202,7 +214,8 @@ Other useful flags:
 
 If codex failed (`[FAILED]`, or `[EXIT]` with a non-zero rc), read the reason
 first. If it was blocked by the sandbox, do not rewrite the spec: resume the same
-session with the missing flag added (see step 4). Otherwise fix the spec or
+session with the missing flag added (see step 4). If it was a usage limit, start the
+same spec again with `--account codex1`. Otherwise fix the spec or
 environment and run again. Do not silently take over the implementation yourself
 on the first failure.
 
@@ -256,6 +269,6 @@ Then review again.
 ## 5. Report
 
 Tell the user, in this order: whether the acceptance commands pass, which codex
-binary ran (nix unstable or local fallback), which flags you chose and why (model,
+binary ran (nix unstable or local fallback) and which account, which flags you chose and why (model,
 reasoning effort, network, approve-for-me, trust), what codex changed, what you
 changed after review, and anything left open. Do not commit unless asked.
