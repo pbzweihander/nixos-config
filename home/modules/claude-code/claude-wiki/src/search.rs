@@ -69,6 +69,26 @@ pub fn updated(mtime: i64) -> String {
         .unwrap_or_default()
 }
 
+/// The section of a page that matches the query best, for a hit's location line.
+fn best_section(db: &Connection, path: &str, query: &str) -> Option<(String, i64, i64)> {
+    db.query_row(
+        "select sections.heading, sections.start_line, sections.end_line
+         from sections_fts join sections on sections.id = sections_fts.rowid
+         join files on files.id = sections.file_id
+         where files.path = ? and sections_fts match ?
+           and (select count(*) from sections others where others.file_id = sections.file_id) > 1
+         order by bm25(sections_fts, 5, 1) limit 1",
+        rusqlite::params![path, query],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+    .ok()
+}
+
+fn stale(mtime: i64) -> bool {
+    let days = (Local::now().timestamp() - mtime.div_euclid(1_000_000_000)) / 86_400;
+    days >= crate::index::STALE_DAYS
+}
+
 fn show(root: &Path, row: &Row, snippet: Option<String>) {
     let path = root.join(&row.path).display().to_string();
     if !row.blocked.is_empty() {
@@ -83,7 +103,11 @@ fn show(root: &Path, row: &Row, snippet: Option<String>) {
     if !row.status.is_empty() {
         meta.push(row.status.clone());
     }
-    meta.push(format!("updated {}", updated(row.mtime)));
+    meta.push(format!(
+        "updated {}{}",
+        updated(row.mtime),
+        if stale(row.mtime) { ", stale?" } else { "" }
+    ));
     if !row.project.is_empty() {
         meta.push(format!("project={}", row.project));
     }
@@ -129,6 +153,16 @@ pub fn search(
     }
     for (row, snippet) in rows {
         show(root, &row, Some(snippet));
+        if row.blocked.is_empty() {
+            if let Some((heading, start, end)) = best_section(db, &row.path, &query) {
+                let heading = if heading.is_empty() {
+                    "(top)".to_owned()
+                } else {
+                    heading
+                };
+                println!("  § {heading} (lines {start}-{end})");
+            }
+        }
     }
     Ok(())
 }

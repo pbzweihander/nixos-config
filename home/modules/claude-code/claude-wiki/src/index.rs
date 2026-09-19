@@ -3,7 +3,10 @@ use anyhow::Result;
 use rusqlite::{params, Connection};
 use std::{collections::HashMap, fs, os::unix::fs::MetadataExt, path::Path, time::Duration};
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
+/// A page not touched for this long is shown with `stale?`, as a reminder to check it
+/// against the code before relying on it.
+pub const STALE_DAYS: i64 = 30;
 pub const COLUMNS: &str = "fts.path, fts.type, fts.status, fts.title, fts.project, fts.tags, files.mtime_ns, files.blocked, (select count(*) from links where links.to_path = files.path) as backlinks";
 pub const JOIN: &str = "from fts join files on files.id = fts.rowid";
 
@@ -28,15 +31,37 @@ fn initialize(db: &Connection) -> Result<()> {
     if db.query_row("pragma user_version", [], |r| r.get::<_, i64>(0))? != SCHEMA_VERSION {
         db.execute_batch(&format!("begin;
             drop table if exists files; drop table if exists fts; drop table if exists links;
+            drop table if exists sections; drop table if exists sections_fts;
             create table files(id integer primary key, path text unique, mtime_ns integer, size integer, blocked text not null default '');
             create table links(from_id integer not null, to_path text not null, primary key(from_id, to_path));
             create index links_to_path on links(to_path);
             create virtual table fts using fts5(
                 path unindexed, type unindexed, created unindexed, status unindexed,
                 title, tags, project, body, tokenize = 'porter unicode61 remove_diacritics 2');
+            -- One row per markdown heading, so a hit can name the section and its lines
+            -- instead of sending the reader to a page of several thousand characters.
+            create table sections(id integer primary key, file_id integer not null,
+                heading text not null, start_line integer not null, end_line integer not null);
+            create index sections_file on sections(file_id);
+            create virtual table sections_fts using fts5(heading, body,
+                tokenize = 'porter unicode61 remove_diacritics 2');
             pragma user_version = {SCHEMA_VERSION}; commit;"))?;
     }
     db.execute_batch("create table if not exists remind_state(session_id text primary key, prompts integer not null, offset integer not null);")?;
+    Ok(())
+}
+
+// sections_fts is a plain (not external-content) fts5 table, so its rows are deleted
+// by rowid alongside the sections they describe.
+fn drop_sections(tx: &Connection, file_id: i64) -> Result<()> {
+    let ids: Vec<i64> = tx
+        .prepare("select id from sections where file_id = ?")?
+        .query_map([file_id], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for id in ids {
+        tx.execute("delete from sections_fts where rowid = ?", [id])?;
+        tx.execute("delete from sections where id = ?", [id])?;
+    }
     Ok(())
 }
 
@@ -65,6 +90,7 @@ pub fn refresh(root: &Path, db: &mut Connection) -> Result<()> {
     for (rel, (id, _, _)) in &indexed {
         if !on_disk.contains_key(rel) {
             tx.execute("delete from links where from_id = ?", [id])?;
+            drop_sections(&tx, *id)?;
             tx.execute("delete from fts where rowid = ?", [id])?;
             tx.execute("delete from files where id = ?", [id])?;
         }
@@ -80,6 +106,7 @@ pub fn refresh(root: &Path, db: &mut Connection) -> Result<()> {
         let blocked = findings.first().map_or("", |f| f.category);
         let id = if let Some((id, _, _)) = old {
             tx.execute("delete from links where from_id = ?", [id])?;
+            drop_sections(&tx, *id)?;
             tx.execute("delete from fts where rowid = ?", [id])?;
             tx.execute(
                 "update files set mtime_ns = ?, size = ?, blocked = ? where id = ?",
@@ -99,6 +126,16 @@ pub fn refresh(root: &Path, db: &mut Connection) -> Result<()> {
             tx.execute(
                 "insert into links(from_id, to_path) values (?, ?)",
                 params![id, target],
+            )?;
+        }
+        for section in pages::sections(&text) {
+            tx.execute(
+                "insert into sections(file_id, heading, start_line, end_line) values (?,?,?,?)",
+                params![id, section.heading, section.start, section.end],
+            )?;
+            tx.execute(
+                "insert into sections_fts(rowid, heading, body) values (?,?,?)",
+                params![tx.last_insert_rowid(), section.heading, section.body],
             )?;
         }
     }

@@ -92,6 +92,75 @@ fn parse_links(body: &str, rel: &str) -> Vec<String> {
         .collect()
 }
 
+/// One markdown heading's section: its breadcrumb, its 1-based line range in the file,
+/// and its text. A page with no headings has a single section with an empty breadcrumb.
+#[derive(Debug, PartialEq)]
+pub struct Section {
+    pub heading: String,
+    pub start: i64,
+    pub end: i64,
+    pub body: String,
+}
+
+pub fn sections(text: &str) -> Vec<Section> {
+    static HEADING_LINE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\A(#{1,6})\s+(.+?)\s*#*\s*\z").unwrap());
+    let mut sections: Vec<Section> = vec![];
+    // The breadcrumb keeps one title per heading level, so a deep heading reads as
+    // "Modes and cache > Diagnose" rather than losing its parent.
+    let mut crumbs: Vec<String> = vec![];
+    let mut fence: Option<(u8, usize)> = None;
+    for (i, line) in text.lines().enumerate() {
+        let number = i as i64 + 1;
+        let trimmed = line.trim_start();
+        let marker = trimmed.as_bytes().first().copied().unwrap_or_default();
+        let run = trimmed.bytes().take_while(|b| *b == marker).count();
+        if let Some((opening, length)) = fence {
+            if marker == opening && run >= length && trimmed[run..].trim().is_empty() {
+                fence = None;
+            }
+        } else if matches!(marker, b'`' | b'~') && run >= 3 {
+            fence = Some((marker, run));
+        } else if let Some(m) = HEADING_LINE.captures(trimmed) {
+            let level = m[1].len();
+            crumbs.truncate(level - 1);
+            crumbs.resize(level - 1, String::new());
+            crumbs.push(m[2].to_owned());
+            if let Some(last) = sections.last_mut() {
+                last.end = number - 1;
+            }
+            sections.push(Section {
+                heading: crumbs
+                    .iter()
+                    .filter(|c| !c.is_empty())
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" > "),
+                start: number,
+                end: number,
+                body: String::new(),
+            });
+            continue;
+        }
+        match sections.last_mut() {
+            Some(section) => {
+                section.body.push_str(line);
+                section.body.push('\n');
+                section.end = number;
+            }
+            None => {
+                sections.push(Section {
+                    heading: String::new(),
+                    start: number,
+                    end: number,
+                    body: format!("{line}\n"),
+                });
+            }
+        }
+    }
+    sections
+}
+
 pub fn page_type(rel: &str) -> &str {
     let parts: Vec<_> = rel.split('/').collect();
     if parts.len() == 3 && parts[0] == "pages" && TYPES.contains(&parts[1]) {
@@ -261,6 +330,29 @@ mod tests {
                 "pages/knowledge/unmatched.md",
             ]
         );
+    }
+
+    #[test]
+    fn sections_track_breadcrumbs_lines_and_fences() {
+        let page = "---\ntitle: t\n---\nintro\n# One\ntext\n## Two\n```\n# not a heading\n```\n### Three\nlast\n";
+        let got: Vec<_> = sections(page)
+            .into_iter()
+            .map(|s| (s.heading, s.start, s.end))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (String::new(), 1, 4),
+                ("One".into(), 5, 6),
+                ("One > Two".into(), 7, 10),
+                ("One > Two > Three".into(), 11, 12),
+            ]
+        );
+        // A page without headings is one section covering the file.
+        let single = sections("just\ntext\n");
+        assert_eq!(single.len(), 1);
+        assert_eq!((single[0].start, single[0].end), (1, 2));
+        assert_eq!(single[0].body, "just\ntext\n");
     }
 
     #[test]

@@ -87,6 +87,11 @@ claude-wiki tags                                                                
 - Each hit prints the page's absolute path, title, type, status, update date,
   project, tags, and a snippet with matches in `[brackets]`. Read the page with the
   Read tool before relying on it.
+- A page with headings also prints the matching section as
+  `§ Heading > Subheading (lines 120-166)`. On a long page, read that range with the
+  Read tool's offset and limit rather than the whole file.
+- `updated ..., stale?` marks a page untouched for 30 days. Check it against the code
+  or the system before relying on it, and fix the page if it is wrong.
 
 ## Links
 
@@ -240,7 +245,15 @@ Do not evade a finding by obfuscating the same content.
 
 ## Reminder
 
-A `UserPromptSubmit` hook runs `claude-wiki remind`. Every 15 prompts without a
+A `UserPromptSubmit` hook runs `claude-wiki remind`. It does two things.
+
+It searches the wiki for the prompt's English words and identifiers, and names up to
+three pages that contain at least two of them: `claude-wiki: pages that may already
+cover this: ...`. Those pages are candidates, not answers. Read one when it looks
+relevant to what was asked, and ignore the note otherwise. Korean words are skipped
+because the wiki is English, so a prompt without English terms gets no note.
+
+Every 15 prompts without a
 `claude-wiki sync` tool call in the session transcript, it nudges the session to
 record knowledge another session would need. It is a hook note, not a user message:
 record useful durable knowledge if there is any; otherwise continue without replying

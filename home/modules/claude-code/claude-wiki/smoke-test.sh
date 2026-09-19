@@ -85,6 +85,28 @@ check "sync committed everything" "nothing to commit" "$wiki" sync
 check "rebuild" "nothing to commit" "$wiki" sync --rebuild
 
 check "porter stemming" "nix-sandbox.md" "$wiki" search blocking
+# A page with headings reports the matching section and its lines; a page without
+# headings has nothing to add.
+cat >"$P/knowledge/sectioned.md" <<'EOF'
+---
+title: sectioned notes
+created: 2026-09-16
+---
+intro
+## First section
+nothing to see
+## Second section
+the phrase parrot appears here
+EOF
+check "section heading and lines" '§ Second section (lines 8-9)' "$wiki" search parrot
+check_not "a page without headings has no section line" '§' "$wiki" search --tag postgres replica
+rm "$P/knowledge/sectioned.md"
+
+# A page untouched for 30 days is flagged for checking against the code.
+touch -d '40 days ago' "$P/knowledge/replica-notes.md"
+check "stale marker" 'stale?' "$wiki" search --tag postgres replica
+touch "$P/knowledge/replica-notes.md"
+check_not "a fresh page is not marked stale" 'stale?' "$wiki" search --tag postgres replica
 check "block-style YAML tags" "tags=nix,sandbox" "$wiki" search --tag sandbox nix
 check "invalid YAML still indexes the body" "2026-09-16-bad.md" "$wiki" search body
 # both pages contain both words; only nix-sandbox.md has the exact phrase
@@ -219,6 +241,18 @@ check "session rebuild" 'session fixture-session' "$wiki" sessions orbital --rei
 cp "$fixtures/session.jsonl" "$sessions_dir/project/session.jsonl"
 check "truncated file drops old messages" 'no sessions match' "$wiki" sessions appenduniqueword
 check "truncated file reindexes original messages" 'session fixture-session' "$wiki" sessions orbital
+
+# The hook names pages whose text carries at least two of the prompt's English terms.
+printf '{"session_id":"related","prompt":"%s"}\n' \
+  "나는 nix sandbox 에서 readonly database 오류가 났는데" >"$HOME/related.json"
+check "related pages from a prompt" 'pages that may already cover this: knowledge/nix-sandbox' \
+  bash -c '"$1" remind <"$2"' _ "$wiki" "$HOME/related.json"
+printf '{"session_id":"related","prompt":"%s"}\n' "오늘 점심 뭐 먹지 고민되네 진짜" >"$HOME/unrelated.json"
+out=$("$wiki" remind <"$HOME/unrelated.json")
+[ -z "$out" ] || fail "a prompt without English terms named pages" remind "$out"
+printf '{"session_id":"related","prompt":"%s"}\n' "sandbox 하나만" >"$HOME/oneterm.json"
+out=$("$wiki" remind <"$HOME/oneterm.json")
+[ -z "$out" ] || fail "a single English term named pages" remind "$out"
 
 transcript=$HOME/reminder.jsonl
 printf '{"session_id":"reminder","transcript_path":"%s"}\n' "$transcript" >"$HOME/hook.json"
