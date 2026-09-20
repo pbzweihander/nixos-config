@@ -128,6 +128,8 @@ abbr -a a claude
 abbr -a sa sclaude
 abbr -a aa "claude agents"
 abbr -a saa "sclaude agents"
+abbr -a ac "claude --continue"
+abbr -a sac "sclaude --continue"
 abbr -a ar "claude --resume"
 abbr -a sar "sclaude --resume"
 abbr -a at "claude attach"
