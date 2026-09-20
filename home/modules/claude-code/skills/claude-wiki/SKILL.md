@@ -71,7 +71,7 @@ what the repository or its docs already make obvious.
 ## Search
 
 ```bash
-claude-wiki search <terms...> [-n 10] [--type TYPE] [--status open|done] [--project NAME] [--tag TAG]
+claude-wiki search <terms...> [-n 10] [--type TYPE] [--status open|done] [--project NAME] [--tag TAG] [--no-semantic]
 claude-wiki list [-n 20] [--type ...] [--status ...] [--project ...] [--tag ...]   # recently updated
 claude-wiki tags                                                                  # tags and projects in use
 ```
@@ -80,6 +80,11 @@ claude-wiki tags                                                                
   also finds `configuration` and `configured`. Pass several keywords and synonyms
   rather than one exact phrase. Ranking is BM25, weighted title > tags > project >
   body.
+- If no keyword matches exist and no filters are set, the local `wiki-embed`
+  daemon is asked for semantic matches. These appear under
+  `semantic matches (meaning, not keywords):`, with page metadata and a section
+  location when available. `--no-semantic` skips this fallback. Filters disable it
+  because the daemon cannot apply them; an unavailable daemon adds no output.
 - Quote a multi-word argument to also match it as an exact phrase; pages containing
   the phrase rank higher: `claude-wiki search "readonly database" nix sandbox`.
 - Translate the user's words into English keywords before searching. Exact error
@@ -247,11 +252,16 @@ Do not evade a finding by obfuscating the same content.
 
 A `UserPromptSubmit` hook runs `claude-wiki remind`. It does two things.
 
-It searches the wiki for the prompt's English words and identifiers, and names up to
-three pages that contain at least two of them: `claude-wiki: pages that may already
-cover this: ...`. Those pages are candidates, not answers. Read one when it looks
-relevant to what was asked, and ignore the note otherwise. Korean words are skipped
-because the wiki is English, so a prompt without English terms gets no note.
+It sends the raw prompt, including Korean prose, to the local `wiki-embed` daemon
+and names up to three pages that pass the daemon's relevance threshold:
+`claude-wiki: pages that may already cover this: ...`. Those pages are candidates,
+not answers. Read one when it looks relevant to what was asked, and ignore the note
+otherwise. Hook and slash-command wrappers (prompts starting with `<` after
+whitespace) are skipped. No relevant pages, an unavailable daemon, or a failed or
+slow reply produces no suggestion. The whole request has a 300 ms deadline,
+configurable with `CLAUDE_WIKI_SEMANTIC_TIMEOUT_MS`. `CLAUDE_WIKI_SOCKET` overrides
+`$XDG_RUNTIME_DIR/claude-wiki/embed.sock`; setting it to an empty string disables
+semantic retrieval. These settings also apply to the search fallback.
 
 Every 15 prompts without a
 `claude-wiki sync` tool call in the session transcript, it nudges the session to

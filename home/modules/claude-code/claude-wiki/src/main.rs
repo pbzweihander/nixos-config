@@ -6,6 +6,7 @@ mod pages;
 mod remind;
 mod scan;
 mod search;
+mod semantic;
 mod sessions;
 mod sync;
 
@@ -36,6 +37,9 @@ enum Commands {
         n: i64,
         #[command(flatten)]
         filters: search::Filters,
+        /// Skip semantic fallback (also skipped with filters, which the daemon cannot apply)
+        #[arg(long)]
+        no_semantic: bool,
     },
     /// Most recently updated pages
     List {
@@ -124,11 +128,16 @@ fn ensure_layout(root: &Path) -> Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => "index.sqlite*\n.lock\n".into(),
         Err(e) => return Err(e.into()),
     };
-    if !text.lines().any(|s| s == "sessions.sqlite*") {
-        if !text.is_empty() && !text.ends_with('\n') {
+    // wiki-embed writes vectors-<model>.npz here; like the indexes it is derived from
+    // the pages and rebuilt in seconds, so it never belongs in history.
+    for derived in ["sessions.sqlite*", "vectors-*.npz"] {
+        if !text.lines().any(|s| s == derived) {
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(derived);
             text.push('\n');
         }
-        text.push_str("sessions.sqlite*\n");
     }
     if fs::read_to_string(&ignore).ok().as_ref() != Some(&text) {
         fs::write(ignore, text)?;
@@ -159,7 +168,12 @@ fn run(command: &Commands) -> Result<i32> {
     let mut db = index::open(&root)?;
     index::refresh(&root, &mut db)?;
     match command {
-        Commands::Search { terms, n, filters } => search::search(&root, &db, terms, *n, filters)?,
+        Commands::Search {
+            terms,
+            n,
+            filters,
+            no_semantic,
+        } => search::search(&root, &db, terms, *n, filters, *no_semantic)?,
         Commands::List { n, filters } => search::list(&root, &db, *n, filters)?,
         Commands::Tags => search::tags(&db)?,
         Commands::Links { page } => links::show(&root, &db, page)?,

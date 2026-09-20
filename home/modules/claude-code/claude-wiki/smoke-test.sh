@@ -8,6 +8,7 @@ fixtures=$(cd "$(dirname "${BASH_SOURCE[0]}")/tests/fixtures" && pwd)
 
 HOME=$(mktemp -d)
 export HOME CLAUDE_WIKI_DIR=$HOME/wiki
+export CLAUDE_WIKI_SOCKET=$HOME/no-daemon.sock
 sessions_dir=$HOME/transcripts
 export CLAUDE_WIKI_SESSIONS_DIRS=$sessions_dir
 unset CLAUDE_SESSION_ID CLAUDE_WIKI_CONTEXT_BUDGET CLAUDE_WIKI_OVERVIEW_BUDGET CLAUDE_WIKI_REMIND_INTERVAL
@@ -42,6 +43,8 @@ expect_code() { # expect_code <exit status> <command...>
 }
 
 check "empty wiki" "no pages" "$wiki" list
+out=$("$wiki" search semanticnomatch 2>&1)
+[ "$out" = 'no pages match "semanticnomatch"* (0 pages in the wiki)' ] || fail "no daemon adds no search output" search "$out"
 
 cat >"$P/knowledge/nix-sandbox.md" <<'EOF'
 ---
@@ -181,6 +184,7 @@ check "overview flag overrides environment" '/100 chars\]' env CLAUDE_WIKI_OVERV
 cd /
 check "small context trims outside a repository" 'trimmed:' "$wiki" context --budget 400
 check "session database is git-ignored" 'sessions.sqlite\*' cat "$CLAUDE_WIKI_DIR/.gitignore"
+check "vector cache is git-ignored" 'vectors-\*.npz' cat "$CLAUDE_WIKI_DIR/.gitignore"
 
 mkdir -p "$sessions_dir/project/subagents"
 cp "$fixtures/session.jsonl" "$sessions_dir/project/session.jsonl"
@@ -242,17 +246,11 @@ cp "$fixtures/session.jsonl" "$sessions_dir/project/session.jsonl"
 check "truncated file drops old messages" 'no sessions match' "$wiki" sessions appenduniqueword
 check "truncated file reindexes original messages" 'session fixture-session' "$wiki" sessions orbital
 
-# The hook names pages whose text carries at least two of the prompt's English terms.
+# Without a daemon, even a prompt whose words match pages produces no suggestion.
 printf '{"session_id":"related","prompt":"%s"}\n' \
   "나는 nix sandbox 에서 readonly database 오류가 났는데" >"$HOME/related.json"
-check "related pages from a prompt" 'pages that may already cover this: knowledge/nix-sandbox' \
-  bash -c '"$1" remind <"$2"' _ "$wiki" "$HOME/related.json"
-printf '{"session_id":"related","prompt":"%s"}\n' "오늘 점심 뭐 먹지 고민되네 진짜" >"$HOME/unrelated.json"
-out=$("$wiki" remind <"$HOME/unrelated.json")
-[ -z "$out" ] || fail "a prompt without English terms named pages" remind "$out"
-printf '{"session_id":"related","prompt":"%s"}\n' "sandbox 하나만" >"$HOME/oneterm.json"
-out=$("$wiki" remind <"$HOME/oneterm.json")
-[ -z "$out" ] || fail "a single English term named pages" remind "$out"
+out=$("$wiki" remind <"$HOME/related.json")
+[ -z "$out" ] || fail "no daemon produced a related-page note" remind "$out"
 
 transcript=$HOME/reminder.jsonl
 printf '{"session_id":"reminder","transcript_path":"%s"}\n' "$transcript" >"$HOME/hook.json"

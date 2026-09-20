@@ -4,7 +4,7 @@ use chrono::{Local, TimeZone};
 use clap::Args;
 use regex::Regex;
 use rusqlite::{params_from_iter, types::Value, Connection};
-use std::{path::Path, sync::LazyLock};
+use std::{io::Write, path::Path, sync::LazyLock};
 
 #[derive(Args, Default)]
 pub struct Filters {
@@ -89,11 +89,16 @@ fn stale(mtime: i64) -> bool {
     days >= crate::index::STALE_DAYS
 }
 
-fn show(root: &Path, row: &Row, snippet: Option<String>) {
+fn show(
+    out: &mut impl Write,
+    root: &Path,
+    row: &Row,
+    snippet: Option<String>,
+    section: Option<(String, i64, i64)>,
+) -> std::io::Result<()> {
     let path = root.join(&row.path).display().to_string();
     if !row.blocked.is_empty() {
-        println!("{}", row.blocked_line(&path));
-        return;
+        return writeln!(out, "{}", row.blocked_line(&path));
     }
     let mut meta = vec![if row.kind.is_empty() {
         "?".into()
@@ -120,10 +125,23 @@ fn show(root: &Path, row: &Row, snippet: Option<String>) {
     if row.backlinks > 0 {
         meta.push(format!("linked by {}", row.backlinks));
     }
-    println!("{path}\n  {}  ({})", row.title, meta.join("; "));
+    writeln!(out, "{path}\n  {}  ({})", row.title, meta.join("; "))?;
     if let Some(s) = snippet.filter(|s| !s.is_empty()) {
-        println!("  {}", s.split_whitespace().collect::<Vec<_>>().join(" "));
+        writeln!(
+            out,
+            "  {}",
+            s.split_whitespace().collect::<Vec<_>>().join(" ")
+        )?;
     }
+    if let Some((heading, start, end)) = section {
+        let heading = if heading.is_empty() {
+            "(top)"
+        } else {
+            &heading
+        };
+        writeln!(out, "  § {heading} (lines {start}-{end})")?;
+    }
+    Ok(())
 }
 
 pub fn search(
@@ -132,6 +150,7 @@ pub fn search(
     terms: &[String],
     n: i64,
     filters: &Filters,
+    no_semantic: bool,
 ) -> Result<()> {
     let query = fts_query(terms);
     if query.is_empty() {
@@ -147,22 +166,37 @@ pub fn search(
             Ok((Row::read(r)?, r.get::<_, String>(9)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = std::io::stdout().lock();
     if rows.is_empty() {
         let total: i64 = db.query_row("select count(*) from files", [], |r| r.get(0))?;
-        println!("no pages match {query} ({total} pages in the wiki)");
-    }
-    for (row, snippet) in rows {
-        show(root, &row, Some(snippet));
-        if row.blocked.is_empty() {
-            if let Some((heading, start, end)) = best_section(db, &row.path, &query) {
-                let heading = if heading.is_empty() {
-                    "(top)".to_owned()
-                } else {
-                    heading
+        writeln!(out, "no pages match {query} ({total} pages in the wiki)")?;
+        if !no_semantic && where_sql.is_empty() {
+            let mut printed_heading = false;
+            for hit in crate::semantic::search(&terms.join(" "), n) {
+                // The daemon's snapshot can lag behind edits and deletions. Resolve
+                // metadata here so stale or newly blocked text cannot bypass show().
+                let Ok(row) = db.query_row(
+                    &format!("select {COLUMNS} {JOIN} where files.path = ?"),
+                    [format!("pages/{}.md", hit.path)],
+                    Row::read,
+                ) else {
+                    continue;
                 };
-                println!("  § {heading} (lines {start}-{end})");
+                if !printed_heading {
+                    writeln!(out, "semantic matches (meaning, not keywords):")?;
+                    printed_heading = true;
+                }
+                show(&mut out, root, &row, None, hit.section)?;
             }
         }
+    }
+    for (row, snippet) in rows {
+        let section = if row.blocked.is_empty() {
+            best_section(db, &row.path, &query)
+        } else {
+            None
+        };
+        show(&mut out, root, &row, Some(snippet), section)?;
     }
     Ok(())
 }
@@ -180,7 +214,7 @@ pub fn list(root: &Path, db: &Connection, n: i64, filters: &Filters) -> Result<(
         println!("no pages");
     }
     for row in rows {
-        show(root, &row, None);
+        show(&mut std::io::stdout().lock(), root, &row, None, None)?;
     }
     Ok(())
 }
@@ -241,5 +275,64 @@ mod tests {
             "\"readonly database\" OR \"readonly\"* OR \"database\"* OR \"OR\"*"
         );
         assert_eq!(fts_query(&["!*()".into()]), "");
+    }
+
+    #[test]
+    fn render_with_and_without_section() {
+        let row = Row {
+            path: "pages/knowledge/foo.md".into(),
+            kind: "knowledge".into(),
+            status: String::new(),
+            title: "Cache recovery".into(),
+            project: "demo".into(),
+            tags: "cache restart".into(),
+            mtime: Local::now().timestamp_nanos_opt().unwrap(),
+            blocked: String::new(),
+            backlinks: 2,
+        };
+        let expected = format!(
+            "/wiki/pages/knowledge/foo.md\n  Cache recovery  (knowledge; updated {}; project=demo; tags=cache,restart; linked by 2)\n",
+            updated(row.mtime)
+        );
+        for section in [
+            None,
+            Some(("What kills it".into(), 27, 36)),
+            Some((String::new(), 1, 3)),
+        ] {
+            let mut out = Vec::new();
+            show(&mut out, Path::new("/wiki"), &row, None, section.clone()).unwrap();
+            let location = match section {
+                Some((heading, start, end)) => format!(
+                    "  § {} (lines {start}-{end})\n",
+                    if heading.is_empty() {
+                        "(top)"
+                    } else {
+                        &heading
+                    }
+                ),
+                None => String::new(),
+            };
+            assert_eq!(
+                String::from_utf8(out).unwrap(),
+                format!("{expected}{location}")
+            );
+        }
+        let mut out = Vec::new();
+        let blocked = Row {
+            blocked: "secret".into(),
+            ..row
+        };
+        show(
+            &mut out,
+            Path::new("/wiki"),
+            &blocked,
+            None,
+            Some(("hidden".into(), 1, 3)),
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "/wiki/pages/knowledge/foo.md: [BLOCKED: secret; fix the page]\n"
+        );
     }
 }
