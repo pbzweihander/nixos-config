@@ -6,6 +6,7 @@
     ../../home/profiles/gaming.nix
 
     ../../home/modules/claude-code/wiki-recap
+    ../../home/modules/claude-code/wiki-embed
     ../../home/modules/kde.nix
   ];
 
