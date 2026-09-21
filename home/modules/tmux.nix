@@ -20,6 +20,19 @@
       # integration feature), so tell tmux the outer terminal does 24-bit colour.
       set -as terminal-features ",xterm-ghostty:RGB"
 
+      # A modified key such as Shift+Enter reaches a program inside tmux only if tmux
+      # asks the outer terminal for extended keys and then passes them on. tmux only
+      # asks when it knows the terminal can do it, and xterm-ghostty is not in its
+      # built-in list, so the extkeys feature has to be declared here as well; without
+      # it Shift+Enter arrives as a plain CR and is indistinguishable from Enter.
+      # Claude Code asks for modifyOtherKeys mode 2 at startup, which is what tmux
+      # implements -- it also pushes the kitty keyboard protocol, which tmux does not
+      # know -- and csi-u is the format kitty-protocol programs expect, so the key
+      # arrives as \e[13;2u rather than the xterm form \e[27;2;13~.
+      set -s extended-keys on
+      set -s extended-keys-format csi-u
+      set -as terminal-features ",xterm-ghostty:extkeys"
+
       # tmux swallows the title the program inside it sets unless set-titles is on,
       # which is why a ghostty tab stops following the remote shell once tmux is in
       # the middle. #T is the pane title, which fish's own fish_title sets to the
