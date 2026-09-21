@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ pkgs, lib, ... }:
 {
   programs = {
     fish.enable = true;
@@ -17,7 +17,7 @@
     openssh.authorizedKeys.keyFiles = [
       (builtins.fetchurl {
         url = "https://github.com/pbzweihander.keys";
-        sha256 = "sha256:1rkqq8mn7c3w9183ypyd5padw1wlfbj3kfan14x558x3z128hn4w";
+        sha256 = "sha256:018n3rjxslx7my6w1chbjiz3c2ck7nyqzdcdbvp0s2j63xprncsh";
       })
     ];
   };
