@@ -10,6 +10,11 @@
     focusEvents = true;
     historyLimit = 50000;
     mouse = true;
+    # C-b is page-up in less, man and vim, so tmux holding it makes paging over ssh
+    # annoying. C-a is the usual replacement but it is beginning-of-line in fish, which
+    # trades a pager conflict for a shell one. C-Space is free in all of them.
+    prefix = "C-Space";
+    keyMode = "vi";
     extraConfig = ''
       # ghostty installs its own terminfo on remote hosts (the ssh-terminfo shell
       # integration feature), so tell tmux the outer terminal does 24-bit colour.
@@ -22,6 +27,19 @@
       # gives the same titles a plain ssh session would.
       set -g set-titles on
       set -g set-titles-string "#T"
+
+      # tmux opens a new pane in the path tmux itself started in; keep the pane's own
+      # directory instead, which is nearly always what the split is for.
+      bind '"' split-window -c "#{pane_current_path}"
+      bind % split-window -h -c "#{pane_current_path}"
+      bind c new-window -c "#{pane_current_path}"
+
+      # Copy with y as in vim, rather than emacs' Enter, and paste with p.
+      bind -T copy-mode-vi v send -X begin-selection
+      bind -T copy-mode-vi y send -X copy-selection-and-cancel
+      bind p paste-buffer
+
+      bind R source-file ~/.config/tmux/tmux.conf \; display "tmux.conf reloaded"
     '';
   };
 
