@@ -39,6 +39,20 @@
       bind -T copy-mode-vi y send -X copy-selection-and-cancel
       bind p paste-buffer
 
+      # tmux copies to the clipboard the moment a mouse selection ends, which
+      # ghostty deliberately does not do (copy-on-select = false), so a drag meant
+      # only to read something loses whatever was on the clipboard. Keep the
+      # selection instead and wait for y; q or Escape leaves copy mode.
+      # The double and triple click bindings are the stock ones with their trailing
+      # copy-pipe-and-cancel dropped, and without -H so that copy mode is visible.
+      bind -T copy-mode-vi MouseDragEnd1Pane send -X stop-selection
+      bind -T root DoubleClick1Pane select-pane -t = \; \
+        if -F "#{||:#{pane_in_mode},#{mouse_any_flag}}" { send -M } \
+          { copy-mode ; send -X select-word }
+      bind -T root TripleClick1Pane select-pane -t = \; \
+        if -F "#{||:#{pane_in_mode},#{mouse_any_flag}}" { send -M } \
+          { copy-mode ; send -X select-line }
+
       bind R source-file ~/.config/tmux/tmux.conf \; display "tmux.conf reloaded"
     '';
   };
