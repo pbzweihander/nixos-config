@@ -52,13 +52,15 @@ let
   wikiDir = "${config.xdg.dataHome}/claude-wiki";
 
   # One Claude Code config directory per account: `claude` uses ~/.claude, and the
-  # `sclaude` fish function sets CLAUDE_CONFIG_DIR to ~/.sclaude. Both get the same
-  # rules, skills, and settings; ~/.sclaude/projects is a link to ~/.claude/projects,
-  # so transcripts and auto memory are shared.
+  # `sclaude` and `tclaude` fish functions set CLAUDE_CONFIG_DIR to ~/.sclaude and
+  # ~/.tclaude. All of them get the same rules, skills, and settings; their `projects`
+  # directories link to ~/.claude/projects, so transcripts and auto memory are shared.
   configDirs = [
     ".claude"
     ".sclaude"
+    ".tclaude"
   ];
+  extraConfigDirs = lib.remove ".claude" configDirs;
   sharedFiles = {
     # User-level rules rather than CLAUDE.md, which stays editable (/memory).
     "rules/claude-wiki.md" = ./rules/claude-wiki.md;
@@ -125,9 +127,14 @@ in
           lib.mapAttrs' (path: source: lib.nameValuePair "${dir}/${path}" { inherit source; }) sharedFiles
         ) configDirs
       )
-      // {
-        ".sclaude/projects".source = config.lib.file.mkOutOfStoreSymlink "${homeDir}/.claude/projects";
-      };
+      // lib.listToAttrs (
+        map (
+          dir:
+          lib.nameValuePair "${dir}/projects" {
+            source = config.lib.file.mkOutOfStoreSymlink "${homeDir}/.claude/projects";
+          }
+        ) extraConfigDirs
+      );
 
     # Same approach as programs.zed-editor's mutableUserSettings, except that arrays
     # (permission rules, hooks) are unioned instead of replaced, so entries added at
@@ -160,6 +167,11 @@ in
       description = "Claude Code with the second account (config directory ~/.sclaude)";
       wraps = "claude";
       body = "env CLAUDE_CONFIG_DIR=$HOME/.sclaude claude $argv";
+    };
+    tclaude = {
+      description = "Claude Code with the third account (config directory ~/.tclaude)";
+      wraps = "claude";
+      body = "env CLAUDE_CONFIG_DIR=$HOME/.tclaude claude $argv";
     };
     # Nothing is shared with ~/.codex: the second account is only there for when the
     # first one runs out of usage. codex-implement reaches it with --account codex1.
