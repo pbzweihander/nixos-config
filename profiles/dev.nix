@@ -54,6 +54,11 @@
     ]
     ++ (with config.multiverse.instance.tip; [
       codex
+      # Fallback only. Claude Code is normally the self-updating native build in
+      # ~/.local/share/claude/versions, installed with `claude install latest` and
+      # reached through ~/.local/bin/claude, which fish puts ahead of the system
+      # profile in PATH. The native ELF needs only glibc and runs unpatched thanks
+      # to nix-ld. This package is what `claude` resolves to when that is absent.
       claude-code
     ]);
 
