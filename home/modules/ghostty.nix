@@ -39,13 +39,14 @@ in
       window-decoration = "client";
 
       keybind = [
-        "ctrl+alt+enter=new_split:right"
+        "ctrl+shift+enter=new_split:right"
         "ctrl+shift+alt+enter=new_split:down"
         "ctrl+shift+h=goto_split:left"
         "ctrl+shift+j=goto_split:down"
         "ctrl+shift+k=goto_split:up"
         "ctrl+shift+l=goto_split:right"
         "ctrl+shift+q=unbind"
+        "ctrl+enter=unbind"
       ];
 
       foreground = "#bab7b6";
