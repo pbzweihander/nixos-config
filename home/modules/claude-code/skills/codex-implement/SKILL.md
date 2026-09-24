@@ -125,10 +125,10 @@ Make sure the working tree is clean or that the user knows uncommitted changes
 exist, so the review diff is meaningful. Pick a run directory
 `<scratchpad>/codex-run-<slug>`; the runner creates it.
 
-Start codex with the **Monitor** tool, not a background Bash call, so every codex
-step arrives in this session as a notification while it works:
+Start codex in two parts, so every codex step arrives in this session as a
+notification while it works, and codex survives the watcher:
 
-- `command`:
+1. Start the runner with the **Bash** tool and `run_in_background: true`:
   ```bash
   ~/.claude/skills/codex-implement/scripts/codex-monitor.sh "<run dir>" \
     --sandbox workspace-write \
@@ -140,20 +140,34 @@ step arrives in this session as a notification while it works:
     [-c 'projects."<project root>".trust_level="trusted"'] \
     - < "<scratchpad>/codex-spec-<slug>.md"
   ```
-- `description`: `codex: <slug>`
-- `persistent`: `true`, because a codex run can exceed Monitor's one-hour timeout.
+2. Follow its progress with the **Monitor** tool:
+   - `command`: `~/.claude/skills/codex-implement/scripts/codex-watch.sh "<run dir>"`
+   - `description`: `codex: <slug>`
+   - `timeout_ms`: `1800000`
+
+Never run `codex-monitor.sh` itself under Monitor. Monitor has no `persistent` option;
+`timeout_ms` defaults to 5 minutes and is capped at 30, and on expiry Monitor kills
+its command with every child, which would kill codex mid-turn.
+
+When the watch expires before `[EXIT]`, arm the same Monitor again. `codex-watch.sh`
+remembers how many lines it already printed (`<run dir>/progress.seen`), so a new
+watch continues without repeating events. It exits after `[EXIT]`. The background
+Bash task also notifies you when the runner exits, which covers a runner that died
+before printing `[EXIT]`.
 
 Replace `--sandbox workspace-write` with `--approve-for-me` when you chose auto
 review in step 2; never pass both.
 
-Start the command with exactly `~/.claude/skills/codex-implement/scripts/codex-monitor.sh`
-and never prefix it with env var assignments. Nix-managed settings allow that command
-without a prompt, and a `FOO=1 …` prefix breaks the match. Runner options go right
+Start the commands with exactly `~/.claude/skills/codex-implement/scripts/codex-monitor.sh`
+and `~/.claude/skills/codex-implement/scripts/codex-watch.sh`, and never prefix them
+with env var assignments. Nix-managed settings allow these commands without a prompt,
+and a `FOO=1 …` prefix breaks the match. Runner options go right
 after the script name, before the run directory.
 
 `codex-monitor.sh` runs `codex-latest.sh exec --json` with your arguments, saves the
 raw events to `<run dir>/events.jsonl` and stderr to `<run dir>/stderr.log`, and
-prints only the events that may need your attention, one line each, through `jq`.
+prints only the events that may need your attention, one line each, through `jq`,
+to stdout and to `<run dir>/progress.log`, which `codex-watch.sh` follows.
 It also always passes `--add-dir ~/.cache/nix`: nix's eval and fetcher caches are
 SQLite files there, and without it every nix command in the sandbox fails with
 `attempt to write a readonly database`. So do not tell codex to move the nix cache
@@ -198,14 +212,14 @@ not reported as a failure. Everything is still in `events.jsonl`.
 While it runs:
 
 - Act only on `[BLOCKED]`, `[STUCK?]`, a `[QUIET]` that points at a hang, and
-  `[FAILED]`. To stop codex, use TaskStop on the monitor task, then resume as in
-  step 4.
+  `[FAILED]`. To stop codex, use TaskStop on the background Bash task (the runner),
+  then resume as in step 4. Stopping the Monitor only stops the watch.
 - Tell the user about those same events and what you decided. Do not relay the rest.
 - Do not poll or sleep. Keep doing independent work, or wait for events.
 - File edits are not shown live. Check for edits outside the spec's area in step 4.
 - If the project's test suite routinely runs longer than ten minutes, pass
   `--quiet-secs <seconds>` before the run directory to raise the threshold.
-- After `[EXIT]`, go to step 4. The stream ends by itself; no TaskStop needed.
+- After `[EXIT]`, go to step 4. Both tasks end by themselves; no TaskStop needed.
 
 Other useful flags:
 
@@ -241,9 +255,9 @@ jq -r 'select(.type == "item.completed" and .item.type == "command_execution"
 ```
 
 For small problems, fix them directly. For larger gaps, send a follow-up to the same
-codex session instead of starting over. Use Monitor again, with a new run directory,
-the same flags as the first run plus any that were missing, and `resume --last` at
-the end:
+codex session instead of starting over. Start the runner and the watch again as in
+step 3, with a new run directory, the same flags as the first run plus any that were
+missing, and `resume --last` at the end:
 
 ```bash
 ~/.claude/skills/codex-implement/scripts/codex-monitor.sh "<run dir>-2" \

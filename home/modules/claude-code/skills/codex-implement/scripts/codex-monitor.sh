@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Run `codex exec --json` and print only important progress lines, for Claude Code's Monitor tool.
+# Run `codex exec --json` and print only important progress lines. Start it as a background
+# Bash task and follow <run-dir>/progress.log with codex-watch.sh under Monitor: a Monitor
+# kills its command on expiry (30 min at most), so codex must not be the Monitor's child.
 # usage: codex-monitor.sh [--account NAME] [--local] [--quiet-secs N] <run-dir> <codex exec args...>
 #   (stdin is passed through to codex)
-# Writes <run-dir>/events.jsonl (raw events) and <run-dir>/stderr.log (nix build + codex stderr).
+# Writes <run-dir>/events.jsonl (raw events), <run-dir>/stderr.log (nix build + codex stderr)
+# and <run-dir>/progress.log (a copy of the progress lines on stdout).
 # Prints [QUIET] when codex has emitted nothing for --quiet-secs seconds (default 600).
 # --local skips the nixpkgs-unstable build and runs the locally installed codex.
 # --account runs as another codex account: NAME is the directory ~/.<NAME> used as
@@ -30,6 +33,8 @@ done
 dir="$1"; shift
 mkdir -p "$dir"
 : > "$dir/events.jsonl"
+: > "$dir/progress.log"
+exec > >(tee -a "$dir/progress.log")
 
 jq_cmd=(jq)
 command -v jq >/dev/null 2>&1 || jq_cmd=(nix run nixpkgs#jq --)

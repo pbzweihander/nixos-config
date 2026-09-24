@@ -68,7 +68,7 @@ let
     "skills/claude-wiki" = ./skills/claude-wiki;
     "skills/codex-implement" = ./skills/codex-implement;
   };
-  codexMonitor = ".claude/skills/codex-implement/scripts/codex-monitor.sh";
+  codexScripts = ".claude/skills/codex-implement/scripts";
 
   # Merged into ~/.claude/settings.json on activation instead of linked from the store:
   # Claude Code writes that file itself (/config, /model, /permissions).
@@ -78,10 +78,13 @@ let
       # a leading `//` marks an absolute path in permission rules
       "Read(/${wikiDir}/**)"
       "Edit(/${wikiDir}/**)"
-      # codex-implement starts this with the Monitor tool, which uses Bash rules. Whether
-      # `~` is expanded before matching is undocumented, so allow both spellings.
-      "Bash(~/${codexMonitor} *)"
-      "Bash(${homeDir}/${codexMonitor} *)"
+      # codex-implement starts codex-monitor.sh as a background Bash task and follows it
+      # with codex-watch.sh under Monitor, which uses Bash rules. Whether `~` is expanded
+      # before matching is undocumented, so allow both spellings.
+      "Bash(~/${codexScripts}/codex-monitor.sh *)"
+      "Bash(${homeDir}/${codexScripts}/codex-monitor.sh *)"
+      "Bash(~/${codexScripts}/codex-watch.sh *)"
+      "Bash(${homeDir}/${codexScripts}/codex-watch.sh *)"
       # codex-implement reads codex's JSON event log with jq
       "Bash(jq *)"
       # rules/nix.md has every session lint the Nix code it changes
