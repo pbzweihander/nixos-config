@@ -271,6 +271,32 @@ to the note. `--interval N` or `CLAUDE_WIKI_REMIND_INTERVAL` changes the interva
 Counts are separate per session; a sync tool call resets the count. The hook reads
 only new complete transcript lines after its first call.
 
+## Recall
+
+`claude-wiki recall` runs before Skill calls and after tool failures, except
+interruptions. Ordinary tool calls and successful output produce no recall notes.
+Before a skill, whole tags match its name or the suffix in `plugin:skill`.
+Candidates are knowledge pages and open follow-ups for the hook cwd's project
+(worktrees use the main repo) or no project. Project matches rank first, then
+newer pages. The `claude-wiki` skill is skipped.
+
+After a failure, it matches six-word phrases from error lines in the last 200 lines
+of `error`, never the tool input. It keeps at most 80 distinct windows, skipping
+numeric, hex, and home-path identifiers and phrases shared by more than three
+pages. Pages need two matching windows by default; more matches rank first, then
+newer pages. Wiki operations, blocked pages, and history are excluded;
+`--include-history` admits history for failures.
+
+`--max-skill-pages` / `CLAUDE_WIKI_RECALL_MAX_SKILL_PAGES` defaults to `5`.
+`--min-windows` / `CLAUDE_WIKI_RECALL_MIN_WINDOWS` defaults to `2`;
+`--max-pages` / `CLAUDE_WIKI_RECALL_MAX_PAGES` limits failure suggestions to `2`.
+`--explain` takes the same hook JSON and reports the mode, windows, skill names,
+project, candidates, and selection without accessing session state. Notes include
+titles and absolute paths. Pages suggested by recall or remind,
+or referenced in transcript tool inputs, are not suggested again by recall.
+These are hook notes, not user messages: read a page when it bears on the task;
+otherwise continue without replying.
+
 ## Maintenance
 
 - `claude-wiki sync --rebuild` rebuilds the index from scratch.

@@ -90,6 +90,7 @@ pub fn run(db: &Connection, args: &Args) -> Result<()> {
             .map(|hit| hit.path)
             .collect()
     };
+    crate::recall::mark_seen(db, hook.session_id.as_deref().unwrap_or_default(), &pages)?;
     if !pages.is_empty() {
         println!(
             "claude-wiki: pages that may already cover this: {}. Read one with `claude-wiki search <terms>` or the Read tool if it is relevant; otherwise ignore this note and do not reply to it.",

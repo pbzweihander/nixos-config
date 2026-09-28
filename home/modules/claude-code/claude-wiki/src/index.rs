@@ -47,7 +47,9 @@ fn initialize(db: &Connection) -> Result<()> {
                 tokenize = 'porter unicode61 remove_diacritics 2');
             pragma user_version = {SCHEMA_VERSION}; commit;"))?;
     }
-    db.execute_batch("create table if not exists remind_state(session_id text primary key, prompts integer not null, offset integer not null);")?;
+    db.execute_batch("create table if not exists remind_state(session_id text primary key, prompts integer not null, offset integer not null);
+        create table if not exists recall_seen(session_id text, path text, primary key(session_id, path));
+        create table if not exists recall_state(session_id text primary key, offset integer not null);")?;
     Ok(())
 }
 

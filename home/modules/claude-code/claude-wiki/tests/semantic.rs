@@ -163,6 +163,14 @@ fn semantic_search_renders_pages_and_supplied_section() {
 #[test]
 fn reminder_sends_raw_korean_and_keeps_nudge() {
     let wiki = Wiki::new();
+    fs::write(
+        wiki.0.join("wiki/pages/knowledge/foo.md"),
+        "---\ntitle: foo cache notes\ncreated: 2026-09-20\n---\nerror building bubblewrap command: cannot establish app-server socket mount isolation\n",
+    ).unwrap();
+    let recall_hook = json!({"session_id": "korean", "hook_event_name": "PostToolUseFailure", "tool_name": "Bash", "error": "error building bubblewrap command: cannot establish app-server socket mount isolation"}).to_string();
+    let explanation: Value =
+        serde_json::from_str(&run(wiki.command(&["recall", "--explain"]), &recall_hook)).unwrap();
+    assert_eq!(explanation["selected"], json!(["pages/knowledge/foo.md"]));
     let prompt = "  캐시가 왜 사라져요?\n다시 시작하면 그래요.";
     let (output, request) = wiki.respond(
         &["remind", "--interval", "1"],
@@ -172,6 +180,11 @@ fn reminder_sends_raw_korean_and_keeps_nudge() {
     assert_eq!(request, json!({"op": "related", "prompt": prompt, "n": 3}));
     assert_eq!(output.lines().next().unwrap(), "claude-wiki: pages that may already cover this: knowledge/foo. Read one with `claude-wiki search <terms>` or the Read tool if it is relevant; otherwise ignore this note and do not reply to it.");
     assert!(output.contains("claude-wiki: 1 prompts since"));
+    let recall = run(wiki.command(&["recall"]), &recall_hook);
+    assert!(
+        recall.is_empty(),
+        "reminder suggestions must be seen by recall: {recall}"
+    );
 }
 
 #[test]

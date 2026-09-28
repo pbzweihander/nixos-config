@@ -24,8 +24,10 @@ pub fn overview_budget() -> usize {
         .unwrap_or(3000)
 }
 
-pub fn current_project() -> Option<String> {
+pub fn current_project(dir: &Path) -> Option<String> {
     let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
         .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
         .output()
         .ok()?;
@@ -150,7 +152,7 @@ fn budgeted(pinned: &str, sections: &mut [Section], budget: usize) -> (String, u
 pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
     let total: i64 = db.query_row("select count(*) from files", [], |r| r.get(0))?;
     let mut pinned = format!("Shared wiki: {total} pages under {}/. Search it with `claude-wiki search <terms>` before non-trivial work; load the claude-wiki skill before writing to it.\n", root.display());
-    let project = current_project();
+    let project = current_project(Path::new("."));
     let overview = format!("pages/projects/{}.md", project.as_deref().unwrap_or("None"));
     let mut queries: Vec<(&str, String, String, Vec<Value>)> = vec![];
     if let Some(project) = &project {

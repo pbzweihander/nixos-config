@@ -11,6 +11,7 @@ export HOME CLAUDE_WIKI_DIR=$HOME/wiki
 export CLAUDE_WIKI_SOCKET=$HOME/no-daemon.sock
 sessions_dir=$HOME/transcripts
 export CLAUDE_WIKI_SESSIONS_DIRS=$sessions_dir
+unset CLAUDE_WIKI_RECALL_MIN_WINDOWS CLAUDE_WIKI_RECALL_MAX_SKILL_PAGES CLAUDE_WIKI_RECALL_MAX_PAGES
 unset CLAUDE_SESSION_ID CLAUDE_WIKI_CONTEXT_BUDGET CLAUDE_WIKI_OVERVIEW_BUDGET CLAUDE_WIKI_REMIND_INTERVAL
 trap 'rm -rf "$HOME"' EXIT
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
@@ -274,6 +275,60 @@ for ((i=1; i<=15; i++)); do
 done
 out=$(printf 'invalid json' | "$wiki" remind 2>/dev/null)
 [ -z "$out" ] || fail "remind printed an error to stdout" remind "$out"
+
+# Skill tags are scoped to the hook cwd, even when it names a worktree.
+for project in demo other; do
+  printf -- '---\ntitle: recall skill %s\ntags: [codex-implement]\nproject: %s\ncreated: 2026-09-28\n---\nSkill pitfalls.\n' "$project" "$project" \
+    >"$P/knowledge/recall-skill-$project.md"
+done
+printf -- '---\ntitle: recall untagged\nproject: demo\ncreated: 2026-09-28\n---\nSkill pitfalls.\n' >"$P/knowledge/recall-untagged.md"
+printf '{"session_id":"recall-skill","cwd":"%s","hook_event_name":"PreToolUse","tool_name":"Skill","tool_input":{"skill":"codex-implement"}}\n' \
+  "$HOME/demo-worktree" >"$HOME/recall-skill.json"
+out=$("$wiki" recall <"$HOME/recall-skill.json")
+check "recall skill hook JSON" '"hookEventName":"PreToolUse"' echo "$out"
+check "recall skill project page" 'recall-skill-demo.md' echo "$out"
+check_not "recall excludes another project and untagged pages" 'recall-skill-other\|recall-untagged' echo "$out"
+check_not "recall skill session dedupe" '.' "$wiki" recall <"$HOME/recall-skill.json"
+check "recall plugin suffix matches" 'recall-skill-demo.md' "$wiki" recall \
+  <<<"$(printf '{"session_id":"recall-plugin","cwd":"%s","hook_event_name":"PreToolUse","tool_name":"Skill","tool_input":{"skill":"plugin:codex-implement"}}' "$HOME/demo")"
+check_not "recall ignores wiki skill" '.' "$wiki" recall \
+  <<<'{"hook_event_name":"PreToolUse","tool_name":"Skill","tool_input":{"skill":"claude-wiki"}}'
+check_not "recall without project excludes project pages" '.' "$wiki" recall \
+  <<<'{"hook_event_name":"PreToolUse","tool_name":"Skill","tool_input":{"skill":"codex-implement"}}'
+
+cat >"$P/knowledge/recall-isolation.md" <<'EOF'
+---
+title: bubblewrap mount isolation
+created: 2026-09-28
+---
+error building bubblewrap command: cannot establish app-server socket mount isolation
+EOF
+recall_input='{"session_id":"recall-failure","hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_input":{},"error":"error building bubblewrap command: cannot establish app-server socket mount isolation"}'
+out=$("$wiki" recall <<<"$recall_input")
+check "recall failure hook JSON" '"hookEventName":"PostToolUseFailure"' echo "$out"
+check "recall exact error phrases" 'may explain this Bash failure:.*recall-isolation.md' echo "$out"
+check_not "recall failure session dedupe" '.' "$wiki" recall <<<"$recall_input"
+check "recall other failure session" 'recall-isolation.md' "$wiki" recall \
+  <<<"${recall_input/recall-failure/recall-other}"
+check_not "recall one matching window is insufficient" '.' "$wiki" recall \
+  <<<'{"session_id":"recall-single","hook_event_name":"PostToolUseFailure","tool_name":"Bash","error":"error building bubblewrap command cannot establish"}'
+for i in 1 2 3 4; do
+  printf -- '---\ntitle: shared error %s\ncreated: 2026-09-28\n---\nfatal orbital recovery cannot restore the journal cache\n' "$i" \
+    >"$P/knowledge/recall-common-$i.md"
+done
+check_not "recall ignores windows shared by four pages" '.' "$wiki" recall \
+  <<<'{"hook_event_name":"PostToolUseFailure","tool_name":"Bash","error":"fatal orbital recovery cannot restore the journal cache"}'
+check_not "recall ignores Bash PreToolUse" '.' "$wiki" recall \
+  <<<'{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"error building bubblewrap command cannot establish app-server socket mount isolation"}}'
+check_not "recall ignores successful output" '.' "$wiki" recall \
+  <<<'{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_response":{"stderr":"error building bubblewrap command cannot establish app-server socket mount isolation"}}'
+check_not "recall ignores interrupted failures" '.' "$wiki" recall \
+  <<<'{"hook_event_name":"PostToolUseFailure","tool_name":"Bash","is_interrupt":true,"error":"error building bubblewrap command cannot establish app-server socket mount isolation"}'
+check_not "recall malformed stdin exits zero without stdout" '.' bash -c '"$1" recall 2>/dev/null' _ "$wiki" <<<'invalid json'
+check_not "recall malformed arguments exit zero without stdout" '.' bash -c '"$1" recall --unknown 2>/dev/null' _ "$wiki" </dev/null
+check_not "recall empty stdin" '.' "$wiki" recall </dev/null
+check "recall explain ignores seen pages" '"candidates":\[{' "$wiki" recall --explain <<<"$recall_input"
+
 # Links are indexed from prose, and warnings must not prevent commits.
 cat >"$P/history/link-source.md" <<'EOF'
 ---

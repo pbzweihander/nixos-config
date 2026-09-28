@@ -3,6 +3,7 @@ mod context;
 mod index;
 mod links;
 mod pages;
+mod recall;
 mod remind;
 mod scan;
 mod search;
@@ -68,6 +69,8 @@ enum Commands {
     Sessions(sessions::Args),
     /// Periodic UserPromptSubmit reminder
     Remind(remind::Args),
+    /// Suggest wiki pages for skill calls or exact error text on failures
+    Recall(recall::Args),
 }
 
 fn env_path(key: &str) -> Option<PathBuf> {
@@ -184,20 +187,27 @@ fn run(command: &Commands) -> Result<i32> {
         Commands::Context(args) => context::run(&root, &db, args)?,
         Commands::Sessions(args) => sessions::run(&root, args)?,
         Commands::Remind(args) => remind::run(&db, args)?,
+        Commands::Recall(args) => recall::run(&root, &db, args)?,
     }
     Ok(0)
 }
 
 fn main() {
-    // Even malformed hook arguments must not prevent a prompt from being submitted.
-    let is_remind = env::args_os().nth(1).is_some_and(|s| s == "remind");
+    // Even malformed hook arguments must not interrupt a session.
+    let is_hook = env::args_os()
+        .nth(1)
+        .is_some_and(|s| s == "remind" || s == "recall");
     let cli = Cli::try_parse().unwrap_or_else(|e| {
-        let _ = e.print();
-        std::process::exit(if is_remind { 0 } else { e.exit_code() });
+        if is_hook {
+            eprintln!("{e}");
+        } else {
+            let _ = e.print();
+        }
+        std::process::exit(if is_hook { 0 } else { e.exit_code() });
     });
-    let result = if is_remind {
+    let result = if is_hook {
         std::panic::catch_unwind(|| run(&cli.command))
-            .unwrap_or_else(|_| Err(anyhow::anyhow!("reminder failed")))
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("hook failed")))
     } else {
         run(&cli.command)
     };
@@ -208,5 +218,5 @@ fn main() {
             1
         }
     };
-    std::process::exit(if is_remind { 0 } else { code });
+    std::process::exit(if is_hook { 0 } else { code });
 }

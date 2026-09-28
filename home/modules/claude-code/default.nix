@@ -92,28 +92,57 @@ let
     ];
     # Keep the command string stable: array entries are unioned on merge, so a
     # changed command would be added next to the old one instead of replacing it.
-    hooks.SessionStart = [
-      {
-        hooks = [
-          {
-            type = "command";
-            command = "claude-wiki context";
-          }
-        ];
-      }
-    ];
-    # Keep the command string stable: array entries are unioned on merge, so a
-    # changed command would be added next to the old one instead of replacing it.
-    hooks.UserPromptSubmit = [
-      {
-        hooks = [
-          {
-            type = "command";
-            command = "claude-wiki remind";
-          }
-        ];
-      }
-    ];
+    hooks = {
+      SessionStart = [
+        {
+          hooks = [
+            {
+              type = "command";
+              command = "claude-wiki context";
+            }
+          ];
+        }
+      ];
+      # Keep the command string stable: array entries are unioned on merge, so a
+      # changed command would be added next to the old one instead of replacing it.
+      UserPromptSubmit = [
+        {
+          hooks = [
+            {
+              type = "command";
+              command = "claude-wiki remind";
+            }
+          ];
+        }
+      ];
+      # A failure's exact error text and a skill's tag identify useful knowledge;
+      # ordinary calls and successful output mostly identify the topic already in hand.
+      # Keep the command string stable: array entries are unioned on merge, so a
+      # changed command would be added next to the old one instead of replacing it.
+      PreToolUse = [
+        {
+          matcher = "Skill";
+          hooks = [
+            {
+              type = "command";
+              command = "claude-wiki recall";
+              timeout = 5;
+            }
+          ];
+        }
+      ];
+      PostToolUseFailure = [
+        {
+          hooks = [
+            {
+              type = "command";
+              command = "claude-wiki recall";
+              timeout = 5;
+            }
+          ];
+        }
+      ];
+    };
   };
 in
 {
