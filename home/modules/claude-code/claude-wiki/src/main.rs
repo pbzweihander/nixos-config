@@ -62,7 +62,15 @@ enum Commands {
         rebuild: bool,
     },
     /// Validate pages without committing
-    Check { paths: Vec<String> },
+    Check {
+        paths: Vec<String>,
+        /// Test each page's queries against BM25 and semantic search
+        #[arg(long)]
+        probe: bool,
+        /// A query must find its page within this many results by either method
+        #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(i64).range(1..), requires = "probe")]
+        probe_top: i64,
+    },
     /// Session start summary
     Context(context::Args),
     /// BM25 search over past session transcripts
@@ -183,7 +191,11 @@ fn run(command: &Commands) -> Result<i32> {
         Commands::Sync { paths, message, .. } => {
             return sync::sync(&root, &db, paths, message.as_deref())
         }
-        Commands::Check { paths } => return sync::check(&root, paths),
+        Commands::Check {
+            paths,
+            probe,
+            probe_top,
+        } => return sync::check(&root, &db, paths, *probe, *probe_top),
         Commands::Context(args) => context::run(&root, &db, args)?,
         Commands::Sessions(args) => sessions::run(&root, args)?,
         Commands::Remind(args) => remind::run(&db, args)?,

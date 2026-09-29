@@ -25,6 +25,9 @@ static ERRORS: LazyLock<Regex> = LazyLock::new(|| {
 
 #[derive(ClapArgs)]
 pub struct Args {
+    /// Minimum match score: each six-word window counts 1, each gated 3–5-word
+    /// phrase counts 2. Default 2 means seven consecutive matching words
+    /// (overlapping windows), two separate six-word runs, or one gated short phrase.
     #[arg(long, env = "CLAUDE_WIKI_RECALL_MIN_WINDOWS", default_value_t = 2)]
     min_windows: usize,
     #[arg(long, env = "CLAUDE_WIKI_RECALL_MAX_SKILL_PAGES", default_value_t = 5)]
@@ -109,6 +112,7 @@ fn wiki_operation(root: &Path, hook: &Hook) -> bool {
 #[derive(Debug, Serialize)]
 struct ErrorWindow {
     phrase: String,
+    short: bool,
     df: usize,
     kept: bool,
     reason: Option<&'static str>,
@@ -128,26 +132,29 @@ fn error_windows(error: &str, home: &Path) -> Vec<ErrorWindow> {
     {
         let line = line.to_lowercase();
         let words: Vec<_> = WORDS.find_iter(&line).map(|m| m.as_str()).collect();
-        for words in words.windows(WINDOW).rev() {
-            if words.iter().any(|word| {
-                word.chars().all(char::is_numeric)
-                    || (word.len() >= 7
-                        && word.bytes().all(|c| c.is_ascii_hexdigit())
-                        && word.bytes().any(|c| c.is_ascii_digit()))
-                    || home_words.contains(word)
-            }) {
+        for segment in words.rsplit(|word| {
+            word.chars().all(char::is_numeric)
+                || (word.len() >= 7
+                    && word.bytes().all(|c| c.is_ascii_hexdigit())
+                    && word.bytes().any(|c| c.is_ascii_digit()))
+                || home_words.contains(word)
+        }) {
+            if segment.len() < 3 {
                 continue;
             }
-            let phrase = words.join(" ");
-            if seen.insert(phrase.clone()) {
-                windows.push(ErrorWindow {
-                    phrase,
-                    df: 0,
-                    kept: false,
-                    reason: None,
-                });
-                if windows.len() == MAX_WINDOWS {
-                    break 'lines;
+            for words in segment.windows(WINDOW.min(segment.len())).rev() {
+                let phrase = words.join(" ");
+                if seen.insert(phrase.clone()) {
+                    windows.push(ErrorWindow {
+                        phrase,
+                        short: words.len() < WINDOW,
+                        df: 0,
+                        kept: false,
+                        reason: None,
+                    });
+                    if windows.len() == MAX_WINDOWS {
+                        break 'lines;
+                    }
                 }
             }
         }
@@ -210,11 +217,26 @@ fn error_candidates(
         let (i, df) = result?;
         windows[i].df = df;
     }
+    let mut token_counts = db.prepare(&format!(
+        "select count(*) from fts join files on files.id = fts.rowid
+        where fts match ? and {filter}"
+    ))?;
     for window in windows.iter_mut() {
         window.reason = if window.df == 0 {
             Some("no matches")
         } else if window.df > MAX_WINDOW_PAGES {
             Some("shared by too many pages")
+        } else if window.short {
+            let mut rare = false;
+            for token in window.phrase.split_whitespace() {
+                let df: i64 = token_counts
+                    .query_row(params![quote(token), args.include_history], |r| r.get(0))?;
+                if (1..=MAX_WINDOW_PAGES as i64).contains(&df) {
+                    rare = true;
+                    break;
+                }
+            }
+            (!rare).then_some("no rare token")
         } else {
             None
         };
@@ -223,15 +245,15 @@ fn error_candidates(
     let queries: Vec<_> = windows
         .iter()
         .filter(|w| w.kept)
-        .map(|w| quote(&w.phrase))
+        .map(|w| json!({"phrase": quote(&w.phrase), "weight": if w.short { 2 } else { 1 }}))
         .collect();
     if queries.is_empty() {
         return Ok(vec![]);
     }
     let mut matches = db.prepare(&format!(
-        "select files.path, fts.title, files.mtime_ns, count(*)
+        "select files.path, fts.title, files.mtime_ns, sum(json_extract(q.value, '$.weight'))
         from json_each(?) q cross join fts join files on files.id = fts.rowid
-        where fts match q.value and {filter} group by files.id"
+        where fts match json_extract(q.value, '$.phrase') and {filter} group by files.id"
     ))?;
     let mut pages = matches
         .query_map(
@@ -586,21 +608,96 @@ mod tests {
             ["error it is not a valid", "it is not a valid option"]
         );
         for token in ["123", "１２３", "abc12def", "home", "example", "user"] {
-            assert!(
-                error_windows(&format!("error cannot open the {token} socket"), home).is_empty(),
-                "{token}"
-            );
+            let windows = error_windows(&format!("error cannot open the {token} socket"), home);
+            assert_eq!(windows.len(), 1, "{token}");
+            assert_eq!(windows[0].phrase, "error cannot open the", "{token}");
+            assert!(windows[0].short);
         }
         assert_eq!(
             error_windows("error cannot open the abcdefa socket", home).len(),
             1
         );
         assert!(error_windows("one two three four five six seven", home).is_empty());
-        assert!(error_windows("error one two\nfatal three four", home).is_empty());
+        let windows = error_windows("error one two\nfatal three four", home);
+        assert_eq!(
+            windows
+                .iter()
+                .map(|w| w.phrase.as_str())
+                .collect::<Vec<_>>(),
+            ["error one two", "fatal three four"]
+        );
+        assert!(windows.iter().all(|w| w.short));
         assert_eq!(
             error_windows("오류가 error 한글과 두 글자 이상의 단어", home).len(),
             2
         );
+    }
+
+    #[test]
+    fn segments_do_not_bridge_dropped_tokens() {
+        let windows = error_windows(
+            "error one two 123 three four five six abc12def seven eight nine ten eleven /home/test/ twelve thirteen fourteen fifteen sixteen seventeen eighteen",
+            Path::new("/home/test"),
+        );
+        assert_eq!(
+            windows
+                .iter()
+                .map(|w| (w.phrase.as_str(), w.short))
+                .collect::<Vec<_>>(),
+            [
+                ("error one two", true),
+                ("three four five six", true),
+                ("seven eight nine ten eleven", true),
+                ("twelve thirteen fourteen fifteen sixteen seventeen", false),
+                (
+                    "thirteen fourteen fifteen sixteen seventeen eighteen",
+                    false
+                ),
+            ]
+        );
+        assert!(error_windows("error one 123 two three", Path::new("/home/test")).is_empty());
+    }
+
+    #[test]
+    fn short_phrases_require_rare_tokens_and_score_two() -> Result<()> {
+        let wiki = Wiki::new()?;
+        wiki.page("ssh", "", "", "Permission denied (publickey).")?;
+        wiki.page("common", "", "", "error connection refused")?;
+        for name in ["noise-one", "noise-two", "noise-three", "noise-four"] {
+            wiki.page(
+                name,
+                "",
+                "",
+                "permission error denied connection was refused; fatal shared quux",
+            )?;
+        }
+        for (error, df, reason) in [
+            ("Permission denied (publickey).", 1, None),
+            ("error connection refused", 1, Some("no rare token")),
+            ("fatal shared quux", 4, Some("shared by too many pages")),
+            ("error missing diagnostic", 0, Some("no matches")),
+        ] {
+            let h = failure(json!(error));
+            let output = wiki.explain(&h)?;
+            let windows = output["windows"].as_array().unwrap();
+            assert_eq!(windows.len(), 1);
+            assert_eq!(windows[0]["short"], true);
+            assert_eq!(windows[0]["df"], df);
+            assert_eq!(windows[0]["reason"], json!(reason));
+            assert_eq!(windows[0]["kept"], reason.is_none());
+            if reason.is_none() {
+                assert_eq!(output["selected"], json!(["pages/knowledge/ssh.md"]));
+                assert_eq!(output["candidates"][0]["score"], 2);
+                assert_eq!(output["candidates"][0]["qualified"], true);
+                let mut opts = args();
+                opts.min_windows = 3;
+                assert!(decide(&wiki.root, &wiki.db, &h, &opts)?.is_none());
+                assert!(decide(&wiki.root, &wiki.db, &h, &args())?.is_some());
+            } else {
+                assert!(output["selected"].as_array().unwrap().is_empty());
+            }
+        }
+        Ok(())
     }
 
     #[test]
@@ -768,6 +865,11 @@ mod tests {
         let h = failure(json!(ERROR));
         let output = wiki.explain(&h)?;
         assert_eq!(output["mode"], "error");
+        assert!(output["windows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|w| w["short"] == false));
         assert_eq!(
             output["selected"],
             json!(["pages/knowledge/new.md", "pages/knowledge/old.md"])

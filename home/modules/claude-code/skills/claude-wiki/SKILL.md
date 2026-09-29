@@ -183,6 +183,9 @@ warning reports it. Shorten the project page or lower the overview budget to fit
    tags: [nix, codex, sandbox]
    project: nixos-config
    created: 2026-09-15
+   queries:
+     - Why does nix fail inside the codex sandbox?
+     - 샌드박스에서 nix 빌드가 왜 실패해요?
    ---
 
    Body.
@@ -201,7 +204,10 @@ warning reports it. Shorten the project page or lower the overview budget to fit
      from their file name.
    - `status`: `open` or `done`, follow-ups only.
    - `created`: today's date. The update date comes from the file mtime.
-3. **Run `claude-wiki sync -m "<short summary>" <pages>`** after every write, passing
+   - `queries` (optional): questions in a future session's words; Korean is fine here even though the body is English.
+3. **Run `claude-wiki check --probe <page>`** before syncing. Reword the title or add
+   relevant identifiers until every query finds the page.
+4. **Run `claude-wiki sync -m "<short summary>" <pages>`** after every write, passing
    every page you created, edited, or deleted (absolute paths, or relative to the wiki
    root). It indexes the pages and commits only those, so other sessions' unfinished
    edits stay out of your commit. It warns about pages outside `pages/<type>/` and
@@ -217,10 +223,32 @@ in another language. Make every page readable on its own.
 ## Validation and blocked pages
 
 `claude-wiki check [paths...]` performs the same validation without committing
-(default: all pages). It exits 0 when clean, 1 for frontmatter, overview-budget,
-or broken-link warnings, and 2 for security findings. `sync` commits with validation
+(default: all pages). It exits 0 when clean, 1 for warnings, and 2 for security findings.
+Warnings cover frontmatter, overview budgets, and broken links. `sync` commits with validation
 warnings and exits 1, but exits 2
 without committing if a selected page has findings.
+
+`claude-wiki check --probe [--probe-top N] [paths...]` also tests each page's
+`queries`, a YAML list of non-empty strings. A query passes when its page is within
+the top N results (default 3) by BM25 or semantic search. BM25 uses the same query
+and ranking as `search`, without filters; semantic search asks for ten results
+when the daemon is available. Failed queries print each method's rank, or its
+absence or unavailability, and exit 1. A summary counts pages probed, queries, and
+failures. Queries are not indexed. Pages with security findings are not probed.
+
+`sync` probes only the pages being committed and warns when a knowledge page has
+no queries. These warnings do not block the commit. Plain `check` does not warn
+about missing queries.
+
+When `sync` commits a knowledge or follow-up page that mentions an installed skill in
+its title or body, including fenced code, it warns if the skill's tag is absent: recall offers
+pages to skill calls by tag. Matching is case-insensitive and requires a whole
+name; `codex-implement-x` does not mention `codex-implement`. `claude-wiki` is
+excluded. Skills are directories containing `SKILL.md` under the colon-separated
+`CLAUDE_WIKI_SKILL_DIRS`; when unset, discovery uses `$CLAUDE_CONFIG_DIR/skills`
+(or `~/.claude/skills`) and `~/.claude/plugins/cache/*/*/*/skills`. Plain `check`
+does not report mentions: some are legitimate (a page citing a skill as an example),
+and a page that should not carry the tag would otherwise warn forever.
 
 Full page text, including frontmatter, is scanned for instruction overrides,
 hidden HTML, credential exfiltration, SSH persistence, secrets, and invisible or
@@ -311,18 +339,26 @@ Candidates are knowledge pages and open follow-ups for the hook cwd's project
 (worktrees use the main repo) or no project. Project matches rank first, then
 newer pages. The `claude-wiki` skill is skipped.
 
-After a failure, it matches six-word phrases from error lines in the last 200 lines
-of `error`, never the tool input. It keeps at most 80 distinct windows, skipping
-numeric, hex, and home-path identifiers and phrases shared by more than three
-pages. Pages need two matching windows by default; more matches rank first, then
-newer pages. Wiki operations, blocked pages, and history are excluded;
+After a failure, it matches phrases from error lines in the last 200 lines of
+`error`, never the tool input. Numeric, hex-like, and home-path tokens split lines
+into segments. Segments of six or more words produce overlapping six-word windows;
+segments of three to five words produce one short phrase. It keeps at most 80
+distinct windows and phrases. A phrase must match one to three pages. A short
+phrase also needs at least one token that alone matches at most three pages;
+`Permission denied (publickey).` can qualify through a rare `publickey` token.
+Each six-word window scores 1 and each gated short phrase scores 2. Higher scores
+rank first, then newer pages. Wiki operations, blocked pages, and history are excluded;
 `--include-history` admits history for failures.
 
 `--max-skill-pages` / `CLAUDE_WIKI_RECALL_MAX_SKILL_PAGES` defaults to `5`.
-`--min-windows` / `CLAUDE_WIKI_RECALL_MIN_WINDOWS` defaults to `2`;
+`--min-windows` / `CLAUDE_WIKI_RECALL_MIN_WINDOWS` sets the minimum score, default `2`:
+two six-word windows, which can be seven consecutive matching words (overlapping
+windows) or two separate six-word runs, or one gated short phrase.
 `--max-pages` / `CLAUDE_WIKI_RECALL_MAX_PAGES` limits failure suggestions to `2`.
 `--explain` takes the same hook JSON and reports the mode, windows, skill names,
-project, candidates, and selection without accessing session state. Notes include
+project, candidates, and selection without accessing session state. Each window
+has `short: bool`; dropped short phrases report `no rare token`,
+`shared by too many pages`, or `no matches`. Notes include
 titles and absolute paths. Pages suggested by recall or remind,
 or referenced in transcript tool inputs, are not suggested again by recall.
 These are hook notes, not user messages: read a page when it bears on the task;

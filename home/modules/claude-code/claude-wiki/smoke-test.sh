@@ -9,6 +9,7 @@ fixtures=$(cd "$(dirname "${BASH_SOURCE[0]}")/tests/fixtures" && pwd)
 HOME=$(mktemp -d)
 export HOME CLAUDE_WIKI_DIR=$HOME/wiki
 export CLAUDE_WIKI_SOCKET=$HOME/no-daemon.sock
+export CLAUDE_WIKI_SKILL_DIRS=$HOME/skills
 sessions_dir=$HOME/transcripts
 export CLAUDE_WIKI_SESSIONS_DIRS=$sessions_dir
 unset CLAUDE_WIKI_RECALL_MIN_WINDOWS CLAUDE_WIKI_RECALL_MAX_SKILL_PAGES CLAUDE_WIKI_RECALL_MAX_PAGES
@@ -50,6 +51,7 @@ out=$("$wiki" search semanticnomatch 2>&1)
 cat >"$P/knowledge/nix-sandbox.md" <<'EOF'
 ---
 title: nix commands fail inside the codex sandbox
+queries: [readonly database]
 tags:
   - nix
   - sandbox
@@ -133,7 +135,8 @@ check "context outside a repository" "Shared wiki: 8 pages" "$wiki" context
 # sync with paths commits only those pages and leaves other sessions' edits alone
 printf -- '---\ntitle: mine\ncreated: 2026-09-16\n---\nmine\n' >"$P/knowledge/mine.md"
 printf -- '---\ntitle: theirs\ncreated: 2026-09-16\n---\ntheirs\n' >"$P/knowledge/theirs.md"
-out=$("$wiki" sync "$P/knowledge/mine.md" 2>&1)
+expect_code 1 "$wiki" sync "$P/knowledge/mine.md"
+check "sync warns about missing queries" 'warning: pages/knowledge/mine.md: no queries; add the questions a future session would ask to find this page' echo "$out"
 check "sync with an absolute path commits that page" "committed: wiki: add knowledge/mine" echo "$out"
 check "sync with a path reports what it left" "left uncommitted.*theirs.md" echo "$out"
 check "other sessions' pages stay uncommitted" "knowledge/theirs.md" git -C "$CLAUDE_WIKI_DIR" status --porcelain
@@ -141,7 +144,8 @@ check_not "the commit excludes other pages" "theirs" git -C "$CLAUDE_WIKI_DIR" s
 rm "$P/knowledge/mine.md"
 check "sync with a root-relative path commits a deletion" "delete knowledge/mine" \
   "$wiki" sync pages/knowledge/mine.md
-check "sync without paths commits the rest" "add knowledge/theirs" "$wiki" sync
+expect_code 1 "$wiki" sync
+check "sync without paths commits the rest" "add knowledge/theirs" echo "$out"
 
 
 
@@ -156,13 +160,15 @@ check "blocked search entry" '\[BLOCKED: secret' "$wiki" search safe
 check_not "blocked title stays hidden" 'safe title' "$wiki" list
 expect_code 2 "$wiki" check pages/knowledge/secret.md
 printf -- '---\ntitle: safe title\ncreated: 2026-09-16\n---\nA safe fact.\n' >"$P/knowledge/secret.md"
-check "fixed secret commits" 'committed:' "$wiki" sync pages/knowledge/secret.md
+expect_code 1 "$wiki" sync pages/knowledge/secret.md
+check "fixed secret commits" 'committed:' echo "$out"
 printf -- '---\ntitle: comment\ncreated: 2026-09-16\n---\n<!-- hidden -->\n' >"$P/knowledge/comment.md"
 expect_code 2 "$wiki" sync pages/knowledge/comment.md
 check "HTML comment blocked" 'blocked: pages/knowledge/comment.md: injection:' echo "$out"
 # A blocked staged change outside the explicit paths cannot prevent an unrelated commit.
 printf -- '---\ntitle: safe title\ncreated: 2026-09-16\n---\nA revised safe fact.\n' >"$P/knowledge/secret.md"
-check "path-scoped sync ignores unrelated blocked page" 'committed:' "$wiki" sync pages/knowledge/secret.md
+expect_code 1 "$wiki" sync pages/knowledge/secret.md
+check "path-scoped sync ignores unrelated blocked page" 'committed:' echo "$out"
 rm "$P/knowledge/comment.md"
 "$wiki" sync >/dev/null
 expect_code 1 "$wiki" check pages/knowledge/bare.md
@@ -328,6 +334,62 @@ check_not "recall malformed stdin exits zero without stdout" '.' bash -c '"$1" r
 check_not "recall malformed arguments exit zero without stdout" '.' bash -c '"$1" recall --unknown 2>/dev/null' _ "$wiki" </dev/null
 check_not "recall empty stdin" '.' "$wiki" recall </dev/null
 check "recall explain ignores seen pages" '"candidates":\[{' "$wiki" recall --explain <<<"$recall_input"
+
+cat >"$P/knowledge/recall-publickey.md" <<'EOF'
+---
+title: SSH authentication
+created: 2026-09-29
+---
+Permission denied (publickey).
+EOF
+check "recall short phrase with rare token" 'recall-publickey.md' "$wiki" recall \
+  <<<'{"session_id":"short-error","hook_event_name":"PostToolUseFailure","tool_name":"Bash","error":"Permission denied (publickey)."}'
+
+# Probe questions must find the page through its content, not its frontmatter.
+cat >"$P/knowledge/probe.md" <<'EOF'
+---
+title: quasar recovery
+created: 2026-09-29
+queries: [quasar recovery]
+---
+Quasar recovery details.
+EOF
+expect_code 0 "$wiki" check --probe knowledge/probe
+check "probe counts successful questions" 'probe: 1 pages probed, 1 queries, 0 failures' echo "$out"
+sed -i 's/queries: .*/queries: [unfindableprobequestion]/' "$P/knowledge/probe.md"
+expect_code 1 "$wiki" check --probe "$P/knowledge/probe.md"
+check "probe failure reports ranks" 'warning: pages/knowledge/probe.md: query "unfindableprobequestion" does not find this page (bm25: not in top 10, semantic: unavailable)' echo "$out"
+check "probe counts failures" 'probe: 1 pages probed, 1 queries, 1 failures' echo "$out"
+expect_code 0 "$wiki" check knowledge/probe
+expect_code 0 "$wiki" check knowledge/secret
+check_not "plain check does not require questions" 'no queries' echo "$out"
+expect_code 1 "$wiki" sync knowledge/probe
+check "sync probes its selected page" 'query "unfindableprobequestion" does not find this page' echo "$out"
+check "failed probe still commits" 'committed:' echo "$out"
+printf '\nChanged safe fact.\n' >>"$P/knowledge/secret.md"
+expect_code 1 "$wiki" sync knowledge/secret
+check_not "sync does not probe unselected pages" 'unfindableprobequestion' echo "$out"
+
+mkdir -p "$CLAUDE_WIKI_SKILL_DIRS/demo-skill"
+touch "$CLAUDE_WIKI_SKILL_DIRS/demo-skill/SKILL.md"
+cat >"$P/knowledge/skill-mention.md" <<'EOF'
+---
+title: skill invocation
+created: 2026-09-29
+queries: [skill invocation]
+---
+```bash
+/demo-skill
+```
+EOF
+# Mentions are linted when a page is written, not by check: some are legitimate.
+expect_code 0 "$wiki" check knowledge/skill-mention
+check_not "check does not lint skill mentions" 'mentions the demo-skill' echo "$out"
+expect_code 1 "$wiki" sync knowledge/skill-mention
+check "skill mention needs its tag" 'warning: pages/knowledge/skill-mention.md: mentions the demo-skill skill but is not tagged demo-skill; recall offers pages to a skill call by tag' echo "$out"
+sed -i '/title: skill invocation/a tags: [DEMO-SKILL]' "$P/knowledge/skill-mention.md"
+expect_code 0 "$wiki" sync knowledge/skill-mention
+check_not "tagged skill mention does not warn" 'mentions the demo-skill' echo "$out"
 
 # Links are indexed from prose, and warnings must not prevent commits.
 cat >"$P/history/link-source.md" <<'EOF'

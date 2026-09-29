@@ -1,8 +1,9 @@
-use crate::{context, expand_home, git, index, pages, scan};
+use crate::{context, expand_home, git, index, pages, scan, search, semantic};
 use anyhow::{bail, Result};
+use regex::Regex;
 use rusqlite::Connection;
 use std::{
-    fs,
+    env, fs,
     path::{Component, Path, PathBuf},
 };
 
@@ -55,8 +56,7 @@ pub fn wiki_paths(root: &Path, paths: &[String]) -> Result<Vec<String>> {
         .collect()
 }
 
-fn validate(root: &Path, rel: &str, text: &str) -> i32 {
-    let page = pages::parse(text, rel);
+fn validate(root: &Path, rel: &str, text: &str, page: &pages::Page) -> i32 {
     let mut code = 0;
     if pages::page_type(rel).is_empty() {
         eprintln!(
@@ -65,12 +65,12 @@ fn validate(root: &Path, rel: &str, text: &str) -> i32 {
         );
         code = 1;
     }
-    for problem in page.problems {
-        eprintln!("warning: {rel} {}", scan::redact(&problem));
+    for problem in &page.problems {
+        eprintln!("warning: {rel} {}", scan::redact(problem));
         code = 1;
     }
-    for target in page.links {
-        if !root.join(&target).is_file() {
+    for target in &page.links {
+        if !root.join(target).is_file() {
             eprintln!("warning: {rel}: link to {target}, which does not exist");
             code = 1;
         }
@@ -88,7 +88,86 @@ fn validate(root: &Path, rel: &str, text: &str) -> i32 {
     code
 }
 
-pub fn check(root: &Path, paths: &[String]) -> Result<i32> {
+#[derive(Default)]
+struct Probe {
+    pages: usize,
+    queries: usize,
+    failures: usize,
+}
+
+impl Probe {
+    fn page(&mut self, db: &Connection, rel: &str, page: &pages::Page, top: i64) -> Result<()> {
+        if page.queries.is_empty() {
+            return Ok(());
+        }
+        self.pages += 1;
+        for query in &page.queries {
+            self.queries += 1;
+            let limit = top.max(10);
+            let bm25 = search::bm25(
+                db,
+                &search::fts_query(std::slice::from_ref(query)),
+                limit,
+                &search::Filters::default(),
+            )?;
+            let semantic = semantic::search(query, 10);
+            let bm25_rank = bm25
+                .iter()
+                .position(|(row, _)| row.path == rel)
+                .map(|i| i + 1);
+            let semantic_rank = semantic
+                .iter()
+                .position(|hit| format!("pages/{}.md", hit.path) == rel)
+                .map(|i| i + 1);
+            if [bm25_rank, semantic_rank]
+                .iter()
+                .flatten()
+                .any(|rank| *rank as i64 <= top)
+            {
+                continue;
+            }
+            self.failures += 1;
+            let bm25 = bm25_rank.map_or_else(
+                || format!("not in top {limit}"),
+                |rank| format!("rank {rank}"),
+            );
+            let semantic = semantic_rank.map_or_else(
+                || {
+                    if semantic.is_empty() {
+                        "unavailable"
+                    } else {
+                        "not in top 10"
+                    }
+                    .into()
+                },
+                |rank| format!("rank {rank}"),
+            );
+            // Debug string quoting keeps multiline questions on one warning line.
+            eprintln!("warning: {rel}: query {:?} does not find this page (bm25: {bm25}, semantic: {semantic})", scan::redact(query));
+        }
+        Ok(())
+    }
+
+    fn finish(&self) -> i32 {
+        // A sync of pages without queries has nothing to report.
+        if self.pages == 0 {
+            return 0;
+        }
+        eprintln!(
+            "probe: {} pages probed, {} queries, {} failures",
+            self.pages, self.queries, self.failures
+        );
+        i32::from(self.failures > 0)
+    }
+}
+
+pub fn check(
+    root: &Path,
+    db: &Connection,
+    paths: &[String],
+    probe: bool,
+    probe_top: i64,
+) -> Result<i32> {
     let paths = if paths.is_empty() {
         vec!["pages".into()]
     } else {
@@ -105,13 +184,20 @@ pub fn check(root: &Path, paths: &[String]) -> Result<i32> {
     }
     selected.sort();
     selected.dedup();
+    let mut probes = Probe::default();
     let mut code = 0;
     for path in selected {
-        code = code.max(validate(
-            root,
-            &path.strip_prefix(root)?.to_string_lossy(),
-            &pages::read(&path)?,
-        ));
+        let rel = path.strip_prefix(root)?.to_string_lossy();
+        let text = pages::read(&path)?;
+        let page = pages::parse(&text, &rel);
+        let validation = validate(root, &rel, &text, &page);
+        code = code.max(validation);
+        if probe && validation != 2 {
+            probes.page(db, &rel, &page, probe_top)?;
+        }
+    }
+    if probe {
+        code = code.max(probes.finish());
     }
     Ok(code)
 }
@@ -150,14 +236,32 @@ pub fn sync(root: &Path, db: &Connection, paths: &[String], message: Option<&str
         return Ok(0);
     }
     let mut code = 0;
+    let skills = installed_skills();
+    let mut probes = Probe::default();
     for (status, rel) in &changes {
         if status.starts_with('D') || !rel.ends_with(".md") {
             continue;
         }
         // Validate exactly the staged content that a commit without paths uses.
         let text = git(root, &["show", &format!(":{rel}")])?;
-        code = code.max(validate(root, rel, &text));
+        let page = pages::parse(&text, rel);
+        let validation = validate(root, rel, &text, &page);
+        code = code.max(validation);
+        // Only when a page is written: a mention can be legitimate (a page citing a
+        // skill as an example), and in `check` it would then warn forever.
+        for name in untagged_skills(&page, &skills) {
+            eprintln!("warning: {rel}: mentions the {name} skill but is not tagged {name}; recall offers pages to a skill call by tag");
+            code = code.max(1);
+        }
+        if validation != 2 {
+            if page.kind == "knowledge" && page.queries.is_empty() {
+                eprintln!("warning: {rel}: no queries; add the questions a future session would ask to find this page");
+                code = code.max(1);
+            }
+            probes.page(db, rel, &page, 3)?;
+        }
     }
+    code = code.max(probes.finish());
     if code == 2 {
         return Ok(2);
     }
@@ -214,4 +318,151 @@ pub fn sync(root: &Path, db: &Connection, paths: &[String], message: Option<&str
         }
     }
     Ok(code)
+}
+
+fn directories(root: &Path) -> Vec<PathBuf> {
+    fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|path| path.is_dir())
+        .collect()
+}
+
+fn default_dirs(home: &Path, config: &Path) -> Vec<PathBuf> {
+    let mut dirs = vec![config.join("skills")];
+    let mut plugins = vec![home.join(".claude/plugins/cache")];
+    for _ in 0..3 {
+        plugins = plugins.iter().flat_map(|dir| directories(dir)).collect();
+    }
+    dirs.extend(plugins.into_iter().map(|dir| dir.join("skills")));
+    dirs
+}
+
+fn installed_in(dirs: &[PathBuf]) -> Vec<String> {
+    let mut names: Vec<_> = dirs
+        .iter()
+        .flat_map(|dir| directories(dir))
+        .filter(|path| path.join("SKILL.md").is_file())
+        .filter_map(|path| path.file_name()?.to_str().map(str::to_lowercase))
+        .filter(|name| name != "claude-wiki")
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn installed_skills() -> Vec<String> {
+    let dirs = match env::var_os("CLAUDE_WIKI_SKILL_DIRS") {
+        Some(value) => env::split_paths(&value)
+            .filter(|path| !path.as_os_str().is_empty())
+            .map(|path| crate::expand_home(&path))
+            .collect(),
+        None => {
+            let home = crate::home();
+            let config = crate::env_path("CLAUDE_CONFIG_DIR")
+                .map(|path| crate::expand_home(&path))
+                .unwrap_or_else(|| home.join(".claude"));
+            default_dirs(&home, &config)
+        }
+    };
+    installed_in(&dirs)
+}
+
+fn untagged_skills<'a>(page: &pages::Page, names: &'a [String]) -> Vec<&'a str> {
+    if !matches!(page.kind.as_str(), "knowledge" | "followups") {
+        return vec![];
+    }
+    let tags: Vec<_> = page
+        .tags
+        .split_whitespace()
+        .map(str::to_lowercase)
+        .collect();
+    names
+        .iter()
+        .filter_map(|name| {
+            if name == "claude-wiki" || tags.contains(name) {
+                return None;
+            }
+            // Hyphens and underscores belong to identifiers, unlike regex \b.
+            let mention = Regex::new(&format!(
+                r"(?i)(?:^|[^\p{{L}}\p{{N}}_-]){}(?:$|[^\p{{L}}\p{{N}}_-])",
+                regex::escape(name)
+            ))
+            .unwrap();
+            (mention.is_match(&page.title) || mention.is_match(&page.body)).then_some(name.as_str())
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mentions_use_whole_names_and_tags_including_code() {
+        let names = vec!["claude-wiki".into(), "codex-implement".into()];
+        let mut page = pages::Page {
+            kind: "knowledge".into(),
+            ..pages::Page::default()
+        };
+        for body in [
+            "codex-implement-x",
+            "x-codex-implement",
+            "codex-implement_x",
+            "xcodex-implement",
+            "codex-implement1",
+            "한codex-implement",
+            "claude-wiki",
+        ] {
+            page.body = body.into();
+            assert!(untagged_skills(&page, &names).is_empty(), "{body}");
+        }
+        for body in [
+            "codex-implement",
+            "The CoDeX-ImPlEmEnT skill.",
+            "```bash\n/codex-implement\n```",
+        ] {
+            page.body = body.into();
+            assert_eq!(untagged_skills(&page, &names), ["codex-implement"]);
+        }
+        page.body.clear();
+        page.title = "About codex-implement".into();
+        page.kind = "followups".into();
+        assert_eq!(untagged_skills(&page, &names), ["codex-implement"]);
+        page.tags = "CODEX-IMPLEMENT".into();
+        assert!(untagged_skills(&page, &names).is_empty());
+        page.tags = "codex-implement-x".into();
+        assert_eq!(untagged_skills(&page, &names), ["codex-implement"]);
+        for kind in ["projects", "history"] {
+            page.kind = kind.into();
+            assert!(untagged_skills(&page, &names).is_empty());
+        }
+    }
+
+    #[test]
+    fn discovery_includes_config_and_plugin_versions() -> std::io::Result<()> {
+        let root = env::temp_dir().join(format!("cw-skills-{}", std::process::id()));
+        let config = root.join("config");
+        for skill in [
+            "config/skills/demo-skill",
+            "config/skills/claude-wiki",
+            ".claude/plugins/cache/vendor/plugin/v1/skills/plugin-skill",
+            ".claude/plugins/cache/vendor/plugin/v2/skills/demo-skill",
+        ] {
+            let path = root.join(skill);
+            fs::create_dir_all(&path)?;
+            fs::write(path.join("SKILL.md"), "skill")?;
+        }
+        fs::create_dir_all(config.join("skills/not-installed"))?;
+        assert_eq!(
+            installed_in(&default_dirs(&root, &config)),
+            ["demo-skill", "plugin-skill"]
+        );
+        assert_eq!(
+            installed_in(&[config.join("skills"), root.join("missing")]),
+            ["demo-skill"]
+        );
+        fs::remove_dir_all(root)
+    }
 }

@@ -144,6 +144,23 @@ fn show(
     Ok(())
 }
 
+pub fn bm25(db: &Connection, query: &str, n: i64, filters: &Filters) -> Result<Vec<(Row, String)>> {
+    if query.is_empty() {
+        return Ok(vec![]);
+    }
+    let (where_sql, params) = filters.sql();
+    let mut args = vec![Value::Text(query.into())];
+    args.extend(params);
+    args.push(Value::Integer(n));
+    let mut stmt = db.prepare(&format!("select {COLUMNS}, snippet(fts, -1, '[', ']', '…', 16) {JOIN} where fts match ?{where_sql} order by bm25(fts, 0,0,0,0,10,5,3,1) limit ?"))?;
+    let rows = stmt
+        .query_map(params_from_iter(args), |r| {
+            Ok((Row::read(r)?, r.get::<_, String>(9)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 pub fn search(
     root: &Path,
     db: &Connection,
@@ -156,21 +173,12 @@ pub fn search(
     if query.is_empty() {
         bail!("no search terms");
     }
-    let (where_sql, params) = filters.sql();
-    let mut args = vec![Value::Text(query.clone())];
-    args.extend(params);
-    args.push(Value::Integer(n));
-    let mut stmt = db.prepare(&format!("select {COLUMNS}, snippet(fts, -1, '[', ']', '…', 16) {JOIN} where fts match ?{where_sql} order by bm25(fts, 0,0,0,0,10,5,3,1) limit ?"))?;
-    let rows = stmt
-        .query_map(params_from_iter(args), |r| {
-            Ok((Row::read(r)?, r.get::<_, String>(9)?))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let rows = bm25(db, &query, n, filters)?;
     let mut out = std::io::stdout().lock();
     if rows.is_empty() {
         let total: i64 = db.query_row("select count(*) from files", [], |r| r.get(0))?;
         writeln!(out, "no pages match {query} ({total} pages in the wiki)")?;
-        if !no_semantic && where_sql.is_empty() {
+        if !no_semantic && filters.sql().0.is_empty() {
             let mut printed_heading = false;
             for hit in crate::semantic::search(&terms.join(" "), n) {
                 // The daemon's snapshot can lag behind edits and deletions. Resolve

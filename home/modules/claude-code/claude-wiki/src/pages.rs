@@ -25,6 +25,7 @@ pub struct Page {
     pub project: String,
     pub created: String,
     pub body: String,
+    pub queries: Vec<String>,
     pub problems: Vec<String>,
     pub links: Vec<String>,
 }
@@ -110,7 +111,13 @@ pub fn sections(text: &str) -> Vec<Section> {
     // "Modes and cache > Diagnose" rather than losing its parent.
     let mut crumbs: Vec<String> = vec![];
     let mut fence: Option<(u8, usize)> = None;
+    // Frontmatter is metadata, not section text. In particular, probe questions
+    // must never become searchable. Keep blank lines to preserve file offsets.
+    let frontmatter_lines = FRONTMATTER
+        .find(text)
+        .map_or(0, |m| m.as_str().lines().count());
     for (i, line) in text.lines().enumerate() {
+        let line = if i < frontmatter_lines { "" } else { line };
         let number = i as i64 + 1;
         let trimmed = line.trim_start();
         let marker = trimmed.as_bytes().first().copied().unwrap_or_default();
@@ -230,6 +237,23 @@ pub fn parse(text: &str, rel: &str) -> Page {
             .unwrap_or_default()
     };
     page.status = get("status");
+    if let Some(value) = meta.get(Value::String("queries".into())) {
+        match value {
+            Value::Sequence(values)
+                if values
+                    .iter()
+                    .all(|v| v.as_str().is_some_and(|s| !s.trim().is_empty())) =>
+            {
+                page.queries = values
+                    .iter()
+                    .map(|v| v.as_str().unwrap().to_owned())
+                    .collect();
+            }
+            _ => page
+                .problems
+                .push("queries must be a list of strings".into()),
+        }
+    }
     if !page.status.is_empty() && !["open", "done"].contains(&page.status.as_str()) {
         page.problems.push(format!(
             "has status '{}'; use one of open, done",
@@ -291,6 +315,47 @@ pub fn markdown_files(dir: &Path) -> Result<Vec<PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn queries_are_optional_nonempty_strings() {
+        for (yaml, expected) in [
+            ("", vec![]),
+            ("queries: []\n", vec![]),
+            (
+                "queries: [How does it work?, 캐시가 왜 사라져요?]\n",
+                vec!["How does it work?", "캐시가 왜 사라져요?"],
+            ),
+        ] {
+            let text = format!("---\ntitle: Test\ncreated: 2026-09-29\n{yaml}---\nBody\n");
+            let page = parse(&text, "pages/knowledge/test.md");
+            assert_eq!(page.queries, expected);
+            assert!(page.problems.is_empty());
+            assert!(!page.body.contains("queries"));
+            assert!(!sections(&text)[0].body.contains("queries"));
+            assert_eq!(sections(&text)[0].end, text.lines().count() as i64);
+        }
+        for yaml in [
+            "null",
+            "question",
+            "{question: why}",
+            "[1]",
+            "[true]",
+            "['']",
+            "['   ']",
+            "[why, null]",
+        ] {
+            let page = parse(
+                &format!("---\ntitle: Test\ncreated: 2026-09-29\nqueries: {yaml}\n---\nBody"),
+                "pages/knowledge/test.md",
+            );
+            assert_eq!(
+                page.problems,
+                ["queries must be a list of strings"],
+                "{yaml}"
+            );
+            assert!(page.queries.is_empty());
+        }
+    }
+
     #[test]
     fn links_resolve_in_first_appearance_order() {
         let page = parse(

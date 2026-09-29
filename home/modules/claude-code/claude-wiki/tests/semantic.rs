@@ -4,7 +4,7 @@ use std::{
     io::{BufRead, BufReader, Write},
     os::unix::net::UnixListener,
     path::PathBuf,
-    process::{Command, Stdio},
+    process::{Command, Output, Stdio},
     sync::{
         atomic::{AtomicU64, Ordering},
         mpsc,
@@ -40,6 +40,7 @@ impl Wiki {
         command
             .args(args)
             .env("CLAUDE_WIKI_DIR", self.0.join("wiki"))
+            .env("CLAUDE_WIKI_SKILL_DIRS", self.0.join("skills"))
             .env("CLAUDE_WIKI_SOCKET", self.0.join("embed.sock"))
             .env("CLAUDE_WIKI_SEMANTIC_TIMEOUT_MS", "1000")
             .env("CLAUDE_WIKI_REMIND_INTERVAL", "15")
@@ -53,6 +54,13 @@ impl Wiki {
     }
 
     fn respond(&self, args: &[&str], input: &str, reply: Value) -> (String, Value) {
+        let (output, request) = self.respond_output(args, input, reply);
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        (String::from_utf8(output.stdout).unwrap(), request)
+    }
+
+    fn respond_output(&self, args: &[&str], input: &str, reply: Value) -> (Output, Value) {
         let listener = self.listener();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
@@ -64,7 +72,7 @@ impl Wiki {
             writeln!(stream, "{reply}").unwrap();
             serde_json::from_str(&request).unwrap()
         });
-        let output = run(self.command(args), input);
+        let output = run_output(self.command(args), input);
         (output, server.join().unwrap())
     }
 }
@@ -75,7 +83,7 @@ impl Drop for Wiki {
     }
 }
 
-fn run(mut command: Command, input: &str) -> String {
+fn run_output(mut command: Command, input: &str) -> Output {
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -88,7 +96,11 @@ fn run(mut command: Command, input: &str) -> String {
         .unwrap()
         .write_all(input.as_bytes())
         .unwrap();
-    let output = child.wait_with_output().unwrap();
+    child.wait_with_output().unwrap()
+}
+
+fn run(command: Command, input: &str) -> String {
+    let output = run_output(command, input);
     assert!(output.status.success(), "{output:?}");
     assert!(output.stderr.is_empty(), "{output:?}");
     String::from_utf8(output.stdout).unwrap()
@@ -100,6 +112,130 @@ fn assert_no_connection(listener: &UnixListener) {
         listener.accept().unwrap_err().kind(),
         std::io::ErrorKind::WouldBlock
     );
+}
+
+#[test]
+fn probe_uses_semantic_ranks_even_when_keywords_match() {
+    for (query, paths, top, failure, diagnostic) in [
+        (
+            "캐시가 왜 사라져요?",
+            vec!["knowledge/bar", "knowledge/foo"],
+            "3",
+            false,
+            "",
+        ),
+        (
+            "캐시가 왜 사라져요?",
+            vec!["knowledge/bar", "knowledge/foo"],
+            "1",
+            true,
+            "semantic: rank 2",
+        ),
+        (
+            "캐시가 왜 사라져요?",
+            vec!["knowledge/bar"],
+            "3",
+            true,
+            "semantic: not in top 10",
+        ),
+        (
+            "캐시가 왜 사라져요?",
+            vec![],
+            "3",
+            true,
+            "semantic: unavailable",
+        ),
+        ("foo", vec![], "1", false, ""),
+    ] {
+        let wiki = Wiki::new();
+        fs::write(wiki.0.join("wiki/pages/knowledge/foo.md"), format!(
+            "---\ntitle: foo cache notes\ncreated: 2026-09-29\nqueries: [{query}]\n---\nRecovery details.\n"
+        )).unwrap();
+        let results: Vec<_> = paths
+            .iter()
+            .map(|path| json!({"path": path, "score": 1.0}))
+            .collect();
+        let (output, request) = wiki.respond_output(
+            &["check", "--probe", "--probe-top", top],
+            "",
+            json!({"ok": true, "results": results}),
+        );
+        assert_eq!(request, json!({"op": "search", "query": query, "n": 10}));
+        assert_eq!(output.status.code(), Some(i32::from(failure)), "{output:?}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains(diagnostic), "{stderr}");
+        assert!(
+            stderr.contains(&format!(
+                "1 pages probed, 1 queries, {} failures",
+                i32::from(failure)
+            )),
+            "{stderr}"
+        );
+        assert_eq!(stderr.lines().count(), if failure { 2 } else { 1 });
+    }
+}
+
+#[test]
+fn probe_bm25_matches_search_ranks_and_never_indexes_questions() {
+    let wiki = Wiki::new();
+    for i in 0..12 {
+        fs::write(
+            wiki.0.join(format!("wiki/pages/knowledge/rank-{i}.md")),
+            format!("---\ntitle: ranktoken {i}\ncreated: 2026-09-29\n---\nRanking details.\n"),
+        )
+        .unwrap();
+    }
+    let output = run(wiki.command(&["search", "ranktoken", "-n", "12"]), "");
+    let paths: Vec<_> = output
+        .lines()
+        .filter(|line| line.starts_with('/'))
+        .collect();
+    assert_eq!(paths.len(), 12);
+    for (rank, top, failure, diagnostic) in [
+        (4, "3", true, "bm25: rank 4"),
+        (4, "4", false, ""),
+        (11, "3", true, "bm25: not in top 10"),
+        (11, "11", false, ""),
+    ] {
+        let path = paths[rank - 1];
+        let original = fs::read_to_string(path).unwrap();
+        fs::write(
+            path,
+            original.replacen("---\n", "---\nqueries: [ranktoken]\n", 1),
+        )
+        .unwrap();
+        let output = run_output(
+            wiki.command(&["check", "--probe", "--probe-top", top, path]),
+            "",
+        );
+        assert_eq!(output.status.code(), Some(i32::from(failure)), "{output:?}");
+        assert!(String::from_utf8(output.stderr)
+            .unwrap()
+            .contains(diagnostic));
+        fs::write(path, original).unwrap();
+    }
+    let path = wiki.0.join("wiki/pages/knowledge/foo.md");
+    fs::write(&path, "---\ntitle: foo\ncreated: 2026-09-29\nqueries: [questiononlytoken]\n---\n# Recovery\nDetails.\n").unwrap();
+    let output = run_output(wiki.command(&["check", "--probe", "knowledge/foo"]), "");
+    assert_eq!(output.status.code(), Some(1));
+    let db = rusqlite::Connection::open(wiki.0.join("wiki/index.sqlite")).unwrap();
+    for table in ["fts", "sections_fts"] {
+        let matches: i64 = db
+            .query_row(
+                &format!("select count(*) from {table} where {table} match 'questiononlytoken'"),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(matches, 0, "{table}");
+    }
+    let listener = wiki.listener();
+    run(wiki.command(&["check", "knowledge/foo"]), "");
+    assert_no_connection(&listener);
+    fs::write(&path, "---\ntitle: foo\ncreated: 2026-09-29\nqueries: [questiononlytoken]\n---\nghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n").unwrap();
+    let output = run_output(wiki.command(&["check", "--probe", "knowledge/foo"]), "");
+    assert_eq!(output.status.code(), Some(2));
+    assert_no_connection(&listener);
 }
 
 #[test]
