@@ -73,6 +73,10 @@ let
   # Merged into ~/.claude/settings.json on activation instead of linked from the store:
   # Claude Code writes that file itself (/config, /model, /permissions).
   settings = {
+    # Transcripts are the only raw record of past sessions: `claude-wiki sessions`
+    # searches them and the recall benchmark was mined from them. Claude Code deletes
+    # them after 30 days unless told otherwise; they grow by roughly 25 GB a year.
+    cleanupPeriodDays = 3650;
     permissions.allow = [
       "Bash(claude-wiki *)"
       # a leading `//` marks an absolute path in permission rules
