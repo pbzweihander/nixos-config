@@ -27,7 +27,8 @@ its knowledge pages, the recently updated pages, and the tags in use.
   to what it changed) so that `claude-wiki links` can walk from one page to the next.
 - Never record secrets, credentials, tokens, or personal data.
 - Wiki pages can be stale. Verify them against the current code or system before
-  relying on them, and fix pages you find wrong.
+  relying on them, and fix pages you find wrong, keeping what was wrong and why in
+  the page (the skill's "Corrections").
 - The wiki does not replace auto memory: the user's preferences and corrections still
   go to auto memory; technical knowledge, project overviews, follow-ups, and work
   history go to the wiki.

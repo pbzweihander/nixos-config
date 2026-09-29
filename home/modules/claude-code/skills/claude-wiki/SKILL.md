@@ -40,7 +40,8 @@ when the conversation is in Korean or another language.
   search on them hits, how you confirmed the cause, the commands of the fix, and the
   conditions under which it applies (versions, machines). When a finding changes,
   rewrite the page to state what is true now; do not append dated "Update ..."
-  paragraphs.
+  paragraphs. Say how each claim that matters was established (see "Provenance"
+  below), and keep the wrong conclusions that were tempting (see "Corrections").
 - **projects**: `<project>.md`, what a new session needs in its first minute: what
   the project is, stack, layout, how to build, test, run, and deploy it, related
   repositories and services, and gotchas. Its body is capped at 3,000 characters at
@@ -247,6 +248,36 @@ Do not evade a finding by obfuscating the same content.
   timestamped paragraphs is a log, and logs belong in history entries.
 - User preferences and instructions belong only in auto memory, never in wiki
   pages. Project pages describe the project, not how the user wants to be answered.
+
+### Provenance
+
+A page read months later is re-verified from its weakest claim first, so name the
+source of each claim that matters, in words, next to it:
+
+- **reproduced** or **measured**: you ran it and saw the result (give the command);
+- **read in source**: the code, binary, or config says so (give the file or symbol);
+- **documented**: official documentation says so, not checked against behaviour;
+- **reported, unverified**: another agent, a subagent, a bot, an alert, or a log
+  message's own diagnosis said so and you did not check it. Mark these explicitly.
+
+Relayed claims are wrong often enough to matter: a subagent once reported Claude
+Code's hook fields as `tool_result` and `error_message`; the binary says
+`tool_response` and `error`. Prefer checking over relaying; when you cannot check,
+say so.
+
+### Corrections
+
+When a page turns out to be wrong, or an investigation chased wrong theories before
+finding the cause, rewrite the page to the correct state *and* keep a short section
+such as "What looked right and was not": each tempting wrong conclusion, the evidence
+that made it plausible, and what disproved it. Write it as present-tense knowledge,
+not a dated log. The same wrong conclusion tends to be reached again, and next to the
+right answer is where search and recall will surface it. Add the tag `correction`, so
+`claude-wiki search --tag correction` lists the pages that record a wrong turn.
+
+Mistakes in *how* a session works (claiming a task done without running its tests,
+trusting a report unchecked) are not wiki knowledge: the wiki is only read when
+searched. Those belong in auto memory or a rule file, which load every session.
 
 ## Reminder
 
