@@ -122,13 +122,15 @@ trust override above. Remove the file after the run unless the user wants to kee
 ## 3. Run codex
 
 Make sure the working tree is clean or that the user knows uncommitted changes
-exist, so the review diff is meaningful. Pick a run directory
-`<scratchpad>/codex-run-<slug>`; the runner creates it.
+exist, so the review diff is meaningful. Pick a **new run directory**
+`<scratchpad>/codex-run-<slug>` for every run, including resumes and retries; the
+runner creates it and refuses a directory that already has `events.jsonl`.
 
 Start codex in two parts, so every codex step arrives in this session as a
 notification while it works, and codex survives the watcher:
 
-1. Start the runner with the **Bash** tool and `run_in_background: true`:
+1. Start the runner with a plain **Bash** call (no `run_in_background`); it returns
+   immediately with `[STARTED]`:
   ```bash
   ~/.claude/skills/codex-implement/scripts/codex-monitor.sh "<run dir>" \
     --sandbox workspace-write \
@@ -145,21 +147,26 @@ notification while it works, and codex survives the watcher:
    - `description`: `codex: <slug>`
    - `timeout_ms`: `1800000`
 
-Never run `codex-monitor.sh` itself under Monitor. Monitor has no `persistent` option;
-`timeout_ms` defaults to 5 minutes and is capped at 30, and on expiry Monitor kills
-its command with every child, which would kill codex mid-turn.
+The runner detaches itself into a user systemd scope, or a separate process group
+when user systemd is unavailable. Codex must not remain a child of anything Claude
+Code can kill: Monitor expiry, the background Bash time limit, or low-memory reaping.
+
+Run only the watch under Monitor. Monitor has no `persistent` option; `timeout_ms`
+defaults to 5 minutes and is capped at 30, and on expiry Monitor kills its command
+with every child.
 
 When the watch expires before `[EXIT]`, arm the same Monitor again. `codex-watch.sh`
 remembers how many lines it already printed (`<run dir>/progress.seen`), so a new
-watch continues without repeating events. It exits after `[EXIT]`. The background
-Bash task also notifies you when the runner exits, which covers a runner that died
-before printing `[EXIT]`.
+watch continues without repeating events. It exits after `[EXIT]`. After 15 seconds
+without a new line, it also checks whether the run is alive and reports `[FAILED]`
+if the runner disappeared without writing `[EXIT]`.
 
 Replace `--sandbox workspace-write` with `--approve-for-me` when you chose auto
 review in step 2; never pass both.
 
 Start the commands with exactly `~/.claude/skills/codex-implement/scripts/codex-monitor.sh`
-and `~/.claude/skills/codex-implement/scripts/codex-watch.sh`, and never prefix them
+and `~/.claude/skills/codex-implement/scripts/codex-watch.sh` (or
+`~/.claude/skills/codex-implement/scripts/codex-stop.sh` to stop), and never prefix them
 with env var assignments. Nix-managed settings allow these commands without a prompt,
 and a `FOO=1 …` prefix breaks the match. Runner options go right
 after the script name, before the run directory.
@@ -167,7 +174,8 @@ after the script name, before the run directory.
 `codex-monitor.sh` runs `codex-latest.sh exec --json` with your arguments, saves the
 raw events to `<run dir>/events.jsonl` and stderr to `<run dir>/stderr.log`, and
 prints only the events that may need your attention, one line each, through `jq`,
-to stdout and to `<run dir>/progress.log`, which `codex-watch.sh` follows.
+to the detached runner's stdout and to `<run dir>/progress.log`, which
+`codex-watch.sh` follows.
 It also always passes `--add-dir ~/.cache/nix`: nix's eval and fetcher caches are
 SQLite files there, and without it every nix command in the sandbox fails with
 `attempt to write a readonly database`. So do not tell codex to move the nix cache
@@ -178,6 +186,21 @@ the nix build fails does it fall back to the locally installed `codex`. It logs 
 one it used to `stderr.log`; mention that in your report. Pass `--local` before the
 run directory to skip nix when the user asks for the local one.
 
+The run directory is the handle for its processes, codex thread, and output:
+
+| File | Contents |
+|---|---|
+| `events.jsonl` | Raw codex events. |
+| `progress.log` | Progress lines consumed by the watch. |
+| `stderr.log` | Nix build and codex stderr. |
+| `runner.out` | Detached runner stdout and stderr, including startup errors. |
+| `stdin` | Saved spec or other input; empty when the launcher's stdin is a terminal. |
+| `unit` | Systemd scope name; absent when using a plain process group. |
+| `pid` | Runner pid and process group id. |
+| `thread` | Codex thread id, recorded as soon as `thread.started` arrives. |
+| `last.md` | Codex's final message, written by `-o` in the examples. |
+| `progress.seen` | Number of progress lines already printed by the watch. |
+
 **Accounts.** There is more than one codex account, each with its own usage limit:
 `codex` (the default, `~/.codex`) and `codex1` (`~/.codex1`). Start with the default
 and pass `--account codex1` before the run directory only after the default runs out.
@@ -187,13 +210,14 @@ when that account has never logged in.
 A usage-limit failure looks like `[FAILED]` or a non-zero `[EXIT]` whose reason in
 `<run dir>/stderr.log` or `last.md` mentions a usage or rate limit, often with a reset
 time. When that happens, rerun the **whole spec** on the next account: sessions live
-under `CODEX_HOME`, so `resume --last` cannot continue another account's run. Say in
+under `CODEX_HOME`, so another account cannot resume the previous account's run. Say in
 your report which account did the work.
 
 Event lines:
 
 | Line | Meaning | What to do |
 |---|---|---|
+| `[STARTED] <unit.scope or pid N> — follow with codex-watch.sh "<run dir>"` | The detached runner has started. | Arm the Monitor watch. |
 | `[FAIL rc=N] <cmd> :: <last output line>` | A command failed. Sent once per distinct command. | Usually nothing; codex fixes its own failures. |
 | `[BLOCKED rc=N] <cmd> :: <line>` | The failure looks like a sandbox denial: DNS or network errors, `Operation not permitted`, read-only filesystem. | codex cannot fix this. If the spec needs it, stop and resume with the missing flag. |
 | `[STUCK?] same command failed 3 times: <cmd>` | codex keeps retrying one failing command. | Read the raw events; stop it if it is going nowhere. |
@@ -203,7 +227,9 @@ Event lines:
 | `[ERROR] ...` | A non-fatal error, such as a dropped stream codex retries. | Nothing unless it repeats. |
 | `[DONE] N cmds (M failed), K files changed, ...` | The turn completed. | Wait for `[EXIT]`. |
 | `[FAILED] ...` | The turn failed, or codex exited without finishing one. | Read the reason; see below. |
+| `[FAILED] runner is gone without [EXIT]; see ...` | The run died without an exit marker. | Read `runner.out` and `stderr.log`, then retry or resume in a new run directory. |
 | `[EXIT] codex rc=N` | Always last; the stream then ends. | Go to step 4. |
+| `[EXIT] codex stopped by codex-stop.sh` | The run was stopped. | Resume in a new run directory if needed. |
 
 Not sent: successful commands, codex's messages, per-file edits, and web searches.
 Exit code 1 from `rg`, `grep`, `test`, `diff`, or `cmp` counts as "no match" and is
@@ -212,14 +238,15 @@ not reported as a failure. Everything is still in `events.jsonl`.
 While it runs:
 
 - Act only on `[BLOCKED]`, `[STUCK?]`, a `[QUIET]` that points at a hang, and
-  `[FAILED]`. To stop codex, use TaskStop on the background Bash task (the runner),
-  then resume as in step 4. Stopping the Monitor only stops the watch.
+  `[FAILED]`. To stop codex, run
+  `~/.claude/skills/codex-implement/scripts/codex-stop.sh "<run dir>"`, then resume
+  as in step 4. TaskStop on the Monitor only ends the watch.
 - Tell the user about those same events and what you decided. Do not relay the rest.
 - Do not poll or sleep. Keep doing independent work, or wait for events.
 - File edits are not shown live. Check for edits outside the spec's area in step 4.
 - If the project's test suite routinely runs longer than ten minutes, pass
   `--quiet-secs <seconds>` before the run directory to raise the threshold.
-- After `[EXIT]`, go to step 4. Both tasks end by themselves; no TaskStop needed.
+- After `[EXIT]`, go to step 4. The runner and watch end by themselves.
 
 Other useful flags:
 
@@ -257,26 +284,33 @@ jq -r 'select(.type == "item.completed" and .item.type == "command_execution"
 For small problems, fix them directly. For larger gaps, send a follow-up to the same
 codex session instead of starting over. Start the runner and the watch again as in
 step 3, with a new run directory, the same flags as the first run plus any that were
-missing, and `resume --last` at the end:
+missing. Pass `--resume-from "<previous run dir>"` before the new run directory and
+`resume "<prompt>"` at the end of the codex arguments:
 
 ```bash
-~/.claude/skills/codex-implement/scripts/codex-monitor.sh "<run dir>-2" \
+~/.claude/skills/codex-implement/scripts/codex-monitor.sh \
+  --resume-from "<previous run dir>" "<new run dir>" \
   --sandbox workspace-write \
   -C "<project root>" \
-  -o "<run dir>-2/last.md" \
+  -o "<new run dir>/last.md" \
   [-m <model>] \
   [-c model_reasoning_effort=<effort>] \
   [-c sandbox_workspace_write.network_access=true] \
-  resume --last "<what is wrong and what to change>" </dev/null
+  resume "<what is wrong and what to change>" </dev/null
 ```
 
 Keep the `</dev/null`: without a spec on stdin, codex would otherwise wait for more
 input on it.
 
-All flags must come before `resume`; `resume` itself only accepts `-c`, `--last`, and
-`-i`. Use `--approve-for-me` instead of `--sandbox` here too if that is what the
-first run used. Repeat the user's `-m` and `model_reasoning_effort` on every resume;
-do not rely on the resumed session remembering them.
+The runner reads the previous run's `thread` and inserts that id after `resume`.
+Never use `--last`: it picks the most recent session of the whole account, which
+can be the wrong session when several runs are in flight. The runner refuses a
+resume while the previous run is alive; resumes to one codex session must be serial.
+
+Keep all flags before `resume`. Use `--approve-for-me` instead of `--sandbox` here
+too if that is what the first run used. Repeat the user's `-m` and
+`model_reasoning_effort` on every resume; do not rely on the resumed session
+remembering them.
 
 Then review again.
 
