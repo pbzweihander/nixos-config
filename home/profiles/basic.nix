@@ -5,6 +5,7 @@
     ../modules/git.nix
     ../modules/helix
     ../modules/ssh.nix
+    ../modules/terraform.nix
     ../modules/tmux.nix
     ../modules/yamlfmt
   ];
