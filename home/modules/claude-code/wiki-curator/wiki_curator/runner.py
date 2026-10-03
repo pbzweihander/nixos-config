@@ -317,7 +317,7 @@ def perform_task(wiki, worktree, timestamp, task, state, result):
     try:
         review = command(["codex", "exec", "--skip-git-repo-check", "-s", "read-only",
                           "--color", "never", "-o", str(output), "-"], worktree, env=env,
-                         input=review_prompt(task, justification, changed_texts(worktree, parent, commit)),
+                         input=review_prompt(task, justification, changed_texts(worktree, parent, commit), gates),
                          timeout=CODEX_TIMEOUT, check=False)
         if review.returncode:
             raise ValueError(f"Codex exited {review.returncode}: {review.stderr.strip()}")
