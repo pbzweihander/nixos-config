@@ -63,6 +63,17 @@ fn prepare_scan(db: &Connection) -> Result<()> {
     Ok(())
 }
 
+pub fn source(value: &str) -> Result<String, String> {
+    if (1..=31).contains(&value.len())
+        && value.as_bytes()[0].is_ascii_lowercase()
+        && value.bytes().all(|b| b.is_ascii_lowercase() || b == b'-')
+    {
+        Ok(value.into())
+    } else {
+        Err("source must match [a-z][a-z-]{0,30}".into())
+    }
+}
+
 pub fn log(root: &Path, session: &str, source: &str, paths: &[String]) {
     if session.is_empty() || paths.is_empty() {
         return;

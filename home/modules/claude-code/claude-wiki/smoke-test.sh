@@ -45,6 +45,12 @@ expect_code() { # expect_code <exit status> <command...>
 }
 
 check "empty wiki" "no pages" "$wiki" list
+out=$(printf 'free text' | "$wiki" related --json --cwd /)
+[ "$out" = '{"pages":[],"overview":null}' ] || fail "related without daemon" related "$out"
+out=$("$wiki" injections --session missing --json)
+[ "$out" = '{"pages":[]}' ] || fail "injections without usage database" injections "$out"
+out=$("$wiki" search semanticnomatch --json)
+[ "$out" = '{"hits":[]}' ] || fail "JSON search without daemon" search "$out"
 out=$("$wiki" search semanticnomatch 2>&1)
 [ "$out" = 'no pages match "semanticnomatch"* (0 pages in the wiki)' ] || fail "no daemon adds no search output" search "$out"
 
@@ -115,6 +121,8 @@ nothing to see
 the phrase parrot appears here
 EOF
 check "section heading and lines" '§ Second section (lines 8-9)' "$wiki" search parrot
+check "JSON search result" '"rel":"pages/knowledge/sectioned.md"' "$wiki" search parrot --json
+check "JSON search section" '"section":{"end":9,"heading":"Second section","start":8}' "$wiki" search parrot --json
 check_not "a page without headings has no section line" '§' "$wiki" search --tag postgres replica
 rm "$P/knowledge/sectioned.md"
 
@@ -139,6 +147,11 @@ check "context shows open follow-ups" "open-task" "$wiki" context
 check_not "context hides done follow-ups" "done-task" "$wiki" context
 cd "$HOME/demo-worktree"
 check "a worktree resolves to its main repository" "Current project: demo" "$wiki" context
+out=$(printf 'free text' | "$wiki" related --json --cwd "$HOME/demo-worktree")
+[ "$out" = "{\"pages\":[],\"overview\":\"$P/projects/demo.md\"}" ] || fail "related worktree overview without daemon" related "$out"
+printf '{"session_id":"smoke-injections"}' | "$wiki" context >/dev/null
+check "injections JSON includes logged pages" '"rel":"pages/projects/demo.md"' "$wiki" injections --session smoke-injections --json
+check "injections JSON includes source" '"sources":\["context"\]' "$wiki" injections --session smoke-injections --json
 cd /
 check "context outside a repository" "Shared wiki: 8 pages" "$wiki" context
 
@@ -298,6 +311,7 @@ for project in demo other; do
     >"$P/knowledge/recall-skill-$project.md"
 done
 printf -- '---\ntitle: recall untagged\nproject: demo\ncreated: 2026-09-28\n---\nSkill pitfalls.\n' >"$P/knowledge/recall-untagged.md"
+check "skill-pages JSON from worktree" '"rel":"pages/knowledge/recall-skill-demo.md"' "$wiki" skill-pages plugin:codex-implement --json --cwd "$HOME/demo-worktree"
 printf '{"session_id":"recall-skill","cwd":"%s","hook_event_name":"PreToolUse","tool_name":"Skill","tool_input":{"skill":"codex-implement"}}\n' \
   "$HOME/demo-worktree" >"$HOME/recall-skill.json"
 out=$("$wiki" recall <"$HOME/recall-skill.json")
@@ -305,6 +319,7 @@ check "recall skill hook JSON" '"hookEventName":"PreToolUse"' echo "$out"
 check "recall skill project page" 'recall-skill-demo.md' echo "$out"
 check_not "recall excludes another project and untagged pages" 'recall-skill-other\|recall-untagged' echo "$out"
 check_not "recall skill session dedupe" '.' "$wiki" recall <"$HOME/recall-skill.json"
+check "skill-pages shares recall seen state" '^{"pages":\[\]}$' "$wiki" skill-pages codex-implement --json --cwd "$HOME/demo-worktree" --session recall-skill
 check "recall plugin suffix matches" 'recall-skill-demo.md' "$wiki" recall \
   <<<"$(printf '{"session_id":"recall-plugin","cwd":"%s","hook_event_name":"PreToolUse","tool_name":"Skill","tool_input":{"skill":"plugin:codex-implement"}}' "$HOME/demo")"
 check_not "recall ignores wiki skill" '.' "$wiki" recall \

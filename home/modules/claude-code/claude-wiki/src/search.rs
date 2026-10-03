@@ -4,6 +4,7 @@ use chrono::{Local, TimeZone};
 use clap::Args;
 use regex::Regex;
 use rusqlite::{params_from_iter, types::Value, Connection};
+use serde_json::json;
 use std::{io::Write, path::Path, sync::LazyLock};
 
 #[derive(Args, Default)]
@@ -168,16 +169,25 @@ pub fn search(
     n: i64,
     filters: &Filters,
     no_semantic: bool,
+    json: bool,
 ) -> Result<()> {
     let query = fts_query(terms);
     if query.is_empty() {
         bail!("no search terms");
     }
     let rows = bm25(db, &query, n, filters)?;
+    let json_root = if json {
+        Some(root.canonicalize()?)
+    } else {
+        None
+    };
+    let mut hits = vec![];
     let mut out = std::io::stdout().lock();
     if rows.is_empty() {
-        let total: i64 = db.query_row("select count(*) from files", [], |r| r.get(0))?;
-        writeln!(out, "no pages match {query} ({total} pages in the wiki)")?;
+        if !json {
+            let total: i64 = db.query_row("select count(*) from files", [], |r| r.get(0))?;
+            writeln!(out, "no pages match {query} ({total} pages in the wiki)")?;
+        }
         if !no_semantic && filters.sql().0.is_empty() {
             let mut printed_heading = false;
             for hit in crate::semantic::search(&terms.join(" "), n) {
@@ -190,6 +200,10 @@ pub fn search(
                 ) else {
                     continue;
                 };
+                if let Some(root) = &json_root {
+                    hits.push(json_hit(root, &row, "", hit.section, true));
+                    continue;
+                }
                 if !printed_heading {
                     writeln!(out, "semantic matches (meaning, not keywords):")?;
                     printed_heading = true;
@@ -204,9 +218,46 @@ pub fn search(
         } else {
             None
         };
-        show(&mut out, root, &row, Some(snippet), section)?;
+        if let Some(root) = &json_root {
+            hits.push(json_hit(root, &row, &snippet, section, false));
+        } else {
+            show(&mut out, root, &row, Some(snippet), section)?;
+        }
+    }
+    if json {
+        writeln!(out, "{}", json!({"hits": hits}))?;
     }
     Ok(())
+}
+
+fn json_hit(
+    root: &Path,
+    row: &Row,
+    snippet: &str,
+    section: Option<(String, i64, i64)>,
+    semantic: bool,
+) -> serde_json::Value {
+    let blocked = !row.blocked.is_empty();
+    let section = if blocked {
+        None
+    } else {
+        section.map(crate::semantic::Section::from)
+    };
+    json!({
+        "path": root.join(&row.path),
+        "rel": row.path,
+        "title": row.display_title(),
+        "type": row.kind,
+        "status": row.status,
+        "project": row.project,
+        "tags": row.tags.split_whitespace().collect::<Vec<_>>(),
+        "updated": updated(row.mtime),
+        "stale": stale(row.mtime),
+        "backlinks": row.backlinks,
+        "snippet": if blocked { "" } else { snippet },
+        "section": section,
+        "semantic": semantic,
+    })
 }
 
 pub fn list(root: &Path, db: &Connection, n: i64, filters: &Filters) -> Result<()> {
@@ -272,6 +323,49 @@ pub fn tags(db: &Connection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn json_metadata_sections_and_blocked_redaction() {
+        let mut row = Row {
+            path: "pages/knowledge/foo.md".into(),
+            kind: "knowledge".into(),
+            status: "".into(),
+            title: "Cache notes".into(),
+            project: "demo".into(),
+            tags: "cache restart".into(),
+            mtime: 0,
+            blocked: "".into(),
+            backlinks: 2,
+        };
+        let section = Some(("Details".into(), 1, 9));
+        assert_eq!(
+            json_hit(
+                Path::new("/wiki"),
+                &row,
+                "[cache] details",
+                section.clone(),
+                false
+            ),
+            json!({
+                "path": "/wiki/pages/knowledge/foo.md", "rel": "pages/knowledge/foo.md",
+                "title": "Cache notes", "type": "knowledge", "status": "", "project": "demo",
+                "tags": ["cache", "restart"], "updated": updated(0), "stale": true, "backlinks": 2,
+                "snippet": "[cache] details", "section": {"heading": "Details", "start": 1, "end": 9}, "semantic": false
+            })
+        );
+        row.mtime = Local::now().timestamp_nanos_opt().unwrap();
+        let value = json_hit(Path::new("/wiki"), &row, "", None, true);
+        assert_eq!(value["semantic"], true);
+        assert_eq!(value["stale"], false);
+        assert!(value["section"].is_null());
+        row.blocked = "secret".into();
+        let value = json_hit(Path::new("/wiki"), &row, "hidden snippet", section, true);
+        assert_eq!(value["title"], "[BLOCKED: secret]");
+        assert_eq!(value["snippet"], "");
+        assert!(value["section"].is_null());
+        assert!(!value.to_string().contains("Cache notes"));
+        assert!(!value.to_string().contains("Details"));
+    }
+
     #[test]
     fn query_phrases_prefixes_and_escaping() {
         assert_eq!(

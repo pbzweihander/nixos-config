@@ -40,6 +40,21 @@ pub struct Args {
     explain: bool,
 }
 
+#[derive(ClapArgs)]
+pub struct SkillPagesArgs {
+    skill: String,
+    #[arg(long)]
+    json: bool,
+    #[arg(short, default_value_t = 5)]
+    n: usize,
+    #[arg(long, default_value = ".")]
+    cwd: PathBuf,
+    #[arg(long)]
+    session: Option<String>,
+    #[arg(long, value_parser = crate::usage::source)]
+    source: Option<String>,
+}
+
 #[derive(Default, Deserialize)]
 struct Hook {
     session_id: Option<String>,
@@ -275,12 +290,8 @@ fn error_candidates(
     Ok(pages)
 }
 
-fn skill_names(hook: &Hook) -> Vec<String> {
-    let name = hook.tool_input["skill"]
-        .as_str()
-        .unwrap_or_default()
-        .trim()
-        .to_lowercase();
+fn skill_names(skill: &str) -> Vec<String> {
+    let name = skill.trim().to_lowercase();
     let suffix = name.rsplit(':').next().unwrap_or_default();
     if name.is_empty() || suffix == "claude-wiki" {
         return vec![];
@@ -345,15 +356,20 @@ pub fn mark_seen(db: &Connection, session: &str, paths: &[String]) -> Result<()>
     Ok(())
 }
 
+fn session_seen(db: &Connection, id: &str) -> Result<HashSet<String>> {
+    let seen = db
+        .prepare("select path from recall_seen where session_id = ?")?
+        .query_map([id], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(seen)
+}
+
 pub fn transcript_seen(
     db: &Connection,
     id: &str,
     transcript_path: Option<&str>,
 ) -> Result<HashSet<String>> {
-    let mut seen: HashSet<String> = db
-        .prepare("select path from recall_seen where session_id = ?")?
-        .query_map([id], |r| r.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
+    let mut seen = session_seen(db, id)?;
     let mut offset: i64 = db
         .query_row(
             "select offset from recall_state where session_id = ?",
@@ -429,7 +445,7 @@ fn decide(root: &Path, db: &Connection, hook: &Hook, args: &Args) -> Result<Opti
     if !wiki_operation(root, hook) {
         match hook.hook_event_name.as_str() {
             "PreToolUse" if hook.tool_name == "Skill" => {
-                names = skill_names(hook);
+                names = skill_names(hook.tool_input["skill"].as_str().unwrap_or_default());
                 if !names.is_empty() {
                     mode = Some("skill");
                     project = hook
@@ -518,6 +534,65 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
     Ok(())
 }
 
+#[derive(Serialize)]
+struct SkillPage {
+    path: PathBuf,
+    rel: String,
+    title: String,
+    #[serde(rename = "type")]
+    kind: String,
+}
+
+#[derive(Serialize)]
+struct SkillPages {
+    pages: Vec<SkillPage>,
+}
+
+fn skill_pages(root: &Path, db: &Connection, args: &SkillPagesArgs) -> Result<SkillPages> {
+    let names = skill_names(&args.skill);
+    if names.is_empty() || args.n == 0 {
+        return Ok(SkillPages { pages: vec![] });
+    }
+    let root = root.canonicalize()?;
+    let project = crate::context::current_project(&args.cwd);
+    let seen = if let Some(session) = &args.session {
+        session_seen(db, session)?
+    } else {
+        HashSet::new()
+    };
+    let pages: Vec<_> = skill_candidates(db, &names, project.as_deref())?
+        .into_iter()
+        .filter(|page| !seen.contains(&page.path))
+        .take(args.n)
+        .map(|page| SkillPage {
+            path: root.join(&page.path),
+            kind: crate::pages::page_type(&page.path).into(),
+            rel: page.path,
+            title: page.title,
+        })
+        .collect();
+    if let Some(session) = &args.session {
+        let paths: Vec<_> = pages.iter().map(|page| page.rel.clone()).collect();
+        mark_seen(db, session, &paths)?;
+        if let Some(source) = &args.source {
+            crate::usage::log(&root, session, source, &paths);
+        }
+    }
+    Ok(SkillPages { pages })
+}
+
+pub fn run_skill_pages(root: &Path, db: &Connection, args: &SkillPagesArgs) -> Result<()> {
+    let report = skill_pages(root, db, args)?;
+    if args.json {
+        println!("{}", serde_json::to_string(&report)?);
+    } else {
+        for page in report.pages {
+            println!("{} ({})", page.path.display(), page.title);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -553,6 +628,171 @@ mod tests {
             max_pages: 2,
             include_history: false,
             explain: false,
+        }
+    }
+
+    fn skill_args(cwd: &Path) -> SkillPagesArgs {
+        SkillPagesArgs {
+            skill: "vendor:demo-skill".into(),
+            json: true,
+            n: 5,
+            cwd: cwd.into(),
+            session: None,
+            source: None,
+        }
+    }
+
+    #[test]
+    fn skill_pages_filters_orders_limits_and_serializes() -> Result<()> {
+        let mut wiki = crate::usage::tests::Wiki::new()?;
+        let project = crate::context::current_project(&wiki.root).unwrap();
+        for (rel, tag, scope, status) in [
+            ("knowledge/project", "DEMO-SKILL", project.as_str(), ""),
+            ("knowledge/global", "demo-skill", "", ""),
+            ("knowledge/full", "vendor:demo-skill", "", ""),
+            ("followups/open", "demo-skill", project.as_str(), "open"),
+            ("followups/closed", "demo-skill", "", "done"),
+            ("followups/missing-status", "demo-skill", "", ""),
+            ("knowledge/other", "demo-skill", "elsewhere", ""),
+            ("knowledge/partial", "demo-skill-extra", "", ""),
+            ("knowledge/blocked", "demo-skill", "", ""),
+            ("projects/overview", "demo-skill", "", ""),
+            ("history/past", "demo-skill", "", ""),
+        ] {
+            wiki.page(&format!("pages/{rel}.md"), &format!("---\ntitle: {rel}\ntags: [{tag}]\nproject: '{scope}'\nstatus: '{status}'\ncreated: 2020-01-01\n---\nbody"))?;
+        }
+        wiki.index.execute_batch(
+            "update files set mtime_ns=100;
+            update files set mtime_ns=900 where path='pages/knowledge/global.md';
+            update files set mtime_ns=200 where path='pages/knowledge/project.md';
+            update files set blocked='secret' where path='pages/knowledge/blocked.md';",
+        )?;
+        let mut args = skill_args(&wiki.root);
+        let report = skill_pages(&wiki.root, &wiki.index, &args)?;
+        assert_eq!(
+            report
+                .pages
+                .iter()
+                .map(|page| page.rel.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "pages/knowledge/project.md",
+                "pages/followups/open.md",
+                "pages/knowledge/global.md",
+                "pages/knowledge/full.md"
+            ]
+        );
+        args.n = 2;
+        assert_eq!(
+            serde_json::to_value(skill_pages(&wiki.root, &wiki.index, &args)?)?,
+            json!({"pages": [
+                {"path": wiki.root.join("pages/knowledge/project.md"), "rel": "pages/knowledge/project.md", "title": "knowledge/project", "type": "knowledge"},
+                {"path": wiki.root.join("pages/followups/open.md"), "rel": "pages/followups/open.md", "title": "followups/open", "type": "followups"}
+            ]})
+        );
+        args.cwd = PathBuf::from("/");
+        assert_eq!(
+            skill_pages(&wiki.root, &wiki.index, &args)?
+                .pages
+                .iter()
+                .map(|page| page.rel.as_str())
+                .collect::<Vec<_>>(),
+            ["pages/knowledge/global.md", "pages/knowledge/full.md"]
+        );
+        for skill in ["claude-wiki", "plugin:CLAUDE-WIKI", "unmatched"] {
+            args.skill = skill.into();
+            assert_eq!(
+                serde_json::to_value(skill_pages(&wiki.root, &wiki.index, &args)?)?,
+                json!({"pages": []})
+            );
+        }
+        assert!(session_seen(&wiki.index, "")?.is_empty());
+        assert!(!wiki.root.join("usage.sqlite").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn skill_pages_session_dedupes_before_limit_and_logging_requires_both_options() -> Result<()> {
+        let wiki = Wiki::new()?;
+        wiki.page("a", "demo-skill", "", "")?;
+        wiki.page("b", "demo-skill", "", "")?;
+        let mut args = skill_args(&wiki.root);
+        args.n = 1;
+        args.source = Some("mod-skill".into());
+        for _ in 0..2 {
+            assert_eq!(
+                skill_pages(&wiki.root, &wiki.db, &args)?.pages[0].rel,
+                "pages/knowledge/a.md"
+            );
+        }
+        assert!(session_seen(&wiki.db, "")?.is_empty());
+        assert!(!wiki.root.join("usage.sqlite").exists());
+        args.session = Some("s".into());
+        args.source = None;
+        assert_eq!(
+            skill_pages(&wiki.root, &wiki.db, &args)?.pages[0].rel,
+            "pages/knowledge/a.md"
+        );
+        assert!(!wiki.root.join("usage.sqlite").exists());
+        args.source = Some("mod-skill".into());
+        assert_eq!(
+            skill_pages(&wiki.root, &wiki.db, &args)?.pages[0].rel,
+            "pages/knowledge/b.md"
+        );
+        assert!(skill_pages(&wiki.root, &wiki.db, &args)?.pages.is_empty());
+        assert_eq!(session_seen(&wiki.db, "s")?.len(), 2);
+        let usage = crate::usage::open(&wiki.root)?;
+        let rows = usage
+            .prepare("select session_id, path, source from injections")?
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        assert_eq!(
+            rows,
+            [(
+                "s".into(),
+                "pages/knowledge/b.md".into(),
+                "mod-skill".into()
+            )]
+        );
+        args.session = Some("other".into());
+        args.n = 0;
+        assert!(skill_pages(&wiki.root, &wiki.db, &args)?.pages.is_empty());
+        assert!(session_seen(&wiki.db, "other")?.is_empty());
+        args.n = 5;
+        assert_eq!(skill_pages(&wiki.root, &wiki.db, &args)?.pages.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn skill_pages_cli_defaults_and_source_validation() {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from(["claude-wiki", "skill-pages", "demo-skill"]).unwrap();
+        let crate::Commands::SkillPages(args) = cli.command else {
+            panic!("wrong command")
+        };
+        assert_eq!(args.n, 5);
+        assert_eq!(args.cwd, Path::new("."));
+        assert_eq!(args.skill, "demo-skill");
+        for source in ["Bad", "mod_skill", "a1", "", &"a".repeat(32)] {
+            assert_eq!(
+                crate::Cli::try_parse_from([
+                    "claude-wiki",
+                    "skill-pages",
+                    "demo-skill",
+                    "--source",
+                    source
+                ])
+                .err()
+                .unwrap()
+                .exit_code(),
+                2
+            );
         }
     }
 
@@ -849,6 +1089,13 @@ mod tests {
             assert_eq!(
                 output["selected"],
                 json!(["pages/knowledge/matching.md", "pages/knowledge/global.md"])
+            );
+            let mut args = skill_args(&cwd);
+            args.skill = "tooling".into();
+            let pages = skill_pages(&wiki.root, &wiki.db, &args)?;
+            assert_eq!(
+                json!(pages.pages.iter().map(|page| &page.rel).collect::<Vec<_>>()),
+                output["selected"]
             );
         }
         for cwd in [None, Some(wiki.root.to_string_lossy().into_owned())] {

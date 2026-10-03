@@ -1,10 +1,12 @@
 //! Shared markdown wiki, indexed incrementally and serialized across sessions.
 mod context;
 mod index;
+mod injections;
 mod links;
 mod lint;
 mod pages;
 mod recall;
+mod related;
 mod remind;
 mod scan;
 mod search;
@@ -45,7 +47,15 @@ enum Commands {
         /// Skip semantic fallback (also skipped with filters, which the daemon cannot apply)
         #[arg(long)]
         no_semantic: bool,
+        #[arg(long)]
+        json: bool,
     },
+    /// Semantic suggestions from stdin, plus the current project's overview
+    Related(related::Args),
+    /// Pages injected into a session, newest first
+    Injections(injections::Args),
+    /// Wiki pages matching a skill, optionally deduplicated within a session
+    SkillPages(recall::SkillPagesArgs),
     /// Most recently updated pages
     List {
         #[arg(short, default_value_t = 20)]
@@ -221,7 +231,11 @@ fn run_locked(root: &Path, command: &Commands) -> Result<i32> {
             n,
             filters,
             no_semantic,
-        } => search::search(root, &db, terms, *n, filters, *no_semantic)?,
+            json,
+        } => search::search(root, &db, terms, *n, filters, *no_semantic, *json)?,
+        Commands::Related(args) => related::run(root, &db, args)?,
+        Commands::Injections(args) => injections::run(root, &db, args)?,
+        Commands::SkillPages(args) => recall::run_skill_pages(root, &db, args)?,
         Commands::List { n, filters } => search::list(root, &db, *n, filters)?,
         Commands::Stats(args) => usage::run(root, &db, args)?,
         Commands::Lint(args) => lint::run(root, &db, args)?,

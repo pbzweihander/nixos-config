@@ -174,6 +174,14 @@ impl Row {
     pub fn blocked_line(&self, path: &str) -> String {
         format!("{path}: [BLOCKED: {}; fix the page]", self.blocked)
     }
+
+    pub fn display_title(&self) -> String {
+        if self.blocked.is_empty() {
+            self.title.clone()
+        } else {
+            format!("[BLOCKED: {}]", self.blocked)
+        }
+    }
 }
 
 pub fn linked_from(db: &Connection, path: &str) -> Result<Vec<String>> {

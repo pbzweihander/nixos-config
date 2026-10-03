@@ -18,6 +18,23 @@ pub struct Hit {
     pub section: Option<(String, i64, i64)>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct Section {
+    pub heading: String,
+    pub start: i64,
+    pub end: i64,
+}
+
+impl From<(String, i64, i64)> for Section {
+    fn from((heading, start, end): (String, i64, i64)) -> Self {
+        Self {
+            heading,
+            start,
+            end,
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(tag = "op", rename_all = "lowercase")]
 enum Request {
@@ -216,6 +233,20 @@ pub fn related(prompt: &str) -> Vec<Hit> {
         prompt: prompt.to_owned(),
         n: 10,
     })
+}
+
+pub fn related_with_timeout(prompt: &str, timeout: Duration) -> Vec<Hit> {
+    let Some(path) = socket_path() else {
+        return vec![];
+    };
+    request_at(
+        path,
+        Request::Related {
+            prompt: prompt.to_owned(),
+            n: 10,
+        },
+        timeout,
+    )
 }
 
 pub fn search(query: &str, n: i64) -> Vec<Hit> {

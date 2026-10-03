@@ -139,6 +139,167 @@ fn assert_no_connection(listener: &UnixListener) {
 }
 
 #[test]
+fn related_json_requests_ten_filters_and_logs_selected_pages() {
+    let wiki = Wiki::new();
+    for (path, text) in [
+        ("history/past", "---\ntitle: Past\ncreated: 2020-01-01\n---\npast"),
+        ("knowledge/blocked", "---\ntitle: Hidden\ncreated: 2020-01-01\n---\nghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+        ("projects/wiki", "---\ntitle: Overview\ncreated: 2020-01-01\n---\noverview"),
+    ] {
+        fs::write(wiki.0.join(format!("wiki/pages/{path}.md")), text).unwrap();
+    }
+    let cwd = wiki.0.join("wiki");
+    let (output, request) = wiki.respond(
+        &[
+            "related",
+            "--json",
+            "-n",
+            "1",
+            "--cwd",
+            cwd.to_str().unwrap(),
+            "--session",
+            "s",
+            "--source",
+            "mod-agent",
+        ],
+        "Why does the cache disappear?",
+        json!({"ok":true,"results":[
+            {"path":"history/past","score":1}, {"path":"knowledge/blocked","score":1},
+            {"path":"knowledge/deleted","score":1},
+            {"path":"knowledge/foo","score":1,"heading":"Recovery","start_line":7,"end_line":8},
+            {"path":"knowledge/bar","score":1}
+        ]}),
+    );
+    assert_eq!(
+        request,
+        json!({"op":"related","prompt":"Why does the cache disappear?","n":10})
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&output).unwrap(),
+        json!({
+            "pages":[{"path":cwd.join("pages/knowledge/foo.md"), "rel":"pages/knowledge/foo.md", "title":"foo cache notes", "type":"knowledge", "section":{"heading":"Recovery","start":7,"end":8}}],
+            "overview":cwd.join("pages/projects/wiki.md")
+        })
+    );
+    let output = run(
+        wiki.command(&["injections", "--json", "--session", "s"]),
+        "",
+    );
+    let report: Value = serde_json::from_str(&output).unwrap();
+    let pages = report["pages"].as_array().unwrap();
+    assert_eq!(pages.len(), 1);
+    assert_eq!(pages[0]["rel"], "pages/knowledge/foo.md");
+    assert_eq!(pages[0]["sources"], json!(["mod-agent"]));
+    assert!(pages[0]["at"].as_i64().unwrap() > 0);
+    assert_eq!(
+        run(wiki.command(&["injections", "--session", "s"]), ""),
+        format!(
+            "{} (foo cache notes) [mod-agent]\n",
+            cwd.join("pages/knowledge/foo.md").display()
+        )
+    );
+    fs::remove_file(wiki.0.join("embed.sock")).unwrap();
+    let (output, _) = wiki.respond(
+        &["related", "--cwd", cwd.to_str().unwrap()],
+        "cache",
+        json!({"ok":true,"results":[{"path":"knowledge/bar","score":1}]}),
+    );
+    assert_eq!(
+        output,
+        format!(
+            "{} (bar cache notes)\noverview: {}\n",
+            cwd.join("pages/knowledge/bar.md").display(),
+            cwd.join("pages/projects/wiki.md").display()
+        )
+    );
+}
+
+#[test]
+fn related_timeout_is_separate_from_hook_timeout_and_can_be_overridden() {
+    for timeout in [None, Some("75")] {
+        let wiki = Wiki::new();
+        let listener = wiki.listener();
+        let (release, wait) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(&mut stream).read_line(&mut request).unwrap();
+            let _ = wait.recv_timeout(Duration::from_millis(400));
+            let _ = writeln!(
+                stream,
+                "{}",
+                json!({"ok":true,"results":[{"path":"knowledge/foo","score":1}]})
+            );
+        });
+        let mut command = wiki.command(&["related", "--json", "--cwd", "/"]);
+        command.env("CLAUDE_WIKI_SEMANTIC_TIMEOUT_MS", "1");
+        if let Some(timeout) = timeout {
+            command.args(["--timeout-ms", timeout]);
+        }
+        let start = Instant::now();
+        let output = run(command, "cache");
+        let _ = release.send(());
+        server.join().unwrap();
+        let report: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(
+            report["pages"].as_array().unwrap().len(),
+            usize::from(timeout.is_none())
+        );
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+}
+
+#[test]
+fn json_search_uses_keyword_results_or_semantic_fallback_with_redaction() {
+    let wiki = Wiki::new();
+    let listener = wiki.listener();
+    let output = run(wiki.command(&["search", "foo", "--json"]), "");
+    let report: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(report["hits"].as_array().unwrap().len(), 1);
+    assert_eq!(report["hits"][0]["semantic"], false);
+    assert_eq!(report["hits"][0]["tags"], json!(["cache"]));
+    assert!(report["hits"][0]["snippet"]
+        .as_str()
+        .unwrap()
+        .contains("[foo]"));
+    for extra in [&["--no-semantic"][..], &["--project", "demo"][..]] {
+        let mut command = wiki.command(&["search", "nomatch", "--json"]);
+        command.args(extra);
+        assert_eq!(
+            serde_json::from_str::<Value>(&run(command, "")).unwrap(),
+            json!({"hits":[]})
+        );
+    }
+    assert_no_connection(&listener);
+    drop(listener);
+    fs::remove_file(wiki.0.join("embed.sock")).unwrap();
+    fs::write(
+        wiki.0.join("wiki/pages/knowledge/blocked.md"),
+        "---\ntitle: Hidden\ncreated: 2020-01-01\n---\nghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    )
+    .unwrap();
+    let (output, request) = wiki.respond(&["search", "nomatch", "--json", "-n", "3"], "", json!({"ok":true,"results":[
+        {"path":"knowledge/foo","score":1,"heading":"Recovery","start_line":7,"end_line":8},
+        {"path":"knowledge/blocked","score":1,"heading":"Hidden section","start_line":1,"end_line":9},
+        {"path":"knowledge/missing","score":1}
+    ]}));
+    assert_eq!(request, json!({"op":"search","query":"nomatch","n":3}));
+    let report: Value = serde_json::from_str(&output).unwrap();
+    let hits = report["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 2);
+    assert_eq!(hits[0]["semantic"], true);
+    assert_eq!(hits[0]["snippet"], "");
+    assert_eq!(
+        hits[0]["section"],
+        json!({"heading":"Recovery","start":7,"end":8})
+    );
+    assert_eq!(hits[1]["title"], "[BLOCKED: secret]");
+    assert_eq!(hits[1]["snippet"], "");
+    assert!(hits[1]["section"].is_null());
+    assert!(!output.contains("Hidden"));
+}
+
+#[test]
 fn probe_uses_semantic_ranks_even_when_keywords_match() {
     for (query, paths, top, failure, diagnostic) in [
         (
@@ -476,6 +637,157 @@ fn reminder_and_recall_log_only_emitted_pages_and_share_seen_state() {
 }
 
 #[test]
+fn skill_pages_and_recall_dedupe_in_both_directions_and_log_only_returned_pages() {
+    for recall_first in [false, true] {
+        let wiki = Wiki::new();
+        for name in ["foo", "bar"] {
+            let path = wiki.0.join(format!("wiki/pages/knowledge/{name}.md"));
+            fs::write(
+                &path,
+                fs::read_to_string(&path)
+                    .unwrap()
+                    .replace("project: demo\n", ""),
+            )
+            .unwrap();
+        }
+        let hook = json!({"session_id":"shared", "hook_event_name":"PreToolUse", "tool_name":"Skill", "tool_input":{"skill":"cache"}}).to_string();
+        let skill_pages = || {
+            serde_json::from_str::<Value>(&run(
+                wiki.command(&[
+                    "skill-pages",
+                    "plugin:cache",
+                    "--json",
+                    "-n",
+                    "1",
+                    "--cwd",
+                    "/",
+                    "--session",
+                    "shared",
+                    "--source",
+                    "mod-skill",
+                ]),
+                "",
+            ))
+            .unwrap()
+        };
+        let recall = || run(wiki.command(&["recall", "--max-skill-pages", "1"]), &hook);
+        let (report, recalled) = if recall_first {
+            let recalled = recall();
+            (skill_pages(), recalled)
+        } else {
+            let report = skill_pages();
+            (report, recall())
+        };
+        let pages = report["pages"].as_array().unwrap();
+        assert_eq!(pages.len(), 1);
+        let title = pages[0]["title"].as_str().unwrap();
+        assert!(!recalled.contains(title));
+        assert!(recalled.contains(if title.starts_with("foo") {
+            "bar cache notes"
+        } else {
+            "foo cache notes"
+        }));
+        assert_eq!(skill_pages(), json!({"pages": []}));
+        assert!(recall().is_empty());
+        let injections: Value = serde_json::from_str(&run(
+            wiki.command(&["injections", "--session", "shared", "--json"]),
+            "",
+        ))
+        .unwrap();
+        let rows = injections["pages"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        let mut sources: Vec<_> = rows
+            .iter()
+            .map(|row| {
+                assert_eq!(row["sources"].as_array().unwrap().len(), 1);
+                row["sources"][0].as_str().unwrap()
+            })
+            .collect();
+        sources.sort();
+        assert_eq!(sources, ["mod-skill", "recall-skill"]);
+        // Without a session, existing seen state does not suppress text output.
+        let text = run(wiki.command(&["skill-pages", "cache", "--cwd", "/"]), "");
+        for name in ["foo", "bar"] {
+            assert!(text.contains(&format!(
+                "{} ({name} cache notes)\n",
+                wiki.0
+                    .join(format!("wiki/pages/knowledge/{name}.md"))
+                    .display()
+            )));
+        }
+        assert!(run(wiki.command(&["skill-pages", "claude-wiki"]), "").is_empty());
+    }
+}
+
+#[test]
+fn skill_pages_and_remind_share_seen_pages_in_both_directions() {
+    let wiki = Wiki::new();
+    for name in ["foo", "bar"] {
+        let path = wiki.0.join(format!("wiki/pages/knowledge/{name}.md"));
+        fs::write(
+            &path,
+            fs::read_to_string(&path)
+                .unwrap()
+                .replace("project: demo\n", ""),
+        )
+        .unwrap();
+    }
+    let listener = wiki.listener();
+    let output = run(
+        wiki.command(&[
+            "skill-pages",
+            "cache",
+            "--json",
+            "--session",
+            "mod-first",
+            "--cwd",
+            "/",
+        ]),
+        "",
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&output).unwrap()["pages"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_no_connection(&listener);
+    drop(listener);
+    fs::remove_file(wiki.0.join("embed.sock")).unwrap();
+    let reply = json!({"ok":true, "results":[{"path":"knowledge/foo", "score":1}, {"path":"knowledge/bar", "score":1}]});
+    let (output, _) = wiki.respond(
+        &["remind"],
+        &json!({"session_id":"mod-first", "prompt":"cache"}).to_string(),
+        reply.clone(),
+    );
+    assert!(output.is_empty());
+    fs::remove_file(wiki.0.join("embed.sock")).unwrap();
+    let (output, _) = wiki.respond(
+        &["remind"],
+        &json!({"session_id":"remind-first", "prompt":"cache"}).to_string(),
+        reply,
+    );
+    assert!(output.contains("foo cache notes") && output.contains("bar cache notes"));
+    let output = run(
+        wiki.command(&[
+            "skill-pages",
+            "cache",
+            "--json",
+            "--session",
+            "remind-first",
+            "--cwd",
+            "/",
+        ]),
+        "",
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&output).unwrap(),
+        json!({"pages": []})
+    );
+}
+
+#[test]
 fn context_logs_only_overview_and_retained_project_lists_and_bounds_stdin() {
     let wiki = Wiki::new();
     for (path, text) in [
@@ -706,22 +1018,41 @@ fn hooks_respect_lock_deadline_and_non_hooks_still_wait() {
             "{output:?}"
         );
     }
-    let mut child = wiki
-        .command(&["list"])
-        .env("CLAUDE_WIKI_HOOK_LOCK_MS", "0")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut children: Vec<_> = [
+        vec!["list"],
+        vec!["search", "foo", "--json"],
+        vec!["related", "--json", "--cwd", "/"],
+        vec!["injections", "--session", "missing", "--json"],
+        vec!["skill-pages", "cache", "--json", "--cwd", "/"],
+    ]
+    .into_iter()
+    .map(|args| {
+        let child = wiki
+            .command(&args)
+            .env("CLAUDE_WIKI_HOOK_LOCK_MS", "0")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        (args, child)
+    })
+    .collect();
     thread::sleep(Duration::from_millis(150));
-    assert!(child.try_wait().unwrap().is_none());
+    for (args, child) in &mut children {
+        assert!(child.try_wait().unwrap().is_none(), "{args:?}");
+    }
     drop(guard);
-    let output = child.wait_with_output().unwrap();
-    assert!(output.status.success(), "{output:?}");
-    assert!(String::from_utf8(output.stdout)
-        .unwrap()
-        .contains("foo cache notes"));
+    for (args, child) in children {
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        let text = String::from_utf8(output.stdout).unwrap();
+        if args[0] == "list" {
+            assert!(text.contains("foo cache notes"));
+        } else {
+            serde_json::from_str::<Value>(&text).unwrap();
+        }
+    }
 }
 
 #[test]

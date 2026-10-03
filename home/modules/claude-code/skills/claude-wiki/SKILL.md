@@ -72,7 +72,7 @@ what the repository or its docs already make obvious.
 ## Search
 
 ```bash
-claude-wiki search <terms...> [-n 10] [--type TYPE] [--status open|done] [--project NAME] [--tag TAG] [--no-semantic]
+claude-wiki search <terms...> [-n 10] [--type TYPE] [--status open|done] [--project NAME] [--tag TAG] [--no-semantic] [--json]
 claude-wiki list [-n 20] [--type ...] [--status ...] [--project ...] [--tag ...]   # recently updated
 claude-wiki tags                                                                  # tags and projects in use
 ```
@@ -98,6 +98,46 @@ claude-wiki tags                                                                
   Read tool's offset and limit rather than the whole file.
 - `updated ..., stale?` marks a page untouched for 30 days. Check it against the code
   or the system before relying on it, and fix the page if it is wrong.
+
+For command-based integrations:
+
+```bash
+printf '%s' "$prompt" | claude-wiki related [--json] [-n 3] [--cwd DIR] [--session ID --source SOURCE] [--timeout-ms 1500]
+claude-wiki search <terms...> --json
+claude-wiki injections --session ID [--json]
+claude-wiki skill-pages <skill> [--json] [-n 5] [--cwd DIR] [--session ID --source SOURCE]
+```
+
+`related` reads at most 16 KiB from stdin, asks the daemon for 10 suggestions,
+excludes history and blocked pages, and returns the first `-n` (1–10). It also
+resolves the project at `--cwd` (default: current directory) to an unblocked
+overview. JSON is `{ "pages": [{ "path", "rel", "title", "type", "section" }],
+"overview": <absolute path or null> }`; sections are `{ "heading", "start", "end" }`
+or null. Both `--session` and `--source` enable logging of the selected pages;
+sources must match `[a-z][a-z-]{0,30}`. An unavailable daemon returns empty pages
+successfully, while the overview is still resolved.
+
+`search --json` returns `{ "hits": [...] }` with absolute `path`, relative `rel`,
+`title`, `type`, `status`, `project`, `tags` (array), `updated` (YYYY-MM-DD), `stale`,
+`backlinks`, `snippet`, `section`, and `semantic`. Search and fallback rules are
+unchanged. Blocked titles become `[BLOCKED: <category>]`, with empty snippets and
+null sections.
+
+`injections` reads that session's logged pages from `usage.sqlite`, once per path,
+newest first. JSON is `{ "pages": [{ "path", "rel", "title", "sources", "at" }] }`;
+`sources` is a distinct array and `at` is the latest Unix timestamp in seconds.
+Missing pages keep their paths with a null title; blocked titles use the same
+marker as search. A missing usage database returns an empty list. Without JSON,
+related prints `path (title)` followed by `overview: path` when present, and
+injections prints `path (title) [sources]`.
+
+`skill-pages` uses recall's whole-tag matching on the skill name or plugin suffix:
+unblocked knowledge and open follow-ups for the current project (including its
+worktrees) or no project, with project matches first, then newer pages. `claude-wiki`
+itself yields nothing. JSON is `{ "pages": [{ "path", "rel", "title", "type" }] }`;
+text is `path (title)` per line. `--session` skips and marks pages in the seen state
+shared with recall and remind; adding `--source` logs returned pages under that
+source (same validation as related). Without a session, seen state is unchanged.
 
 ## Links
 
