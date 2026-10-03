@@ -129,14 +129,67 @@ run rather than bypassing suppression. Normal completion, exceptions and handled
 service termination remove the worktree; a later run removes a registered leftover after an abrupt
 kill. Task rejection/failure exits zero; run setup or cleanup failure exits nonzero.
 
-Inspect retained work without changing the main checkout:
+## Review retained work
+
+List and inspect candidates without taking `run.lock` or changing the checkout:
 
 ```sh
-git -C ~/.local/share/claude-wiki branch --list 'curator/rejected/*'
-git -C ~/.local/share/claude-wiki show 'curator/rejected/<timestamp>-<n>'
-git -C ~/.local/share/claude-wiki worktree add --detach /tmp/wiki-review 'curator/rejected/<timestamp>-<n>'
-less ~/.cache/wiki-curator/runs/<timestamp>-<n>.diff
+wiki-curator review
+wiki-curator review --json --days 30
+wiki-curator show 'curator/rejected/<timestamp>-<n>'
+wiki-curator show 'diff:<timestamp>-<n>'
+wiki-curator land 'curator/rejected/<timestamp>-<n>' --json
+wiki-curator discard 'curator/deferred/<timestamp>-<n>' --json
+wiki-curator discard 'diff:<timestamp>-<n>' --json
 ```
+
+All four commands accept `--wiki` and use the same wiki/cache environment settings
+as `run`. `review` lists every rejected and deferred branch, plus undismissed diff
+artifacts whose run timestamp is within the last `--days` days (default 30), newest
+first. The age limit applies only to diffs. Text output gives one line per item,
+with Codex problems indented below it. Reports are joined by timestamp and task
+number; missing, unreadable or corrupt report fields become nulls or empty lists.
+Branches with nonstandard names within the curator prefixes remain visible, with
+null run/task fields and their commit date used for ordering.
+
+For a mod pane, `review --json` returns `{"items": [...]}`. Each item has `id`,
+`kind` (`branch` or `diff`), `branch`, `diff` (an absolute path), `run` (UTC timestamp),
+`task` (one-based number), `type`, `pages`, `outcome` (`rejected` or `deferred`),
+`reason`, `codex_problems`, `summary` (from the justification), and `commit`. Fields
+that do not apply are null; page/problem lists default to empty. IDs are exact branch
+names or `diff:<timestamp>-<n>`, not arbitrary paths or Git revision expressions.
+`show` prints `git show -M --stat -p` for a branch's current commit, or the diff file's
+bytes. Output is capped at 1 MiB including `[wiki-curator: diff truncated at 1 MiB]`
+when truncated. Dismissed diffs can still be shown by ID.
+
+`land` accepts only `curator/rejected/*` and `curator/deferred/*` branches with
+exactly one unmerged commit whose sole parent is an ancestor of `main`. Human
+review explicitly overrides the task's rejection/deferral cooldown; it does not
+rerun Claude, Codex or the earlier validation gates. Landing shares the service's
+wiki lock, checkout/operation verification, protected/recent/dirty page checks,
+staged-index check, backlink checks, and `cherry-pick -x` with verified abort on
+failure. Removed pages are derived from the commit, so missing reports cannot
+bypass backlink checks. Unrelated unstaged work remains intact.
+
+On success, `land` deletes the candidate branch and clears cooldowns for the task's
+pages (also using the changed paths when a report is missing). JSON output is
+`{"outcome":"merged","landed_commit":"<sha>"}`, exit **0**. A safe deferral keeps
+the branch and state, prints `{"outcome":"deferred","reason":"..."}`, and exits
+**3**. Invalid IDs and refused branches print `{"outcome":"refused","reason":"..."}`
+and exit **2**. Without `--json`, results are plain text.
+
+`discard` deletes a curator branch with `git branch -D`, or adds a diff ID to
+`state.json`'s `dismissed_diffs` list so it disappears from `review`. Diff files,
+reports and cooldowns remain intact. Successful discard returns
+`{"outcome":"discarded"}` with `--json`, exit **0**; invalid input exits **2**.
+`dismissed_diffs` defaults to an empty list in older state files. Its entries must
+be unique, valid diff IDs with real UTC dates and positive task numbers; malformed
+state is refused before mutation.
+
+Both `land` and `discard` take `run.lock` without waiting. While a run or another
+mutation holds it, they exit **3** with reason `curator run in progress`. The
+service's concurrent-run behavior remains a successful skip. Inspection works
+while a run holds the lock.
 
 For debugging, run inside a wiki repo:
 

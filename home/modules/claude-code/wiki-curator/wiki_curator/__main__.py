@@ -5,6 +5,7 @@ from pathlib import Path
 import signal
 
 from .preservation import load_justification, preserved
+from .review import execute as review_command
 from .runner import Interrupted, run, show_status
 from .selection import TYPES
 
@@ -23,7 +24,18 @@ def main(argv=None):
     run_parser.add_argument("--max-tasks", type=positive, default=os.environ.get("WIKI_CURATOR_MAX_TASKS", "5"))
     run_parser.add_argument("--only", choices=TYPES, nargs="+", action="extend")
     status_parser = commands.add_parser("status")
-    for child in (run_parser, status_parser):
+    review_parser = commands.add_parser("review", help="list retained rejected and deferred work")
+    review_parser.add_argument("--json", action="store_true")
+    review_parser.add_argument("--days", type=positive, default=30)
+    show_parser = commands.add_parser("show", help="inspect a retained branch or diff")
+    show_parser.add_argument("id")
+    land_parser = commands.add_parser("land", help="land a retained curator branch")
+    land_parser.add_argument("id", metavar="branch")
+    land_parser.add_argument("--json", action="store_true")
+    discard_parser = commands.add_parser("discard", help="discard a branch or dismiss a diff")
+    discard_parser.add_argument("id")
+    discard_parser.add_argument("--json", action="store_true")
+    for child in (run_parser, status_parser, review_parser, show_parser, land_parser, discard_parser):
         child.add_argument("--wiki", type=Path, default=Path(os.environ.get("CLAUDE_WIKI_DIR", "~/.local/share/claude-wiki")).expanduser())
     preservation_parser = commands.add_parser("check-preservation")
     preservation_parser.add_argument("parent")
@@ -43,6 +55,8 @@ def main(argv=None):
         if args.command == "status":
             show_status(args.wiki.expanduser().resolve(), cache)
             return 0
+        if args.command in ("review", "show", "land", "discard"):
+            return review_command(args, cache)
         justification = load_justification(args.justification) if args.justification else {
             "summary": "manual preservation check", "dropped": [], "redirects": {},
         }

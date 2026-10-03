@@ -9,6 +9,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import subprocess
@@ -79,6 +80,19 @@ def write_json(path, value):
     atomic_write(path, json.dumps(value, ensure_ascii=False, indent=2) + "\n")
 
 
+def artifact_key(value):
+    """Validate a run/task filename stem without accepting paths or git revisions."""
+    if not isinstance(value, str):
+        raise ValueError("invalid curator artifact id")
+    match = re.fullmatch(r"([0-9]{8}T[0-9]{6}(?:\.[0-9]{6})?Z)-([1-9][0-9]*)", value)
+    if not match:
+        raise ValueError("invalid curator artifact id")
+    timestamp, number = match.groups()
+    date_format = "%Y%m%dT%H%M%S.%fZ" if "." in timestamp else "%Y%m%dT%H%M%SZ"
+    date = datetime.strptime(timestamp, date_format).replace(tzinfo=timezone.utc)
+    return timestamp, int(number), date.timestamp()
+
+
 def read_state(cache):
     path = cache / "state.json"
     state = strict_json(path.read_text()) if path.exists() else {"cooldowns": {}}
@@ -97,6 +111,15 @@ def read_state(cache):
                 or paths[0] >= paths[1] or isinstance(until, bool)
                 or not isinstance(until, (int, float)) or not math.isfinite(until)):
             raise ValueError("invalid not_duplicates entry in state.json")
+    dismissed = state.setdefault("dismissed_diffs", [])
+    if not isinstance(dismissed, list):
+        raise ValueError("invalid dismissed_diffs in state.json")
+    seen = set()
+    for item in dismissed:
+        if not isinstance(item, str) or not item.startswith("diff:") or item in seen:
+            raise ValueError("invalid dismissed_diffs entry in state.json")
+        artifact_key(item[5:])
+        seen.add(item)
     return state
 
 
@@ -207,8 +230,11 @@ def check_scope(worktree, parent, task, justification, paths):
         raise ValueError("unplanned page deletion")
 
 
-def land(wiki, worktree, parent, commit, task, cooldowns):
-    paths = {p for _, old, new in changes(worktree, parent, commit) for p in (old, new) if p}
+def land(wiki, parent, commit, cooldowns):
+    """Shared landing gate for the service and explicit human review."""
+    edits = changes(wiki, parent, commit)
+    paths = {p for _, old, new in edits for p in (old, new) if p}
+    removed = {old for _, old, new in edits if old and old != new}
     try:
         with wiki_lock(wiki):
             verify_main(wiki)
@@ -220,17 +246,16 @@ def land(wiki, worktree, parent, commit, task, cooldowns):
             # it with a nonempty index, and never unstage someone else's work.
             if any(flags[0] not in (" ", "?") for flags in dirty.values()):
                 return {"outcome": "deferred", "reason": "main index has staged changes"}
-            redirects = task.details.get("redirects", {})
-            if redirects:
+            if removed:
                 # Another session can add backlinks while the models run. Such a page
                 # was not reviewed; a cherry-pick must not leave its link dangling.
                 for path in git(wiki, "ls-tree", "-r", "--name-only", "-z", "main", "--", "pages/").split("\0"):
                     if path and path not in paths:
                         text = page_text(wiki, "main", path)
-                        if any(f"pages/{m[1]}.md" in redirects for m in LINK.finditer(text)):
+                        if any(f"pages/{m[1]}.md" in removed for m in LINK.finditer(text)):
                             return {"outcome": "deferred", "reason": f"new backlink in {path}"}
                 for path in dirty:
-                    if regular_page(wiki, path) and any(f"pages/{m[1]}.md" in redirects for m in LINK.finditer((wiki / path).read_text())):
+                    if regular_page(wiki, path) and any(f"pages/{m[1]}.md" in removed for m in LINK.finditer((wiki / path).read_text())):
                         return {"outcome": "deferred", "reason": f"dirty backlink in {path}"}
             before = git(wiki, "rev-parse", "HEAD").strip()
             try:
@@ -374,7 +399,7 @@ def perform_task(wiki, worktree, timestamp, task, state, result):
             or any(not p.startswith(".curator/") for p in status(worktree))):
         reject("codex", "worktree changed during read-only review")
         return
-    landing = land(wiki, worktree, parent, commit, task, state["cooldowns"])
+    landing = land(wiki, parent, commit, state["cooldowns"])
     gates["landing"] = landing.copy()
     result.update(landing)
 

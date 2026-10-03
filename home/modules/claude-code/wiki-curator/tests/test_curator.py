@@ -224,12 +224,12 @@ class SelectionTests(RepoTest):
 
 class StateTests(RepoTest):
     def test_not_duplicates_defaults_for_missing_and_legacy_state(self):
-        self.assertEqual(read_state(self.cache), {"cooldowns": {}, "not_duplicates": {}})
+        self.assertEqual(read_state(self.cache), {"cooldowns": {}, "not_duplicates": {}, "dismissed_diffs": []})
         self.cache.mkdir(parents=True)
         cooldowns = {A: time.time() + DAY}
         (self.cache / "state.json").write_text(json.dumps({"cooldowns": cooldowns}))
-        self.assertEqual(read_state(self.cache), {"cooldowns": cooldowns, "not_duplicates": {}})
-        state = {"cooldowns": cooldowns, "not_duplicates": {f"{A}|{B}": time.time() + 90 * DAY}}
+        self.assertEqual(read_state(self.cache), {"cooldowns": cooldowns, "not_duplicates": {}, "dismissed_diffs": []})
+        state = {"cooldowns": cooldowns, "not_duplicates": {f"{A}|{B}": time.time() + 90 * DAY}, "dismissed_diffs": []}
         (self.cache / "state.json").write_text(json.dumps(state))
         self.assertEqual(read_state(self.cache), state)
 
