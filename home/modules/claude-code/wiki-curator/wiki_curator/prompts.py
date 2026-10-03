@@ -84,7 +84,9 @@ reason to reject unless the change made it worse. Accept only if all of these ho
 4. Nothing was invented.
 5. No edits beyond the task and necessary link updates.
 6. The result follows the page-type and writing rules below.
-Reject on uncertainty. Your last line must be exactly one JSON object, without fences:
+Reject on uncertainty. Write each problem in Korean, for the person who reviews it;
+keep page paths, identifiers, commands and quoted text as they are.
+Your last line must be exactly one JSON object, without fences:
 {{"accept": true, "problems": []}} or {{"accept": false, "problems": ["specific issue"]}}.
 
 Writing rules:
