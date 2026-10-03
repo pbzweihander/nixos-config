@@ -12,7 +12,7 @@ import threading
 import time
 
 from .core import (CPU_MODEL, Snapshot, Thresholds, cache_path, load_snapshot,
-                   read_catalog, refresh_snapshot, retrieve, save_snapshot)
+                   read_catalog, refresh_snapshot, retrieve, save_snapshot, similar, pairs)
 from .models import Models
 from .policy import TierPolicy, read_gpu
 from .protocol import MAX_LINE, decode_request, encode_message
@@ -342,9 +342,15 @@ class Daemon:
                 tier.users += 1
             try:
                 with self._activity(name == "gpu"):
-                    results = retrieve(snapshot, tier.model, name,
-                                       request.get("prompt", request.get("query")), request["op"],
-                                       request["n"], self.thresholds)
+                    if request["op"] == "similar":
+                        results = similar(snapshot, tier.model, request["text"],
+                                          request["exclude"], request["n"], request["min"])
+                    elif request["op"] == "pairs":
+                        results = pairs(snapshot, request["min"], request["types"])
+                    else:
+                        results = retrieve(snapshot, tier.model, name,
+                                           request.get("prompt", request.get("query")), request["op"],
+                                           request["n"], self.thresholds)
                 return {"ok": True, "tier": name, "results": results}
             except Exception:
                 if name == "cpu":

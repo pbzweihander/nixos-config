@@ -3,6 +3,7 @@ use anyhow::{bail, Result};
 use regex::Regex;
 use rusqlite::Connection;
 use std::{
+    collections::HashSet,
     env, fs,
     path::{Component, Path, PathBuf},
 };
@@ -63,29 +64,95 @@ fn validate(root: &Path, rel: &str, text: &str, page: &pages::Page) -> i32 {
             "warning: {rel} is not directly under pages/<{}>/",
             pages::TYPES.join("|")
         );
-        code = 1;
+        code = code.max(1);
     }
     for problem in &page.problems {
-        eprintln!("warning: {rel} {}", scan::redact(problem));
-        code = 1;
+        eprintln!("error: {rel} {}", scan::redact(problem));
+        code = 2;
     }
-    for target in &page.links {
-        if !root.join(target).is_file() {
-            eprintln!("warning: {rel}: link to {target}, which does not exist");
-            code = 1;
-        }
+    for finding in broken_links(root, page) {
+        eprintln!("warning: {rel}: {finding}");
+        code = code.max(1);
     }
     let budget = context::overview_budget();
     let length = page.body.chars().count();
     if page.kind == "projects" && length > budget {
         eprintln!("warning: {rel}: body is {length} chars; only the first {budget} are shown at session start");
-        code = 1;
+        code = code.max(1);
     }
     for finding in scan::scan(text) {
         eprintln!("blocked: {rel}: {}: {}", finding.category, finding.excerpt);
         code = 2;
     }
     code
+}
+
+pub fn broken_links(root: &Path, page: &pages::Page) -> Vec<String> {
+    page.links
+        .iter()
+        .filter(|target| !root.join(target).is_file())
+        .map(|target| format!("link to {target}, which does not exist"))
+        .collect()
+}
+
+fn shrink(old: &str, new: &str) -> Option<(usize, usize)> {
+    let before = old.chars().count();
+    let after = new.chars().count();
+    (before.saturating_sub(after) > 1500 && (after as f64) < before as f64 * 0.6)
+        .then_some((before, after))
+}
+
+fn duplicate_note(root: &Path, db: &Connection, rel: &str, text: &str) -> Result<()> {
+    use rusqlite::OptionalExtension;
+    let minimum = env::var("CLAUDE_WIKI_DUPLICATE_MIN")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|v| v.is_finite() && (-1.0..=1.0).contains(v))
+        .unwrap_or(0.85);
+    let mut candidates = vec![];
+    for hit in semantic::similar(text, rel, minimum) {
+        let Some(path) = pages::link_path(&hit.path) else {
+            continue;
+        };
+        if path == rel || !hit.score.is_finite() || hit.score < minimum {
+            continue;
+        }
+        let title: Option<String> = db.query_row("select fts.title from fts join files on files.id=fts.rowid where fts.path=? and files.blocked=''", [&path], |r| r.get(0)).optional()?;
+        if let Some(title) = title {
+            candidates.push(format!(
+                "{} ({:.2}, {})",
+                root.canonicalize()?.join(path).display(),
+                hit.score,
+                title.chars().take(120).collect::<String>()
+            ));
+        }
+    }
+    if !candidates.is_empty() {
+        eprintln!("note: {rel}: similar existing pages: {}. If one covers the same topic, update it instead and delete this page.", candidates.join("; "));
+    }
+    Ok(())
+}
+
+fn written_page(
+    root: &Path,
+    db: &Connection,
+    rel: &str,
+    text: &str,
+    page: &pages::Page,
+) -> Result<i32> {
+    if !matches!(page.kind.as_str(), "knowledge" | "followups") {
+        return Ok(0);
+    }
+    match git(root, &["show", &format!("HEAD:{rel}")]) {
+        Ok(old) => {
+            if let Some((before, after)) = shrink(&old, text) {
+                eprintln!("warning: {rel}: shrank from {before} to {after} chars; check that nothing was lost in a rewrite");
+                return Ok(1);
+            }
+        }
+        Err(_) => duplicate_note(root, db, rel, text)?,
+    }
+    Ok(0)
 }
 
 #[derive(Default)]
@@ -184,6 +251,13 @@ pub fn check(
     }
     selected.sort();
     selected.dedup();
+    // Check needs existence only, not a separate git process and blob per page.
+    let head = git(
+        root,
+        &["ls-tree", "-r", "--name-only", "-z", "HEAD", "--", "pages"],
+    )
+    .unwrap_or_default();
+    let in_head: HashSet<_> = head.split('\0').filter(|path| !path.is_empty()).collect();
     let mut probes = Probe::default();
     let mut code = 0;
     for path in selected {
@@ -192,8 +266,15 @@ pub fn check(
         let page = pages::parse(&text, &rel);
         let validation = validate(root, &rel, &text, &page);
         code = code.max(validation);
-        if probe && validation != 2 {
-            probes.page(db, &rel, &page, probe_top)?;
+        if validation != 2 {
+            if matches!(page.kind.as_str(), "knowledge" | "followups")
+                && !in_head.contains(rel.as_ref())
+            {
+                duplicate_note(root, db, &rel, &text)?;
+            }
+            if probe {
+                probes.page(db, &rel, &page, probe_top)?;
+            }
         }
     }
     if probe {
@@ -254,6 +335,7 @@ pub fn sync(root: &Path, db: &Connection, paths: &[String], message: Option<&str
             code = code.max(1);
         }
         if validation != 2 {
+            code = code.max(written_page(root, db, rel, &text, &page)?);
             if page.kind == "knowledge" && page.queries.is_empty() {
                 eprintln!("warning: {rel}: no queries; add the questions a future session would ask to find this page");
                 code = code.max(1);
@@ -398,6 +480,35 @@ fn untagged_skills<'a>(page: &pages::Page, names: &'a [String]) -> Vec<&'a str> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frontmatter_errors_block_check_and_sync_without_a_commit() -> Result<()> {
+        let mut wiki = crate::usage::tests::Wiki::new()?;
+        for text in [
+            "body",
+            "---\ntitle: broken: title\n---\n[[knowledge/missing]]",
+            "---\ntitle: Test\n---\nbody",
+        ] {
+            wiki.page("pages/knowledge/broken.md", text)?;
+            assert_eq!(check(&wiki.root, &wiki.index, &[], false, 3)?, 2);
+            assert_eq!(sync(&wiki.root, &wiki.index, &[], None)?, 2);
+            assert!(git(&wiki.root, &["rev-parse", "--verify", "HEAD"]).is_err());
+        }
+        let page = pages::parse("---\ntitle: broken: title\n---\n", "pages/knowledge/x.md");
+        assert!(page.problems[0].contains("quote the title: title: \"broken: title\""));
+        Ok(())
+    }
+
+    #[test]
+    fn shrink_requires_both_thresholds_and_counts_characters() {
+        assert_eq!(
+            shrink(&"한".repeat(4000), &"글".repeat(2000)),
+            Some((4000, 2000))
+        );
+        assert_eq!(shrink(&"x".repeat(4000), &"x".repeat(2400)), None);
+        assert_eq!(shrink(&"x".repeat(2000), &"x".repeat(500)), None);
+        assert_eq!(shrink("small", &"x".repeat(4000)), None);
+    }
 
     #[test]
     fn mentions_use_whole_names_and_tags_including_code() {

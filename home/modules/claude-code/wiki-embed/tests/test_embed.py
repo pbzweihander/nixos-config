@@ -16,7 +16,7 @@ import numpy as np
 
 from wiki_embed.core import (CPU_MODEL, GPU_MODEL, Chunk, Entry, Page, Section, Snapshot,
                              Thresholds, cache_path, chunk_page, load_snapshot, read_catalog,
-                             refresh_snapshot, retrieve, save_snapshot, section_for_line)
+                             refresh_snapshot, retrieve, save_snapshot, section_for_line, similar, pairs)
 from wiki_embed.daemon import Daemon, Server, Tier
 from wiki_embed.policy import Reading, TierPolicy, read_gpu
 from wiki_embed.protocol import MAX_LINE, decode_request, encode_message
@@ -220,6 +220,72 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual(results[0]["path"], "knowledge/p9")
         self.assertGreater(results[0]["score"], 1)
         self.assertEqual(len(retrieve(snapshot, model, "gpu", "q", "search", 50, Thresholds())), 10)
+
+
+class PageSimilarityTests(unittest.TestCase):
+    def snapshot(self):
+        entries = []
+        for path, vectors in [("knowledge/a", [[1, 0], [0, 1]]),
+                              ("knowledge/b", [[1, 0]]),
+                              ("followups/c", [[0, 1]]),
+                              ("history/d", [[1, 0]]),
+                              ("knowledge/zero", [[0, 0]])]:
+            entries.append(Entry(Page(f"pages/{path}.md", 1, 1, ()),
+                                 tuple(Chunk("x", 1) for _ in vectors),
+                                 np.array(vectors, dtype=np.float32)))
+        return Snapshot(entries, 1)
+
+    def test_similar_chunks_passages_averages_and_excludes_both_path_forms(self):
+        snapshot = self.snapshot()
+        text = "---\ntitle: New\ntags: [test]\n---\n" + "word " * 400
+        model = FakeModel()
+        result = similar(snapshot, model, text, "pages/knowledge/b.md", 3, 0.7)
+        self.assertEqual([r["path"] for r in result], ["history/d", "knowledge/a"])
+        self.assertAlmostEqual(result[1]["score"], 2 ** -0.5, places=6)
+        self.assertEqual(model.encoded, [c.text for c in chunk_page(text, "knowledge/b")])
+        self.assertEqual(model.reranked, [])
+        self.assertEqual(similar(snapshot, model, text, "knowledge/b", 1, 0.8)[0]["path"], "history/d")
+        with patch.object(model, "encode_passages", return_value=np.array([[1, 0], [0, 1], [1, 0]], dtype=np.float32)):
+            result = similar(snapshot, model, text, "knowledge/new", 1, 0.9)
+        self.assertEqual(result[0]["path"], "knowledge/a")
+        self.assertAlmostEqual(result[0]["score"], 3 / (10 ** 0.5), places=6)
+        self.assertEqual(similar(Snapshot(), model, text, "knowledge/new", 3, 0.8), [])
+
+    def test_pairs_filter_types_threshold_sort_ties_and_cap(self):
+        result = pairs(self.snapshot(), 0.7, ["knowledge", "followups"])
+        self.assertEqual([(r["a"], r["b"]) for r in result],
+                         [("followups/c", "knowledge/a"), ("knowledge/a", "knowledge/b")])
+        self.assertEqual(pairs(self.snapshot(), 0.8, ["knowledge"]), [])
+        self.assertEqual(pairs(Snapshot(), 0.8, ["knowledge"]), [])
+        many = Snapshot([Entry(Page(f"pages/knowledge/{i:03}.md", 1, 1, ()),
+                               (Chunk("x", 1),), np.array([[1, 0]], dtype=np.float32))
+                         for i in range(40)], 1)
+        capped = pairs(many, 0.9, ["knowledge"])
+        self.assertEqual(len(capped), 500)
+        self.assertEqual(capped, sorted(capped, key=lambda r: (-r["score"], r["a"], r["b"])))
+
+    def test_daemon_dispatch_and_protocol_validation(self):
+        daemon = Daemon(Path("/unused"), no_gpu=True)
+        daemon.cpu = Tier("cpu", FakeModel(), self.snapshot())
+        for request in [dict(op="similar", text="new", exclude="knowledge/b", n=3, min=0.8),
+                        dict(op="pairs", min=0.7, types=["knowledge", "followups"])]:
+            decoded = decode_request(encode_message(request))
+            self.assertEqual(decoded, request)
+            self.assertTrue(daemon.handle(decoded)["ok"])
+            self.assertTrue(daemon.handle(decoded)["results"])
+        for minimum in [None, True, "0.8", -2, 2, float("nan"), float("inf")]:
+            for op in ["similar", "pairs"]:
+                request = dict(op=op, text="x", exclude="knowledge/b", types=["knowledge"], min=minimum)
+                with self.subTest(request=request), self.assertRaises(ValueError):
+                    decode_request((json.dumps(request) + "\n").encode())
+        for extra in [dict(text=""), dict(text=5), dict(exclude=None), dict(n=False), dict(n=0)]:
+            request = dict(op="similar", text="x", exclude="knowledge/b", min=0.8)
+            request.update(extra)
+            with self.assertRaises(ValueError):
+                decode_request(encode_message(request))
+        for types in [[], "knowledge", ["unknown"], [None], [{}]]:
+            with self.assertRaises(ValueError):
+                decode_request(encode_message(dict(op="pairs", min=0.8, types=types)))
 
 
 class StoreTests(unittest.TestCase):

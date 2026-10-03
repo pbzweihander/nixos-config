@@ -4,7 +4,7 @@ use clap::Args as ClapArgs;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 use serde_json::Value;
-use std::{fs::File, io};
+use std::{collections::HashSet, fs::File, io, path::Path};
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -73,7 +73,34 @@ fn update(db: &Connection, hook: Hook, interval: u64) -> Result<Option<String>> 
     Ok(message)
 }
 
-pub fn run(db: &Connection, args: &Args) -> Result<()> {
+fn select(
+    db: &Connection,
+    hits: Vec<crate::semantic::Hit>,
+    seen: &HashSet<String>,
+) -> Result<Vec<(String, String)>> {
+    let mut selected = vec![];
+    let mut paths = HashSet::new();
+    for hit in hits {
+        let Some(path) = crate::pages::link_path(&hit.path) else {
+            continue;
+        };
+        if seen.contains(&path) || !paths.insert(path.clone()) {
+            continue;
+        }
+        let title: Option<String> = db.query_row(
+            "select fts.title from fts join files on files.id=fts.rowid where fts.path=? and fts.type!='history' and files.blocked=''",
+            [&path], |r| r.get(0)).optional()?;
+        if let Some(title) = title {
+            selected.push((path, title));
+            if selected.len() == 3 {
+                break;
+            }
+        }
+    }
+    Ok(selected)
+}
+
+pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
     let input = io::read_to_string(io::stdin())?;
     let hook = if input.trim().is_empty() {
         Hook::default()
@@ -81,21 +108,30 @@ pub fn run(db: &Connection, args: &Args) -> Result<()> {
         serde_json::from_str(&input)?
     };
     let prompt = hook.prompt.as_deref().unwrap_or_default();
-    // Hook and slash-command wrappers are not questions about the wiki.
-    let pages: Vec<_> = if prompt.trim_start().starts_with('<') {
+    let session = hook.session_id.as_deref().unwrap_or_default();
+    let seen = crate::recall::transcript_seen(db, session, hook.transcript_path.as_deref())?;
+    let selected = if prompt.trim_start().starts_with('<') || prompt.trim().is_empty() {
         vec![]
     } else {
-        crate::semantic::related(prompt)
-            .into_iter()
-            .map(|hit| hit.path)
-            .collect()
+        select(db, crate::semantic::related(prompt), &seen)?
     };
-    crate::recall::mark_seen(db, hook.session_id.as_deref().unwrap_or_default(), &pages)?;
-    if !pages.is_empty() {
-        println!(
-            "claude-wiki: pages that may already cover this: {}. Read one with `claude-wiki search <terms>` or the Read tool if it is relevant; otherwise ignore this note and do not reply to it.",
-            pages.join(", ")
-        );
+    let paths: Vec<_> = selected.iter().map(|(path, _)| path.clone()).collect();
+    crate::recall::mark_seen(db, session, &paths)?;
+    if !selected.is_empty() {
+        let root = root.canonicalize()?;
+        let pages = selected
+            .iter()
+            .map(|(path, title)| {
+                format!(
+                    "{} ({})",
+                    root.join(path).display(),
+                    title.chars().take(120).collect::<String>()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        println!("claude-wiki: pages that may already cover this: {pages}. Read one if it bears on the request; otherwise ignore this note and do not reply to it.");
+        crate::usage::log(&root, session, "remind", &paths);
     }
     if let Some(message) = update(db, hook, args.interval)? {
         println!("{message}");
@@ -106,6 +142,57 @@ pub fn run(db: &Connection, args: &Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn filtering_skips_history_seen_blocked_and_caps_after_filtering() -> Result<()> {
+        let mut wiki = crate::usage::tests::Wiki::new()?;
+        for name in [
+            "history/past",
+            "knowledge/seen",
+            "knowledge/blocked",
+            "knowledge/a",
+            "knowledge/b",
+            "knowledge/c",
+            "knowledge/d",
+        ] {
+            wiki.page(
+                &format!("pages/{name}.md"),
+                "---\ntitle: Test\ncreated: 2020-01-01\n---\nbody",
+            )?;
+        }
+        wiki.index.execute(
+            "update files set blocked='secret' where path='pages/knowledge/blocked.md'",
+            [],
+        )?;
+        let hits = [
+            "history/past",
+            "knowledge/seen",
+            "knowledge/blocked",
+            "knowledge/a",
+            "knowledge/b",
+            "knowledge/c",
+            "knowledge/d",
+        ]
+        .into_iter()
+        .map(|path| crate::semantic::Hit {
+            path: path.into(),
+            section: None,
+        })
+        .collect();
+        let selected = select(
+            &wiki.index,
+            hits,
+            &HashSet::from(["pages/knowledge/seen.md".into()]),
+        )?;
+        assert_eq!(
+            selected.iter().map(|p| p.0.as_str()).collect::<Vec<_>>(),
+            [
+                "pages/knowledge/a.md",
+                "pages/knowledge/b.md",
+                "pages/knowledge/c.md"
+            ]
+        );
+        Ok(())
+    }
     #[test]
     fn only_assistant_tool_commands_reset() {
         assert!(ran_sync(br#"{"type":"assistant","message":{"content":[{"type":"tool_use","input":{"command":"claude-wiki sync pages/knowledge/x.md"}}]}}"#));

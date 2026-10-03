@@ -345,8 +345,11 @@ pub fn mark_seen(db: &Connection, session: &str, paths: &[String]) -> Result<()>
     Ok(())
 }
 
-fn transcript_seen(db: &Connection, hook: &Hook) -> Result<HashSet<String>> {
-    let id = hook.session_id.as_deref().unwrap_or_default();
+pub fn transcript_seen(
+    db: &Connection,
+    id: &str,
+    transcript_path: Option<&str>,
+) -> Result<HashSet<String>> {
     let mut seen: HashSet<String> = db
         .prepare("select path from recall_seen where session_id = ?")?
         .query_map([id], |r| r.get(0))?
@@ -360,7 +363,7 @@ fn transcript_seen(db: &Connection, hook: &Hook) -> Result<HashSet<String>> {
         .optional()?
         .unwrap_or(0);
     let mut added = vec![];
-    if let Some(path) = &hook.transcript_path {
+    if let Some(path) = transcript_path {
         match File::open(path) {
             Ok(file) => {
                 if file.metadata()?.len() < offset as u64 {
@@ -412,7 +415,11 @@ fn decide(root: &Path, db: &Connection, hook: &Hook, args: &Args) -> Result<Opti
     let seen = if args.explain {
         HashSet::new()
     } else {
-        transcript_seen(db, hook)?
+        transcript_seen(
+            db,
+            hook.session_id.as_deref().unwrap_or_default(),
+            hook.transcript_path.as_deref(),
+        )?
     };
     let mut mode = None;
     let mut windows = vec![];
@@ -483,6 +490,16 @@ fn decide(root: &Path, db: &Connection, hook: &Hook, args: &Args) -> Result<Opti
         format!("claude-wiki: pages that may explain this {} failure: {pages}. Read one if it is relevant to what you are about to do; otherwise ignore this note and do not reply to it.", hook.tool_name)
     };
     mark_seen(db, hook.session_id.as_deref().unwrap_or_default(), &paths)?;
+    crate::usage::log(
+        root,
+        hook.session_id.as_deref().unwrap_or_default(),
+        if mode == Some("skill") {
+            "recall-skill"
+        } else {
+            "recall-failure"
+        },
+        &paths,
+    );
     Ok(Some(
         json!({"hookSpecificOutput": {"hookEventName": hook.hook_event_name, "additionalContext": message}}),
     ))
@@ -1051,7 +1068,12 @@ mod tests {
             transcript_path: Some(path.to_string_lossy().into_owned()),
             ..Hook::default()
         };
-        assert!(transcript_seen(&wiki.db, &h)?.is_empty());
+        assert!(transcript_seen(
+            &wiki.db,
+            h.session_id.as_deref().unwrap_or_default(),
+            h.transcript_path.as_deref()
+        )?
+        .is_empty());
         let line = |role: &str, part: &str, input: Value| {
             json!({"type":role, "message":{"content":[{"type":part, "input":input}]}}).to_string()
         };
@@ -1068,24 +1090,60 @@ mod tests {
             json!({"file_path":wiki.root.join("pages/knowledge/two.md")}),
         );
         fs::write(&path, format!("bad json\n{ignored}\n{prose}\n{one}\n{two}"))?;
-        let seen = transcript_seen(&wiki.db, &h)?;
+        let seen = transcript_seen(
+            &wiki.db,
+            h.session_id.as_deref().unwrap_or_default(),
+            h.transcript_path.as_deref(),
+        )?;
         assert_eq!(seen, HashSet::from(["pages/knowledge/one.md".into()]));
         fs::OpenOptions::new()
             .append(true)
             .open(&path)?
             .write_all(b"\n")?;
-        assert_eq!(transcript_seen(&wiki.db, &h)?.len(), 2);
+        assert_eq!(
+            transcript_seen(
+                &wiki.db,
+                h.session_id.as_deref().unwrap_or_default(),
+                h.transcript_path.as_deref()
+            )?
+            .len(),
+            2
+        );
         let three = line(
             "assistant",
             "tool_use",
             json!({"command":"cat pages/knowledge/three.md"}),
         );
         fs::write(&path, format!("{three}\n"))?;
-        assert_eq!(transcript_seen(&wiki.db, &h)?.len(), 3);
+        assert_eq!(
+            transcript_seen(
+                &wiki.db,
+                h.session_id.as_deref().unwrap_or_default(),
+                h.transcript_path.as_deref()
+            )?
+            .len(),
+            3
+        );
         mark_seen(&wiki.db, "", &["knowledge/four".into()])?;
-        assert_eq!(transcript_seen(&wiki.db, &h)?.len(), 4);
+        assert_eq!(
+            transcript_seen(
+                &wiki.db,
+                h.session_id.as_deref().unwrap_or_default(),
+                h.transcript_path.as_deref()
+            )?
+            .len(),
+            4
+        );
         h.session_id = Some("other".into());
-        assert_eq!(transcript_seen(&wiki.db, &h)?.len(), 1);
+        assert_eq!(
+            transcript_seen(
+                &wiki.db,
+                h.session_id.as_deref().unwrap_or_default(),
+                h.transcript_path.as_deref()
+            )?
+            .len(),
+            1
+        );
         Ok(())
     }
 }

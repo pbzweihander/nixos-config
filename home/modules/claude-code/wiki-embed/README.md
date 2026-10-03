@@ -8,6 +8,8 @@ package and enables the user service at login. Models are loaded from
 wiki-embed-client '{"op":"status"}'
 wiki-embed-client '{"op":"related","prompt":"한국어 질문","n":3}'
 wiki-embed-client '{"op":"search","query":"VRAM pressure","n":10}'
+wiki-embed-client '{"op":"similar","text":"---\ntitle: Cache\n---\nPage body","exclude":"knowledge/cache","n":3,"min":0.85}'
+wiki-embed-client '{"op":"pairs","min":0.88,"types":["knowledge","followups"]}'
 journalctl --user -u wiki-embed
 ```
 
@@ -16,15 +18,32 @@ The socket is `$XDG_RUNTIME_DIR/claude-wiki/embed.sock`; its directory is mode
 JSON object and returns one newline-terminated JSON object. Invalid requests
 return `{"ok":false,"error":"..."}`. Requests are limited to 1 MiB, `n` to 1–1000,
 and incomplete requests time out after two seconds. A missing `n` defaults to
-3 for `related` and 10 for `search`.
+3 for `related` and `similar`, and 10 for `search`.
 
-Both operations rank distinct pages by their best 180-word chunk (40-word
+`related` and `search` rank distinct pages by their best 180-word chunk (40-word
 overlap). GPU retrieval reranks the ten best pages using raw cross-encoder
-logits. `related` filters each result by `WIKI_EMBED_RERANK_THRESHOLD` (default
+logits. `related` filters each result, regardless of `n`, by `WIKI_EMBED_RERANK_THRESHOLD` (default
 0.274) or `WIKI_EMBED_COSINE_THRESHOLD` (0.654). Rules that normalise a score
 against the other candidates -- a top-two gap, a margin, a z-score -- were
 measured and are both worse and more sensitive to a single outlier, so the raw
 score is the only test. Explicit `search` returns the top matches with no cutoff.
+
+`similar` chunks the supplied page text with the same title/tag prefix and
+180-word windows as indexing, encodes them as passages, and averages then
+L2-normalizes the chunk vectors. Each snapshot caches the same normalized mean
+for every indexed page. It returns up to `n` pages with cosine at least `min`,
+excluding either the page ID (`knowledge/cache`) or relative path
+(`pages/knowledge/cache.md`) in `exclude`, as `{"path":"knowledge/other","score":0.91}`.
+It does not rerank.
+
+`pairs` compares page vectors for the requested types (`knowledge`, `followups`,
+`projects`, `history`). It returns `{"a":"knowledge/one","b":"knowledge/two","score":0.91}`
+items at or above `min`, sorted by descending score with page IDs breaking ties,
+capped at 500. The CLI filters closed follow-ups from its lint worklist. Both new
+operations require a finite `min` between -1 and 1 and use the usual
+`{"ok":true,"tier":"cpu","results":[...]}` envelope. The Rust client gives them
+5,000 ms by default (`CLAUDE_WIKI_SEMANTIC_BATCH_TIMEOUT_MS`); hooks keep their
+separate 300 ms budget.
 
 Both tiers run bge-m3, so there is one shared in-memory index and vector file,
 with no re-embedding when the tier changes. When the card has room at startup,

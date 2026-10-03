@@ -113,6 +113,8 @@ class Snapshot:
         self.entries = tuple(entries)
         self.indexed_at = indexed_at
         self.rows = tuple((entry.page, chunk) for entry in self.entries for chunk in entry.chunks)
+        self.page_vectors = (np.stack([page_vector(entry.vectors) for entry in self.entries])
+                             if self.entries else np.empty((0, 0), dtype=np.float32))
         self.vectors = (np.concatenate([entry.vectors for entry in self.entries])
                         if self.rows else np.empty((0, 0), dtype=np.float32))
 
@@ -251,3 +253,39 @@ def retrieve(snapshot, model, tier, query, op, n, thresholds):
         if len(result) >= n:
             break
     return result
+
+
+def page_vector(vectors):
+    mean = np.mean(vectors, axis=0)
+    norm = np.linalg.norm(mean)
+    return mean / norm if norm else np.zeros_like(mean)
+
+
+def similar(snapshot, model, text, exclude, n, minimum):
+    if not snapshot.entries:
+        return []
+    page_id = exclude.removeprefix("pages/").removesuffix(".md")
+    chunks = chunk_page(text, page_id)
+    vectors = np.concatenate([model.encode_passages([c.text for c in chunks[i:i + 8]])
+                              for i in range(0, len(chunks), 8)])
+    scores = snapshot.page_vectors @ page_vector(vectors)
+    hits = [{"path": entry.page.page_id, "score": float(score)}
+            for entry, score in zip(snapshot.entries, scores)
+            if entry.page.page_id != page_id and np.isfinite(score) and score >= minimum]
+    return sorted(hits, key=lambda hit: (-hit["score"], hit["path"]))[:n]
+
+
+def pairs(snapshot, minimum, types):
+    selected = [i for i, entry in enumerate(snapshot.entries)
+                if entry.page.page_id.split("/", 1)[0] in types]
+    hits = []
+    # One row at a time avoids a quadratic temporary matrix for large wikis.
+    for position, i in enumerate(selected):
+        rest = selected[position + 1:]
+        scores = snapshot.page_vectors[rest] @ snapshot.page_vectors[i]
+        for j, score in zip(rest, scores):
+            if np.isfinite(score) and score >= minimum:
+                a, b = sorted((snapshot.entries[i].page.page_id, snapshot.entries[j].page.page_id))
+                hits.append({"a": a, "b": b, "score": float(score)})
+        hits = sorted(hits, key=lambda hit: (-hit["score"], hit["a"], hit["b"]))[:500]
+    return hits

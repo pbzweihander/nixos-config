@@ -149,7 +149,39 @@ fn budgeted(pinned: &str, sections: &mut [Section], budget: usize) -> (String, u
     }
 }
 
+fn session_id() -> Option<String> {
+    use std::{
+        io::{self, IsTerminal, Read},
+        sync::mpsc,
+        thread,
+        time::Duration,
+    };
+    if io::stdin().is_terminal() {
+        return None;
+    }
+    let (send, receive) = mpsc::channel();
+    thread::Builder::new()
+        .spawn(move || {
+            let mut input = String::new();
+            let id = io::stdin()
+                .take(1024 * 1024)
+                .read_to_string(&mut input)
+                .ok()
+                .and_then(|_| serde_json::from_str::<serde_json::Value>(&input).ok())
+                .and_then(|v| v["session_id"].as_str().map(str::to_owned));
+            let _ = send.send(id);
+        })
+        .ok()?;
+    receive
+        .recv_timeout(Duration::from_millis(200))
+        .ok()
+        .flatten()
+}
+
 pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
+    let session = session_id();
+    let mut injected = vec![];
+    let mut listed = std::collections::HashMap::new();
     let total: i64 = db.query_row("select count(*) from files", [], |r| r.get(0))?;
     let mut pinned = format!("Shared wiki: {total} pages under {}/. Search it with `claude-wiki search <terms>` before non-trivial work; load the claude-wiki skill before writing to it.\n", root.display());
     let project = current_project(Path::new("."));
@@ -165,6 +197,7 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
             )
             .optional()?;
         if let Some(row) = row {
+            injected.push(overview.clone());
             if !row.blocked.is_empty() {
                 pinned += &format!("\n{}\n", row.blocked_line(&overview));
             } else {
@@ -226,6 +259,12 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
             .collect();
         for row in rows {
             seen.insert(row.path.clone());
+            if matches!(name, "follow-ups" | "knowledge") {
+                listed
+                    .entry(name)
+                    .or_insert_with(Vec::new)
+                    .push(row.path.clone());
+            }
             if !row.blocked.is_empty() {
                 items.push(row.blocked_line(&row.path));
             } else {
@@ -277,6 +316,14 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
         eprintln!("warning: context is {used} chars; protected header and overview exceed the {} char budget", args.budget);
     }
     print!("{text}");
+    if let Some(session) = session {
+        for section in &sections {
+            if let Some(paths) = listed.get(section.name) {
+                injected.extend(paths.iter().take(section.items.len()).cloned());
+            }
+        }
+        crate::usage::log(root, &session, "context", &injected);
+    }
     Ok(())
 }
 

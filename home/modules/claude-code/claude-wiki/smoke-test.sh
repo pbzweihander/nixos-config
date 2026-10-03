@@ -84,9 +84,19 @@ printf -- '---\ntitle: no status\nproject: demo\ncreated: 2026-09-16\n---\nbody\
 printf 'no frontmatter\n' >"$P/knowledge/bare.md"
 printf -- '---\ntitle: [unclosed\n---\nbody\n' >"$P/history/2026-09-16-bad.md"
 
+expect_code 2 "$wiki" sync
+check "sync refuses a page without frontmatter" "bare.md has no frontmatter" echo "$out"
+check "sync refuses a follow-up without status" "no-status.md has no status" echo "$out"
+check "invalid YAML blocks sync" 'error: pages/history/2026-09-16-bad.md has invalid YAML' echo "$out"
+if git -C "$CLAUDE_WIKI_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
+  fail "invalid frontmatter made a commit" sync "$out"
+fi
+expect_code 2 "$wiki" check
+check "invalid YAML still indexes the body" "2026-09-16-bad.md" "$wiki" search body
+printf -- '---\ntitle: bare\ncreated: 2026-09-16\n---\nno frontmatter\n' >"$P/knowledge/bare.md"
+sed -i '/title: no status/a status: open' "$P/followups/no-status.md"
+printf -- '---\ntitle: repaired\ncreated: 2026-09-16\n---\nbody\n' >"$P/history/2026-09-16-bad.md"
 expect_code 1 "$wiki" sync
-check "sync warns about a page without frontmatter" "bare.md has no frontmatter" echo "$out"
-check "sync warns about a follow-up without status" "no-status.md has no status" echo "$out"
 check "sync committed everything" "nothing to commit" "$wiki" sync
 check "rebuild" "nothing to commit" "$wiki" sync --rebuild
 
@@ -171,7 +181,7 @@ expect_code 1 "$wiki" sync pages/knowledge/secret.md
 check "path-scoped sync ignores unrelated blocked page" 'committed:' echo "$out"
 rm "$P/knowledge/comment.md"
 "$wiki" sync >/dev/null
-expect_code 1 "$wiki" check pages/knowledge/bare.md
+expect_code 0 "$wiki" check pages/knowledge/bare.md
 expect_code 0 "$wiki" check pages/knowledge/secret.md
 expect_code 1 "$wiki" sync ../outside.md
 check "outside paths refused" 'not inside the wiki' echo "$out"
@@ -470,5 +480,18 @@ check "deleted target becomes missing" 'pages/knowledge/nix-sandbox.md: \[missin
 check "deletion commit removes target" '^D.*pages/knowledge/nix-sandbox.md' git -C "$CLAUDE_WIKI_DIR" diff-tree --no-commit-id --name-status -r HEAD
 rm "$P/history/link-source.md"
 check "removed source has no links" '(none)' "$wiki" links knowledge/replica-notes
+
+check "usage database is git-ignored" 'usage.sqlite\*' cat "$CLAUDE_WIKI_DIR/.gitignore"
+mkdir -p "$sessions_dir/usage/parent/subagents"
+cp "$fixtures/usage.jsonl" "$sessions_dir/usage/parent/subagents/agent.jsonl"
+check "stats scans subagent wiki access" 'knowledge: .*1 cross-session' "$wiki" stats
+check "stats JSON" '"cross_session_read":1' "$wiki" stats --json
+check "lint worklist" 'missing-queries (' "$wiki" lint
+check "lint JSON" '"unread":' "$wiki" lint --json
+before=$(git -C "$CLAUDE_WIKI_DIR" rev-parse HEAD)
+printf -- '---\ntitle: broken: title\ncreated: 2026-09-16\n---\nbody\n' >"$P/knowledge/invalid-title.md"
+expect_code 2 "$wiki" sync pages/knowledge/invalid-title.md
+check "title hint" 'quote the title: title: "broken: title"' echo "$out"
+[ "$(git -C "$CLAUDE_WIKI_DIR" rev-parse HEAD)" = "$before" ] || fail "invalid YAML changed HEAD" sync "$out"
 
 echo "claude-wiki smoke test passed"

@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     env,
     io::{Read, Write},
@@ -21,14 +21,30 @@ pub struct Hit {
 #[derive(Serialize)]
 #[serde(tag = "op", rename_all = "lowercase")]
 enum Request {
-    Related { prompt: String, n: i64 },
-    Search { query: String, n: i64 },
+    Related {
+        prompt: String,
+        n: i64,
+    },
+    Search {
+        query: String,
+        n: i64,
+    },
+    Similar {
+        text: String,
+        exclude: String,
+        n: i64,
+        min: f64,
+    },
+    Pairs {
+        min: f64,
+        types: Vec<String>,
+    },
 }
 
 #[derive(Deserialize)]
-struct Response {
+struct Response<T> {
     ok: bool,
-    results: Option<Vec<WireHit>>,
+    results: Option<Vec<T>>,
 }
 
 #[derive(Deserialize)]
@@ -72,7 +88,11 @@ fn remaining(deadline: Instant) -> Option<Duration> {
         .filter(|left| !left.is_zero())
 }
 
-fn exchange(path: &Path, request: Request, deadline: Instant) -> Option<Vec<Hit>> {
+fn exchange<T: DeserializeOwned>(
+    path: &Path,
+    request: Request,
+    deadline: Instant,
+) -> Option<Vec<T>> {
     let mut bytes = serde_json::to_vec(&request).ok()?;
     bytes.push(b'\n');
     if bytes.len() > MAX_MESSAGE_BYTES {
@@ -106,41 +126,78 @@ fn exchange(path: &Path, request: Request, deadline: Instant) -> Option<Vec<Hit>
             return None;
         }
         if newline.is_some() {
-            let response: Response = serde_json::from_slice(&bytes).ok()?;
-            return if response.ok {
-                response
-                    .results?
-                    .into_iter()
-                    .map(WireHit::into_hit)
-                    .collect()
-            } else {
-                None
-            };
+            let response: Response<T> = serde_json::from_slice(&bytes).ok()?;
+            return if response.ok { response.results } else { None };
         }
     }
 }
 
-fn request_at(path: PathBuf, request: Request, timeout: Duration) -> Vec<Hit> {
-    let Some(deadline) = Instant::now().checked_add(timeout) else {
-        return vec![];
-    };
-    if remaining(deadline).is_none() {
-        return vec![];
-    }
+fn exchange_at<T: DeserializeOwned + Send + 'static>(
+    path: PathBuf,
+    request: Request,
+    timeout: Duration,
+) -> Option<Vec<T>> {
+    let deadline = Instant::now().checked_add(timeout)?;
+    remaining(deadline)?;
     let (send, receive) = mpsc::channel();
     // UnixStream has no connect timeout. Keep the whole exchange off the caller
     // so even a full listen backlog cannot hold the hook beyond its deadline.
     if thread::Builder::new()
         .spawn(move || {
-            let _ = send.send(exchange(&path, request, deadline).unwrap_or_default());
+            let _ = send.send(exchange(&path, request, deadline));
         })
         .is_err()
     {
-        return vec![];
+        return None;
     }
     receive
         .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .ok()
+        .flatten()
+}
+
+fn request_at(path: PathBuf, request: Request, timeout: Duration) -> Vec<Hit> {
+    exchange_at::<WireHit>(path, request, timeout)
+        .and_then(|rows| rows.into_iter().map(WireHit::into_hit).collect())
         .unwrap_or_default()
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Similar {
+    pub path: String,
+    pub score: f64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Pair {
+    pub a: String,
+    pub b: String,
+    pub score: f64,
+}
+
+fn batch<T: DeserializeOwned + Send + 'static>(request: Request) -> Option<Vec<T>> {
+    let timeout = env::var("CLAUDE_WIKI_SEMANTIC_BATCH_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5000);
+    exchange_at(socket_path()?, request, Duration::from_millis(timeout))
+}
+
+pub fn similar(text: &str, exclude: &str, min: f64) -> Vec<Similar> {
+    batch(Request::Similar {
+        text: text.into(),
+        exclude: exclude.into(),
+        n: 3,
+        min,
+    })
+    .unwrap_or_default()
+}
+
+pub fn pairs(min: f64) -> Option<Vec<Pair>> {
+    batch(Request::Pairs {
+        min,
+        types: vec!["knowledge".into(), "followups".into()],
+    })
 }
 
 fn request(request: Request) -> Vec<Hit> {
@@ -157,7 +214,7 @@ fn request(request: Request) -> Vec<Hit> {
 pub fn related(prompt: &str) -> Vec<Hit> {
     request(Request::Related {
         prompt: prompt.to_owned(),
-        n: 3,
+        n: 10,
     })
 }
 

@@ -36,7 +36,7 @@ pub struct Args {
     pub reindex: bool,
 }
 
-fn source_dirs() -> Result<Vec<PathBuf>> {
+pub fn source_dirs() -> Result<Vec<PathBuf>> {
     let fallback = env_path("CLAUDE_CONFIG_DIR")
         .unwrap_or_else(|| home().join(".claude"))
         .join("projects");
@@ -77,7 +77,7 @@ fn existing<T>(result: std::io::Result<T>) -> Result<Option<T>> {
     }
 }
 
-fn transcript_paths(dir: &Path) -> Result<Vec<PathBuf>> {
+pub fn transcript_paths(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut paths = vec![];
     if !dir.exists() {
         return Ok(paths);
@@ -270,7 +270,7 @@ fn refresh(db: &mut Connection, dirs: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
-fn date(value: &str, now: DateTime<Utc>) -> Result<String> {
+pub fn date(value: &str, now: DateTime<Utc>) -> Result<String> {
     let time = if let Ok(date) = NaiveDate::parse_from_str(value, "%Y-%m-%d") {
         date.and_hms_opt(0, 0, 0).unwrap().and_utc()
     } else {

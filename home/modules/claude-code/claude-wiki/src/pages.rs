@@ -220,13 +220,27 @@ pub fn parse(text: &str, rel: &str) -> Page {
             Ok(_) => page
                 .problems
                 .push("has frontmatter that is not a YAML mapping".into()),
-            Err(e) => page.problems.push(format!(
-                "has invalid YAML frontmatter: {}",
-                e.to_string()
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            )),
+            Err(e) => {
+                let mut problem = format!(
+                    "has invalid YAML frontmatter: {}",
+                    e.to_string()
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                );
+                if let Some(title) = m[1]
+                    .lines()
+                    .find_map(|line| line.strip_prefix("title:").map(str::trim))
+                {
+                    if title.contains(": ") && !title.starts_with(['\'', '"', '|', '>']) {
+                        problem += &format!(
+                            "; quote the title: title: {}",
+                            serde_json::to_string(title).unwrap()
+                        );
+                    }
+                }
+                page.problems.push(problem);
+            }
         }
     } else {
         page.problems.push("has no frontmatter".into());

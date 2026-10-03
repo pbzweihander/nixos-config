@@ -32,6 +32,30 @@ impl Wiki {
         }
         let wiki = Self(dir);
         run(wiki.command(&["list"]), "");
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(wiki.0.join("wiki"))
+            .args(["add", "pages"])
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(wiki.0.join("wiki"))
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "fixture"
+            ])
+            .status()
+            .unwrap()
+            .success());
         wiki
     }
 
@@ -313,8 +337,8 @@ fn reminder_sends_raw_korean_and_keeps_nudge() {
         &json!({"session_id": "korean", "prompt": prompt}).to_string(),
         json!({"ok": true, "tier": "cpu", "results": [{"path": "knowledge/foo", "score": 1.0}]}),
     );
-    assert_eq!(request, json!({"op": "related", "prompt": prompt, "n": 3}));
-    assert_eq!(output.lines().next().unwrap(), "claude-wiki: pages that may already cover this: knowledge/foo. Read one with `claude-wiki search <terms>` or the Read tool if it is relevant; otherwise ignore this note and do not reply to it.");
+    assert_eq!(request, json!({"op": "related", "prompt": prompt, "n": 10}));
+    assert_eq!(output.lines().next().unwrap(), format!("claude-wiki: pages that may already cover this: {} (foo cache notes). Read one if it bears on the request; otherwise ignore this note and do not reply to it.", wiki.0.join("wiki/pages/knowledge/foo.md").display()));
     assert!(output.contains("claude-wiki: 1 prompts since"));
     let recall = run(wiki.command(&["recall"]), &recall_hook);
     assert!(
@@ -401,4 +425,352 @@ fn timeout_override_keeps_stalled_daemon_from_delaying_nudge() {
     assert!(elapsed < Duration::from_millis(300), "took {elapsed:?}");
     assert!(output.starts_with("claude-wiki: 1 prompts since"));
     assert_eq!(output.lines().count(), 1);
+}
+
+#[test]
+fn reminder_and_recall_log_only_emitted_pages_and_share_seen_state() {
+    let wiki = Wiki::new();
+    for name in ["foo", "bar"] {
+        let path = wiki.0.join(format!("wiki/pages/knowledge/{name}.md"));
+        fs::write(
+            &path,
+            fs::read_to_string(&path)
+                .unwrap()
+                .replace("project: demo\n", ""),
+        )
+        .unwrap();
+    }
+    let hook = json!({"session_id":"shared", "hook_event_name":"PreToolUse", "tool_name":"Skill", "tool_input":{"skill":"cache"}}).to_string();
+    let recall = run(wiki.command(&["recall"]), &hook);
+    assert!(recall.contains("foo cache notes"));
+    let (output, _) = wiki.respond(&["remind"], &json!({"session_id":"shared", "prompt":"cache"}).to_string(),
+        json!({"ok":true, "results":[{"path":"knowledge/foo", "score":1.0}, {"path":"knowledge/bar", "score":0.9}]}));
+    assert!(output.is_empty());
+    let db = rusqlite::Connection::open(wiki.0.join("wiki/usage.sqlite")).unwrap();
+    assert_eq!(
+        db.query_row(
+            "select count(*) from injections where source='recall-skill' and session_id='shared'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2
+    );
+    assert_eq!(
+        db.query_row(
+            "select count(*) from injections where source='remind'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    let output = run_output(wiki.command(&["sync", "--rebuild"]), "");
+    assert!(matches!(output.status.code(), Some(0 | 1)));
+    assert_eq!(
+        db.query_row("select count(*) from injections", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+}
+
+#[test]
+fn context_logs_only_overview_and_retained_project_lists_and_bounds_stdin() {
+    let wiki = Wiki::new();
+    for (path, text) in [
+        (
+            "projects/wiki",
+            "---\ntitle: Overview\ncreated: 2020-01-01\n---\nProject body.",
+        ),
+        (
+            "followups/task",
+            "---\ntitle: Task\ncreated: 2020-01-01\nproject: wiki\nstatus: open\n---\nTask body.",
+        ),
+        (
+            "knowledge/project",
+            "---\ntitle: Project\ncreated: 2020-01-01\nproject: wiki\n---\nFacts.",
+        ),
+    ] {
+        fs::write(wiki.0.join(format!("wiki/pages/{path}.md")), text).unwrap();
+    }
+    let mut command = wiki.command(&["context"]);
+    command.current_dir(wiki.0.join("wiki"));
+    let output = run(
+        command,
+        &json!({"session_id":"context-session"}).to_string(),
+    );
+    assert!(output.contains("Recently updated:"));
+    let db = rusqlite::Connection::open(wiki.0.join("wiki/usage.sqlite")).unwrap();
+    let paths: Vec<String> = db
+        .prepare("select path from injections order by path")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        paths,
+        [
+            "pages/followups/task.md",
+            "pages/knowledge/project.md",
+            "pages/projects/wiki.md"
+        ]
+    );
+    let mut command = wiki.command(&["context", "--budget", "1"]);
+    command.current_dir(wiki.0.join("wiki"));
+    let output = run_output(command, &json!({"session_id":"trimmed"}).to_string());
+    assert!(output.status.success());
+    assert_eq!(
+        db.query_row(
+            "select count(*) from injections where session_id='trimmed'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    let mut child = wiki
+        .command(&["context"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdin = child.stdin.take().unwrap();
+    let start = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(status.success());
+            break;
+        }
+        if start.elapsed() > Duration::from_secs(2) {
+            child.kill().unwrap();
+            panic!("context blocked on stdin");
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(start.elapsed() < Duration::from_millis(800));
+    drop(stdin);
+    assert_eq!(
+        db.query_row("select count(*) from injections", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        4
+    );
+}
+
+#[test]
+fn new_page_duplicate_notes_and_lint_pairs_use_batch_protocol() {
+    let wiki = Wiki::new();
+    let text = "---\ntitle: New cache\ncreated: 2020-01-01\n---\nCache.";
+    fs::write(wiki.0.join("wiki/pages/knowledge/new.md"), text).unwrap();
+    let (output, request) = wiki.respond_output(
+        &["check", "knowledge/new"],
+        "",
+        json!({"ok":true,"results":[{"path":"knowledge/foo", "score":0.91}]}),
+    );
+    assert!(output.status.success());
+    assert_eq!(
+        request,
+        json!({"op":"similar", "text":text, "exclude":"pages/knowledge/new.md", "n":3, "min":0.85})
+    );
+    assert!(String::from_utf8(output.stderr)
+        .unwrap()
+        .contains("(0.91, foo cache notes)"));
+    fs::remove_file(wiki.0.join("embed.sock")).unwrap();
+    fs::write(
+        wiki.0.join("wiki/pages/followups/closed.md"),
+        "---\ntitle: Closed\ncreated: 2020-01-01\nstatus: done\n---\nCache.",
+    )
+    .unwrap();
+    let (output, request) = wiki.respond(
+        &["lint", "--json"],
+        "",
+        json!({"ok":true,"results":[
+        {"a":"knowledge/foo", "b":"knowledge/bar", "score":0.9},
+        {"a":"knowledge/foo", "b":"followups/closed", "score":0.99}]}),
+    );
+    assert_eq!(
+        request,
+        json!({"op":"pairs", "min":0.88, "types":["knowledge","followups"]})
+    );
+    let report: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(report["duplicates"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn shrink_warning_commits_and_reports_exit_one() {
+    let wiki = Wiki::new();
+    let path = wiki.0.join("wiki/pages/knowledge/foo.md");
+    fs::write(
+        &path,
+        format!(
+            "---\ntitle: foo\ncreated: 2020-01-01\nqueries: [foo]\n---\n{}",
+            "x".repeat(5000)
+        ),
+    )
+    .unwrap();
+    let git = |args: &[&str]| {
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(wiki.0.join("wiki"))
+            .args(args)
+            .status()
+            .unwrap()
+            .success());
+    };
+    git(&["add", "pages/knowledge/foo.md"]);
+    git(&[
+        "-c",
+        "user.name=test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "-qm",
+        "long page",
+    ]);
+    fs::write(
+        &path,
+        "---\ntitle: foo\ncreated: 2020-01-01\nqueries: [foo]\n---\nShort.",
+    )
+    .unwrap();
+    let mut command = wiki.command(&["sync", "knowledge/foo"]);
+    command
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@example.com")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.com");
+    let output = run_output(command, "");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8(output.stderr)
+        .unwrap()
+        .contains("shrank from 5054 to 60 chars"));
+    assert!(String::from_utf8(output.stdout)
+        .unwrap()
+        .contains("committed:"));
+}
+
+#[test]
+fn context_waits_for_a_busy_lock_and_then_prints_its_summary() {
+    let wiki = Wiki::new();
+    let mut lock = fd_lock::RwLock::new(
+        fs::OpenOptions::new()
+            .write(true)
+            .open(wiki.0.join("wiki/.lock"))
+            .unwrap(),
+    );
+    let guard = lock.write().unwrap();
+    let mut child = wiki
+        .command(&["context"])
+        .env_remove("CLAUDE_WIKI_HOOK_LOCK_MS")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    thread::sleep(Duration::from_millis(150));
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "context skipped a busy lock"
+    );
+    drop(guard);
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert!(String::from_utf8(output.stdout)
+        .unwrap()
+        .starts_with("Shared wiki:"));
+}
+
+#[test]
+fn hooks_respect_lock_deadline_and_non_hooks_still_wait() {
+    let wiki = Wiki::new();
+    let mut lock = fd_lock::RwLock::new(
+        fs::OpenOptions::new()
+            .write(true)
+            .open(wiki.0.join("wiki/.lock"))
+            .unwrap(),
+    );
+    let guard = lock.write().unwrap();
+    for hook in ["context", "remind", "recall"] {
+        let mut command = wiki.command(&[hook]);
+        command.env("CLAUDE_WIKI_HOOK_LOCK_MS", "100");
+        let started = Instant::now();
+        let output = run_output(command, "");
+        assert!(started.elapsed() >= Duration::from_millis(100));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(output.status.success(), "{output:?}");
+        assert!(
+            output.stdout.is_empty() && output.stderr.is_empty(),
+            "{output:?}"
+        );
+    }
+    let mut child = wiki
+        .command(&["list"])
+        .env("CLAUDE_WIKI_HOOK_LOCK_MS", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    thread::sleep(Duration::from_millis(150));
+    assert!(child.try_wait().unwrap().is_none());
+    drop(guard);
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8(output.stdout)
+        .unwrap()
+        .contains("foo cache notes"));
+}
+
+#[test]
+fn plain_check_uses_one_head_listing_and_no_per_page_git_show() {
+    let wiki = Wiki::new();
+    for i in 0..40 {
+        fs::write(
+            wiki.0.join(format!("wiki/pages/knowledge/check-{i}.md")),
+            "---\ntitle: Checked\ncreated: 2020-01-01\n---\nFacts.",
+        )
+        .unwrap();
+    }
+    for args in [
+        vec!["add", "pages"],
+        vec![
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            "check fixture",
+        ],
+    ] {
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(wiki.0.join("wiki"))
+            .args(args)
+            .status()
+            .unwrap()
+            .success());
+    }
+    let listener = wiki.listener();
+    let trace = wiki.0.join("git-trace.jsonl");
+    let mut command = wiki.command(&["check"]);
+    command.env("GIT_TRACE2_EVENT", &trace);
+    run(command, "");
+    assert_no_connection(&listener);
+    let events: Vec<Value> = fs::read_to_string(trace)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let calls: Vec<_> = events
+        .iter()
+        .filter(|event| event["event"] == "start")
+        .collect();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    let args = calls[0]["argv"].as_array().unwrap();
+    assert!(args.iter().any(|arg| arg == "ls-tree"));
+    assert!(!args.iter().any(|arg| arg == "show"));
 }
