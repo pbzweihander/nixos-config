@@ -67,6 +67,8 @@ let
     "rules/nix.md" = ./rules/nix.md;
     "skills/claude-wiki" = ./skills/claude-wiki;
     "skills/codex-implement" = ./skills/codex-implement;
+    # A plugin folder under skills/ loads as a mod (function hooks) in every session.
+    "skills/wiki-mod" = ./wiki-mod;
   };
   codexScripts = ".claude/skills/codex-implement/scripts";
 

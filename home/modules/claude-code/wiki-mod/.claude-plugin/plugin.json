@@ -1,0 +1,20 @@
+{
+  "name": "wiki-mod",
+  "version": "0.1.0",
+  "description": "Shared wiki suggestions for subagents and skills, session status, a wiki browser, and curator review.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "claudeWikiBin": {
+      "type": "string",
+      "title": "claude-wiki executable",
+      "description": "Executable name or absolute path to the claude-wiki CLI.",
+      "default": "claude-wiki"
+    },
+    "wikiCuratorBin": {
+      "type": "string",
+      "title": "wiki-curator executable",
+      "description": "Executable name or absolute path to the wiki-curator CLI.",
+      "default": "wiki-curator"
+    }
+  }
+}
