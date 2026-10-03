@@ -6,7 +6,7 @@ const PAGE = { path: '/wiki/pages/knowledge/build.md', rel: 'pages/knowledge/bui
 const OTHER = { path: '/wiki/pages/knowledge/testing.md', rel: 'pages/knowledge/testing.md', title: 'Testing', type: 'knowledge' }
 const RELATED = { pages: [{ ...PAGE, section: { heading: 'Compiler', start: 4, end: 9 } }], overview: '/wiki/projects/demo.md' }
 const SUGGESTIONS = { pages: [
-  { ...PAGE, sources: ['subagent', 'context'], at: 1790985600 },
+  { ...PAGE, sources: ['subagent', 'context', 'skill-prompt'], at: 1790985600 },
   { ...OTHER, title: null, sources: ['remind'], at: 1790985600 },
   { path: '/wiki/pages/failure/race.md', rel: 'pages/failure/race.md', title: 'Race', sources: ['recall-failure'], at: 1790985600 },
 ] }
@@ -192,9 +192,18 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: 'wiki', props: PANE })
     expect((await ui.find({ key: 'wiki-body' }))?.props.width).toBe(47)
     expect(await ui.find({ type: 'Text', text: 'Suggested in this session' })).toBeDefined()
-    expect((await ui.find({ key: 'suggested-0' }))?.text).toBe('Build notes (subagent, context)')
-    expect((await ui.find({ key: 'suggested-1' }))?.text).toMatch('pages/knowledge/testing.md')
+    expect((await ui.find({ key: 'suggested-0' }))?.text).toBe('1')
+    expect((await ui.find({ key: 'suggested-row-0' }))?.text).toMatch('Build notes')
+    expect((await ui.find({ key: 'suggested-row-0' }))?.text).toMatch('subagent')
+    expect((await ui.find({ key: 'suggested-row-1' }))?.text).toMatch('pages/knowledge/testing.md')
+    expect((await ui.find({ type: 'Text', text: ' subagent ' }))?.props.color).toBe('claude')
+    expect((await ui.find({ type: 'Text', text: ' remind ' }))?.props.color).toBe('warning')
+    expect((await ui.find({ type: 'Text', text: ' recall-failure ' }))?.props.color).toBe('permission')
+    expect((await ui.find({ type: 'Text', text: ' skill-prompt ' }))?.props.color).toBe('success')
+    expect((await ui.find({ key: 'suggested-0' }))?.props.hotkey).toBe('1')
     await ui.press({ key: 'suggested-0' })
+    expect((await ui.find({ key: 'suggested-row-0' }))?.text).toMatch('▶')
+    expect((await ui.find({ key: 'wiki-preview' }))?.props).toEqual(expect.objectContaining({ borderStyle: 'round', borderColor: 'permission' }))
     expect(w.reads).toContain(PAGE.path)
     expect((await ui.find({ key: 'preview' }))?.type).toBe('Markdown')
     expect((await ui.find({ key: 'preview' }))?.text).toBe('# Build\n\nBody text.')
@@ -206,7 +215,13 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect((await ui.find({ key: 'search' }))?.text).toBe('compiler  errors')
     await ui.input({ key: 'search', text: 'compiler  errors' })
     expect(w.calls.at(-1)).toEqual({ argv: ['claude-wiki', 'search', '--json', '--', 'compiler', 'errors'], init: { timeoutMs: 4000 } })
-    expect((await ui.find({ key: 'result-0' }))?.text).toBe('Testing · knowledge · 2026-10-02')
+    expect((await ui.find({ key: 'result-row-0' }))?.text).toMatch('Testing')
+    expect((await ui.find({ type: 'Text', text: '2026-10-02' }))?.props.dimColor).toBe(true)
+    expect((await ui.find({ type: 'Text', text: /^knowledge$/ }))?.props.color).toBe('permission')
+    expect((await ui.find({ key: 'result-0' }))?.props.hotkey).toBe('4')
+    const hotkeys = (await ui.findAll({ type: 'Button' })).map(button => button.props.hotkey).filter(Boolean)
+    expect(new Set(hotkeys).size).toBe(hotkeys.length)
+    expect((await ui.find({ key: 'wiki-actions' }))?.props.flexDirection).toBe('row')
     w.state.content = '\uFEFF---\r\nprivate: metadata\r\n---\r\n' + 'z'.repeat(9000)
     await ui.press({ key: 'result-0' })
     expect((await ui.find({ key: 'preview' }))?.text).toBe('z'.repeat(8000))
@@ -253,7 +268,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await w.clock.settle()
     await w.clock.advance(100)
     await Promise.all([slowSearch, newSearch])
-    expect((await ui.find({ key: 'result-0' }))?.text).toBe('Build notes · knowledge · 2026-10-03')
+    expect((await ui.find({ key: 'result-row-0' }))?.text).toMatch('Build notes')
+    expect((await ui.find({ key: 'result-row-0' }))?.text).toMatch('2026-10-03')
     expect((await ui.find({ key: 'search' }))?.text).toBe('new query')
 
     w.state.readDelay = 100

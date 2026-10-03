@@ -112,6 +112,65 @@ for (const failure of ['empty', 'bad JSON', 'bad shape', 'bad page', 'nonzero', 
 }
 
 for (const surface of ['terminal', 'desktop'] as const) {
+  test(`numbered selection and action hotkeys keep the confirmation gate on ${surface}`, async ($, on) => {
+    const w = world(on)
+    w.state.review = output({ items: Array.from({ length: 10 }, (_, index) => ({ ...BRANCH, id: `branch-${index}`, branch: `branch-${index}` })) })
+    await $.command.run(COMMAND)
+    const ui = await $.ui.mount({ plugin: 'wiki-mod', surface, component: 'Pane', requestId: 'wiki-review', props: PANE })
+    const pressHotkey = async (hotkey: string) => {
+      const buttons = (await ui.findAll({ type: 'Button' })).filter(button => button.props.hotkey === hotkey)
+      expect(buttons.length).toBe(1)
+      await ui.press({ key: buttons[0]?.key ?? '' })
+    }
+    expect((await ui.find({ key: 'review-item-8' }))?.props.hotkey).toBe('9')
+    expect((await ui.find({ key: 'review-item-9' }))?.props.hotkey).toBeUndefined()
+    await pressHotkey('1')
+    expect((await ui.find({ key: 'review-actions' }))?.props.flexDirection).toBe('row')
+    expect((await ui.find({ key: 'land' }))?.props).toEqual(expect.objectContaining({ hotkey: 'l', variant: 'primary' }))
+    expect((await ui.find({ key: 'discard' }))?.props.hotkey).toBe('d')
+    expect((await ui.find({ key: 'refresh-review' }))?.props.hotkey).toBe('r')
+    expect((await ui.find({ key: 'close-review' }))?.props.role).toBe('dismiss')
+    await pressHotkey('l')
+    expect(w.mutations()).toEqual([])
+    await pressHotkey('n')
+    expect(w.mutations()).toEqual([])
+    await pressHotkey('d')
+    expect(w.mutations()).toEqual([])
+    expect((await ui.find({ key: 'review-confirmation' }))?.text).toMatch('Discard branch-0?')
+    w.state.action = output({ outcome: 'discarded' })
+    await pressHotkey('y')
+    expect(w.mutations().map(call => call.argv.slice(1))).toEqual([['discard', 'branch-0', '--json']])
+    await ui.unmount()
+  })
+
+  test(`large git show keeps individual files colored on ${surface}`, async ($, on) => {
+    const w = world(on)
+    const hunk = '@@ -1 +1 @@\n-' + 'a'.repeat(3000) + '\n+' + 'b'.repeat(3000) + '\n'
+    w.state.show.stdout = 'commit abc123\nAuthor: Person\n\n    Snapshot update\n\n snapshots.md | many changes\n\n' +
+      'diff --git a/snapshots.md b/snapshots.md\n--- a/snapshots.md\n+++ b/snapshots.md\n' + hunk + hunk.replace('@@ -1 +1 @@', '@@ -20 +20 @@') +
+      'diff --git a/old.md b/new.md\nrename from old.md\nrename to new.md\n--- a/old.md\n+++ b/new.md\n@@ -1 +1 @@\n-old\n+new\n' +
+      'diff --git a/added.md b/added.md\nnew file mode 100644\n--- /dev/null\n+++ b/added.md\n@@ -0,0 +1 @@\n+added\n' +
+      'diff --git a/deleted.md b/deleted.md\ndeleted file mode 100644\n--- a/deleted.md\n+++ /dev/null\n@@ -1 +0,0 @@\n-deleted\n'
+    await $.command.run(COMMAND)
+    const ui = await $.ui.mount({ plugin: 'wiki-mod', surface, component: 'Pane', requestId: 'wiki-review', props: PANE })
+    await ui.press({ key: 'review-item-0' })
+    const code = await ui.findAll({ type: 'Code' })
+    expect(code.length).toBe(4)
+    expect(code.map(element => element.props.path)).toEqual(['snapshots.md', 'new.md', 'added.md', 'deleted.md'])
+    for (const element of code) {
+      expect(element.props.format).toBe('diff')
+      expect(String(element.props.source).length).toBeLessThanOrEqual(10000)
+      expect(String(element.props.source)).toStartWith('@@ ')
+    }
+    expect((await ui.find({ type: 'Text', text: /^Snapshot update$/ }))?.props.dimColor).toBe(true)
+    expect(await ui.find({ type: 'Text', text: 'Author: Person' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: '1 hunk omitted' })).toBeDefined()
+    for (const [status, color] of [['M', 'warning'], ['R', 'permission'], ['A', 'success'], ['D', 'error']] as const) {
+      expect((await ui.find({ type: 'Text', text: new RegExp(`^ ${status} $`) }))?.props.color).toBe(color)
+    }
+    await ui.unmount()
+  })
+
   test(`curator command and wiki button open the review pane on ${surface}`, { options: { wikiCuratorBin: '/build/wiki curator' } }, async ($, on) => {
     const w = world(on)
     await $.session.start(START)
@@ -119,13 +178,23 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await $.command.run(COMMAND)
     const ui = await $.ui.mount({ plugin: 'wiki-mod', surface, component: 'Pane', requestId: 'wiki-review', props: PANE })
     expect((await ui.find({ key: 'review-body' }))?.props.width).toBe(51)
-    expect((await ui.find({ key: 'review-item-0' }))?.text).toBe('duplicates · rejected · Merge duplicate build notes · 2 pages')
-    expect((await ui.find({ key: 'review-item-1' }))?.text).toBe('snapshots · deferred · Needs approval · 0 pages')
+    expect((await ui.find({ key: 'review-item-0' }))?.text).toBe('1')
+    expect((await ui.find({ key: 'review-item-0' }))?.props).toEqual(expect.objectContaining({ plain: true, hotkey: '1' }))
+    expect((await ui.find({ key: 'review-row-0' }))?.text).toMatch('rejected')
+    expect((await ui.find({ key: 'review-row-1' }))?.text).toMatch('deferred')
+    expect((await ui.find({ type: 'Text', text: '1 rejected' }))?.props).toEqual(expect.objectContaining({ color: 'error', inverse: true }))
+    expect((await ui.find({ type: 'Text', text: '1 deferred' }))?.props).toEqual(expect.objectContaining({ color: 'warning', inverse: true }))
     await ui.press({ key: 'review-item-0' })
-    expect(await ui.find({ type: 'Text', text: 'Reason: References need review' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'A backlink would break' })).toBeDefined()
+    expect((await ui.find({ key: 'review-row-0' }))?.text).toMatch('▶')
+    expect((await ui.find({ key: 'review-detail' }))?.props).toEqual(expect.objectContaining({ borderStyle: 'round', borderColor: 'error', paddingX: 1 }))
+    expect((await ui.find({ type: 'Text', text: 'Merge duplicate build notes' }))?.props.bold).toBe(true)
+    expect((await ui.find({ type: 'Text', text: '10-03 01:02' }))?.props.dimColor).toBe(true)
+    expect((await ui.find({ type: 'Text', text: 'References need review' }))?.props.color).toBe('error')
+    expect((await ui.find({ type: 'Text', text: '• A backlink would break' }))?.props.color).toBe('warning')
+    expect((await ui.find({ key: 'review-pages' }))?.text).toMatch('knowledge/a, knowledge/b')
     expect((await ui.find({ type: 'Code' }))?.props.format).toBe('diff')
-    expect((await ui.find({ type: 'Code' }))?.props.source).toBe(DIFF)
+    expect((await ui.find({ type: 'Code' }))?.props.source).toBe('@@ -1 +1 @@\n-old\n+new\n')
+    expect((await ui.find({ type: 'Code' }))?.props.path).toBe('pages/knowledge/a.md')
     expect(w.calls.at(-1)).toEqual({ argv: ['/build/wiki curator', 'show', BRANCH.id], init: { timeoutMs: 4000 } })
     expect(w.mutations()).toEqual([])
     const wiki = await $.ui.mount({ plugin: 'wiki-mod', surface, component: 'Pane', requestId: 'wiki', props: PANE })
@@ -144,7 +213,11 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.press({ key: 'review-item-0' })
     await ui.press({ key: 'land' })
     expect(w.mutations()).toEqual([])
-    expect((await ui.find({ key: 'confirm-land' }))?.text).toBe('Confirm Land')
+    expect((await ui.find({ key: 'confirm-land' }))?.text).toBe('Confirm')
+    expect((await ui.find({ key: 'confirm-land' }))?.props).toEqual(expect.objectContaining({ hotkey: 'y', variant: 'primary' }))
+    expect((await ui.find({ key: 'cancel-review' }))?.props.hotkey).toBe('n')
+    expect((await ui.find({ key: 'review-confirmation' }))?.props.borderColor).toBe('warning')
+    expect(await ui.find({ type: 'Text', text: 'This cherry-picks onto main.' })).toBeDefined()
     await ui.press({ key: 'cancel-review' })
     expect(await ui.find({ key: 'confirm-land' })).toBeUndefined()
     expect(w.mutations()).toEqual([])
@@ -160,6 +233,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await settled
     expect(w.mutations()).toEqual([{ argv: ['wiki-curator', 'land', BRANCH.branch, '--json'], init: { timeoutMs: 150000 } }])
     expect(await ui.find({ type: 'Text', text: 'Land: merged (def456)' })).toBeDefined()
+    expect((await ui.find({ type: 'Text', text: 'Land: merged (def456)' }))?.props.color).toBe('success')
     expect(w.statuses.at(-1)).toBe('wiki 0↑ · review 1')
     expect(await ui.find({ key: 'confirm-land' })).toBeUndefined()
     expect(w.calls.slice(-2).map(call => call.argv[1])).toEqual(['review', 'injections'])
@@ -178,6 +252,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.press({ key: 'confirm-discard' })
     expect(w.mutations()[0]).toEqual({ argv: ['wiki-curator', 'discard', DIFF_ITEM.id, '--json'], init: { timeoutMs: 4000 } })
     expect(await ui.find({ type: 'Text', text: 'Discard: deferred — A curator run is in progress' })).toBeDefined()
+    expect((await ui.find({ type: 'Text', text: 'Discard: deferred' }))?.props.color).toBe('warning')
     expect(w.statuses.at(-1)).toBe('wiki 0↑ · review 2')
     expect(await ui.find({ key: 'confirm-discard' })).toBeUndefined()
     await ui.press({ key: 'discard' })
@@ -223,7 +298,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ type: 'Code' })).toBeUndefined()
     const preview = await ui.find({ type: 'Text', text: 'diff --git' })
     expect(new TextEncoder().encode(preview?.text).length).toBeLessThanOrEqual(60000)
-    expect(await ui.find({ type: 'Text', text: 'Diff preview truncated at 60 KB.' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'total limit 60 KB.' })).toBeDefined()
     w.state.show = { ...output(null), stdout: 'old diff' }
     w.state.showDelay = 100
     const old = ui.press({ key: 'review-item-0' })
@@ -277,6 +352,7 @@ for (const scenario of ['deferred', 'invalid', 'bad JSON', 'timeout'] as const) 
       : scenario === 'invalid' ? 'Land: exit 2 — Invalid branch'
       : scenario === 'bad JSON' ? 'Land: invalid response' : 'Curator action failed or timed out.'
     expect(await ui.find({ type: 'Text', text: message })).toBeDefined()
+    expect((await ui.find({ type: 'Text', text: message }))?.props.color).toBe(scenario === 'deferred' ? 'warning' : 'error')
     expect(w.mutations().length).toBe(1)
     expect(w.calls.slice(-2).map(call => call.argv[1])).toEqual(['review', 'injections'])
     expect(await ui.find({ key: 'confirm-land' })).toBeUndefined()

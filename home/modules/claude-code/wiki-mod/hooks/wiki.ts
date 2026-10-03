@@ -131,7 +131,7 @@ export function parseReview(value: unknown): WikiReviewItem[] {
     return {
       id, kind: row.kind, outcome: row.outcome,
       branch: row.branch == null ? null : identifier(row.branch),
-      diff: nullableString(row.diff), commit: nullableString(row.commit),
+      diff: nullableString(row.diff), commit: nullableString(row.commit), run: nullableString(row.run),
       type: nullableString(row.type) ?? 'unknown',
       pages: row.pages == null ? [] : array(row.pages).map(string),
       summary: nullableString(row.summary) ?? '', reason: nullableString(row.reason) ?? '',

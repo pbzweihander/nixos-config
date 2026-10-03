@@ -2,6 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 import type { WikiPane, WikiReview, WikiReviewAction, WikiReviewConfirmation, WikiStats } from '../types'
 import { curatorSummary, injectionBlock, parseHits, parseRelated, parseReview, parseSuggestions, previewText, reviewDiff, reviewOutcome, skillBlock, statusText, textChunks, wikiLink } from './wiki'
+import { splitDiff } from './diff'
+import { clip, fileColor, outcomeColor, rowHotkey, runDate, shortPage, sourceColor } from './presentation'
 
 const PANE = 'wiki'
 const REVIEW_PANE = 'wiki-review'
@@ -43,7 +45,7 @@ async function refreshReview($: EngineInterface, curatorBin: string): Promise<vo
         const same = before !== undefined && after !== undefined && JSON.stringify(before) === JSON.stringify(after)
         return {
           ...value, items, listLoading: false, listError: '',
-          ...(same ? {} : { selectedId: null, diff: '', diffError: '', diffLoading: false, diffTruncated: false, selectionRequest: value.selectionRequest + 1 }),
+          ...(same ? {} : { selectedId: null, diff: '', diffView: undefined, diffError: '', diffLoading: false, diffTruncated: false, selectionRequest: value.selectionRequest + 1 }),
           confirmation: same ? value.confirmation : null,
         }
       })
@@ -94,7 +96,7 @@ async function selectReview($: EngineInterface, curatorBin: string, id: string):
   await quiet(async () => {
     const selected = await update($, review, value => value.operation || !value.items.some(item => item.id === id) ? value : {
       ...value, selectedId: id, selectionRequest: value.selectionRequest + 1, confirmation: null,
-      diff: '', diffLoading: true, diffTruncated: false, diffError: '', message: '',
+      diff: '', diffView: undefined, diffLoading: true, diffTruncated: false, diffError: '', message: '',
     })
     if (selected.operation || selected.selectedId !== id) return
     const { selectionRequest } = selected
@@ -102,8 +104,9 @@ async function selectReview($: EngineInterface, curatorBin: string, id: string):
       const result = await $.process.run([curatorBin, 'show', id], { timeoutMs: 4000 })
       if (result.exitCode !== 0 || result.isStdoutTruncated) throw new Error('Diff unavailable')
       const preview = reviewDiff(result.stdout)
+      const diffView = splitDiff(result.stdout)
       await update($, review, value => value.selectionRequest === selectionRequest
-        ? { ...value, diff: preview.text, diffTruncated: preview.truncated, diffLoading: false } : value)
+        ? { ...value, diff: preview.text, diffView, diffTruncated: diffView.truncated, diffLoading: false } : value)
     } catch {
       await update($, review, value => value.selectionRequest === selectionRequest
         ? { ...value, diffLoading: false, diffError: 'Could not load the diff. Select the item to retry.' } : value)
@@ -293,40 +296,65 @@ export const register: Register = (on, options) => {
       const { Box, Text, Button, Input, Markdown } = $.ui.resolve(e)
       const session = await read($, stats)
       const view = await read($, pane)
+      const columns = Math.max(1, e.props.bodyColumns)
       return (
-        <Box key="wiki-body" flexDirection="column" width={Math.max(1, e.props.bodyColumns)}>
-          <Text bold>Suggested in this session</Text>
-          {session.suggested.length === 0 && <Text dimColor>No suggestions yet.</Text>}
-          {session.suggested.map((page, index) => (
-            <Button key={`suggested-${index}`} label={`${page.title} (${page.sources.join(', ')})`}
-              onPress={() => selectPage($, page.path)} />
-          ))}
-          <Text bold>Search</Text>
-          <Input key="search" label="Search wiki" placeholder="Search terms" value={view.query} submitLabel="search" autoFocus
-            onInput={query => quiet(() => update($, pane, value => ({ ...value, query })))}
-            onSubmit={query => search($, bin, query)} />
-          {view.searching && <Text dimColor>Searching…</Text>}
-          {view.searchError && <Text>{view.searchError}</Text>}
-          {view.searched && !view.searching && !view.searchError && view.hits.length === 0 && <Text dimColor>No results.</Text>}
-          {view.hits.map((page, index) => (
-            <Button key={`result-${index}`} label={`${page.title} · ${page.type} · ${page.updated || 'unknown date'}`}
-              onPress={() => selectPage($, page.path)} />
-          ))}
-          <Text bold>Preview</Text>
-          {view.selected === null && <Text dimColor>Select a page to preview it.</Text>}
-          {view.selected !== null && <Text>{view.selected.title}</Text>}
-          {view.loading && <Text dimColor>Loading…</Text>}
-          {view.previewError && <Text>{view.previewError}</Text>}
-          {view.preview && <Markdown key="preview" text={view.preview} />}
-          {view.selected !== null && (
-            <Box flexDirection="column">
-              <Button key="insert-path" label="Insert path" onPress={() => insert($, 'path')} />
-              <Button key="insert-link" label="Insert link" onPress={() => insert($, 'link')} />
-            </Box>
-          )}
-          {view.actionError && <Text>{view.actionError}</Text>}
-          <Button key="review-curator" label="Review curator" onPress={() => openReview($, bin, curatorBin)} />
-          <Button key="close" label="Close" role="dismiss" onPress={() => quiet(() => $.ui.close({ id: PANE }))} />
+        <Box key="wiki-body" flexDirection="column" width={columns} gap={1}>
+          <Box key="wiki-header" flexDirection="row" flexWrap="wrap" gap={1}>
+            <Text bold color="claude">Shared wiki</Text>
+            <Text color="permission" inverse> {session.suggested.length} suggested </Text>
+            {view.searched && <Text color="success" inverse> {view.hits.length} matches </Text>}
+            {session.curator && <Text dimColor>{session.curator}</Text>}
+          </Box>
+          <Box flexDirection="column">
+            <Text bold color="permission">Suggested in this session</Text>
+            {session.suggested.length === 0 && <Text dimColor>No suggestions yet.</Text>}
+            {session.suggested.map((page, index) => (
+              <Box key={`suggested-row-${index}`} flexDirection="row" flexWrap="wrap" gap={1}>
+                <Text color="permission" bold={view.selected?.path === page.path}>{view.selected?.path === page.path ? '▶' : ' '}</Text>
+                <Button key={`suggested-${index}`} label={String(index + 1)} plain hotkey={rowHotkey(index)}
+                  onPress={() => selectPage($, page.path)} />
+                <Box minWidth={0} flexShrink={1}>
+                  <Text bold={view.selected?.path === page.path} wrap="truncate-end">{clip(page.title, columns - 9)}</Text>
+                </Box>
+                {page.sources.map(source => <Text color={sourceColor(source)} inverse> {source} </Text>)}
+              </Box>
+            ))}
+          </Box>
+          <Box key="wiki-search" flexDirection="column" borderStyle="round" borderColor="inactive" paddingX={1}>
+            <Text bold color="permission">Search</Text>
+            <Input key="search" label="Search wiki" placeholder="Search terms" value={view.query} submitLabel="search" autoFocus
+              onInput={query => quiet(() => update($, pane, value => ({ ...value, query })))}
+              onSubmit={query => search($, bin, query)} />
+            {view.searching && <Text dimColor>Searching…</Text>}
+            {view.searchError && <Text color="error">{view.searchError}</Text>}
+            {view.searched && !view.searching && !view.searchError && view.hits.length === 0 && <Text dimColor>No results.</Text>}
+            {view.hits.map((page, index) => (
+              <Box key={`result-row-${index}`} flexDirection="row" gap={1}>
+                <Text color="permission" bold={view.selected?.path === page.path}>{view.selected?.path === page.path ? '▶' : ' '}</Text>
+                <Button key={`result-${index}`} label={String(session.suggested.length + index + 1)} plain
+                  hotkey={rowHotkey(session.suggested.length + index)} onPress={() => selectPage($, page.path)} />
+                <Box minWidth={0} flexGrow={1} flexShrink={1}>
+                  <Text bold={view.selected?.path === page.path} wrap="truncate-end">{clip(page.title, columns - 28)}</Text>
+                </Box>
+                <Text color="permission" wrap="truncate-end">{clip(page.type, 12)}</Text>
+                <Text dimColor>{page.updated.slice(0, 10) || 'unknown date'}</Text>
+              </Box>
+            ))}
+          </Box>
+          <Box key="wiki-preview" flexDirection="column" borderStyle="round" borderColor="permission" paddingX={1} gap={1}>
+            <Text bold color="permission">{view.selected?.title || 'Preview'}</Text>
+            {view.selected === null && <Text dimColor>Select a page to preview it.</Text>}
+            {view.loading && <Text dimColor>Loading…</Text>}
+            {view.previewError && <Text color="error">{view.previewError}</Text>}
+            {view.preview && <Markdown key="preview" text={view.preview} />}
+          </Box>
+          {view.actionError && <Text color="error">{view.actionError}</Text>}
+          <Box key="wiki-actions" flexDirection="row" flexWrap="wrap" gap={1}>
+            {view.selected !== null && <Button key="insert-path" label="Insert path" variant="primary" hotkey="p" onPress={() => insert($, 'path')} />}
+            {view.selected !== null && <Button key="insert-link" label="Insert link" hotkey="i" onPress={() => insert($, 'link')} />}
+            <Button key="review-curator" label="Review curator" hotkey="r" onPress={() => openReview($, bin, curatorBin)} />
+            <Button key="close" label="Close" role="dismiss" onPress={() => quiet(() => $.ui.close({ id: PANE }))} />
+          </Box>
         </Box>
       )
     } catch {
@@ -338,50 +366,114 @@ export const register: Register = (on, options) => {
     try {
       const { Box, Text, Button, Code } = $.ui.resolve(e)
       const view = await read($, review)
+      const session = await read($, stats)
+      const columns = Math.max(1, e.props.bodyColumns)
       const selected = view.items.find(item => item.id === view.selectedId)
       const confirmation = view.confirmation
-      // Code has a 10,000-character limit, and a cut hunk may not parse.
-      const useCode = view.diff.length <= 10000 && !view.diffTruncated && /^@@ -\d/m.test(view.diff)
+      const rejected = view.items.filter(item => item.outcome === 'rejected').length
+      const deferred = view.items.length - rejected
+      const selectedColor = selected?.outcome === 'rejected' ? 'error' : 'warning'
+      const canAct = selected && !view.operation && !view.listLoading && !view.listError && !view.diffLoading && !confirmation
+      // Old state can survive a hot reload; derive its view until the next selection.
+      const diff = view.diffView ?? splitDiff(view.diff)
       return (
-        <Box key="review-body" flexDirection="column" width={Math.max(1, e.props.bodyColumns)}>
-          <Text bold>Curator review</Text>
-          {view.listLoading && <Text dimColor>Refreshing…</Text>}
-          {view.listError && <Text>{view.listError}</Text>}
-          {!view.listLoading && !view.listError && view.items.length === 0 && <Text dimColor>No pending curator items.</Text>}
-          {view.items.map((item, index) => (
-            <Button key={`review-item-${index}`} label={`${item.type} · ${item.outcome} · ${(item.summary || item.reason || item.id).slice(0, 300)} · ${item.pages.length} pages`}
-              onPress={() => selectReview($, curatorBin, item.id)} />
-          ))}
-          {selected && (
-            <Box flexDirection="column">
-              <Text bold>{selected.id}</Text>
-              <Text>Reason: {textChunks(selected.reason || 'No reason provided.')}</Text>
-              <Text bold>Codex problems</Text>
-              {selected.problems.length === 0 && <Text dimColor>No Codex problems reported.</Text>}
-              {selected.problems.map(problem => <Text>{textChunks(problem)}</Text>)}
-              {view.diffLoading && <Text dimColor>Loading diff…</Text>}
-              {view.diffError && <Text>{view.diffError}</Text>}
-              {view.diff && (useCode ? <Code source={view.diff} format="diff" /> : <Text>{textChunks(view.diff)}</Text>)}
-              {view.diffTruncated && <Text dimColor>Diff preview truncated at 60 KB.</Text>}
-              {!view.operation && !view.listLoading && !view.listError && !view.diffLoading && !confirmation && (
-                <Box flexDirection="column">
-                  {selected.kind === 'branch' && <Button key="land" label="Land" onPress={() => armReview($, selected.id, 'land')} />}
-                  <Button key="discard" label="Discard" onPress={() => armReview($, selected.id, 'discard')} />
+        <Box key="review-body" flexDirection="column" width={columns} gap={1}>
+          <Box key="review-header" flexDirection="row" flexWrap="wrap" gap={1}>
+            <Text bold color="claude">Curator review</Text>
+            <Text color="error" inverse> {rejected} rejected </Text>
+            <Text color="warning" inverse> {deferred} deferred </Text>
+            {session.curator && <Text dimColor>{session.curator}</Text>}
+          </Box>
+          <Box key="review-list" flexDirection="column">
+            {view.listLoading && <Text dimColor>Refreshing…</Text>}
+            {view.listError && <Text color="error">{view.listError}</Text>}
+            {!view.listLoading && !view.listError && view.items.length === 0 && <Text dimColor>No pending curator items.</Text>}
+            {view.items.map((item, index) => {
+              const active = item.id === view.selectedId
+              const color = item.outcome === 'rejected' ? 'error' : 'warning'
+              const type = clip(item.type, Math.max(3, Math.min(columns < 64 ? 10 : 18, columns - 26)))
+              const count = columns < 64 ? `${item.pages.length}p` : `${item.pages.length} pages`
+              const room = columns - type.length - count.length - item.outcome.length - String(index + 1).length - 13
+              return (
+                <Box key={`review-row-${index}`} flexDirection="row" gap={1}>
+                  <Text color={color} bold={active}>{active ? '▶' : ' '}</Text>
+                  <Button key={`review-item-${index}`} label={String(index + 1)} hotkey={rowHotkey(index)} plain
+                    onPress={() => selectReview($, curatorBin, item.id)} />
+                  <Text color={color} inverse bold={active}> {item.outcome} </Text>
+                  <Text color="permission" bold={active}>{type}</Text>
+                  <Box minWidth={0} flexGrow={1} flexShrink={1}>
+                    <Text bold={active} wrap="truncate-end">{clip(item.summary || item.reason || item.id, room)}</Text>
+                  </Box>
+                  <Text dimColor>{count}</Text>
                 </Box>
-              )}
-              {confirmation && !view.operation && (
-                <Box flexDirection="column">
-                  <Text>{confirmation.action === 'land' ? 'Land' : 'Discard'} {confirmation.id}?</Text>
-                  <Button key={`confirm-${confirmation.action}`} label={`Confirm ${confirmation.action === 'land' ? 'Land' : 'Discard'}`}
-                    onPress={() => confirmReview($, bin, curatorBin, confirmation)} />
-                  <Button key="cancel-review" label="Cancel" onPress={() => quiet(() => update($, review, value => ({ ...value, confirmation: null })))} />
+              )
+            })}
+          </Box>
+          {selected && (
+            <Box key="review-detail" flexDirection="column" borderStyle="round" borderColor={selectedColor} paddingX={1} gap={1}>
+              <Box flexDirection="column">
+                <Text bold wrap="wrap">{textChunks(selected.summary || selected.reason || selected.id)}</Text>
+                <Text dimColor wrap="wrap">{selected.type} · {runDate(selected.run)} · {selected.pages.length} pages</Text>
+              </Box>
+              <Box key="review-why" flexDirection="column">
+                <Text bold>Why</Text>
+                <Text color="error" wrap="wrap">{textChunks(selected.reason || 'No reason provided.')}</Text>
+                {selected.problems.map(problem => <Text color="warning" wrap="wrap">• {textChunks(problem)}</Text>)}
+                {selected.problems.length === 0 && <Text dimColor>No Codex problems reported.</Text>}
+              </Box>
+              {selected.pages.length > 0 && (
+                <Box key="review-pages" flexDirection="column">
+                  <Text bold>Pages</Text>
+                  {columns < 64
+                    ? <Text dimColor wrap="wrap">{textChunks(selected.pages.map(shortPage).join(', '))}</Text>
+                    : selected.pages.map(page => <Text dimColor wrap="wrap">{shortPage(page)}</Text>)}
                 </Box>
               )}
             </Box>
           )}
-          {view.message && <Text>{view.message}</Text>}
-          <Button key="refresh-review" label="Refresh" onPress={() => refresh($, bin, curatorBin)} />
-          <Button key="close-review" label="Close" role="dismiss" onPress={() => closeReview($)} />
+          {selected && (
+            <Box key="review-diff" flexDirection="column" gap={1}>
+              <Box flexDirection="column">
+                <Text bold color="permission">Changes</Text>
+                {diff.subject && <Text dimColor wrap="truncate-end">{diff.subject}</Text>}
+              </Box>
+              {view.diffLoading && <Text dimColor>Loading diff…</Text>}
+              {view.diffError && <Text color="error">{view.diffError}</Text>}
+              {diff.files.map((file, index) => (
+                <Box key={`diff-file-${index}`} flexDirection="column">
+                  <Box flexDirection="row" gap={1}>
+                    <Text color={fileColor(file.status)} inverse> {file.status} </Text>
+                    <Box minWidth={0} flexShrink={1}>
+                      <Text color={fileColor(file.status)} bold wrap="truncate-end">{file.oldPath ? `${file.oldPath} → ${file.path}` : file.path}</Text>
+                    </Box>
+                  </Box>
+                  {file.code && <Code source={file.code} format="diff" path={file.path} wrap="wrap" />}
+                  {file.fallback && <Text dimColor wrap="wrap">{textChunks(file.fallback)}</Text>}
+                  {file.omittedHunks > 0 && <Text color="warning">{file.omittedHunks} {file.omittedHunks === 1 ? 'hunk' : 'hunks'} omitted (preview limit).</Text>}
+                </Box>
+              ))}
+              {diff.omittedFiles > 0 && <Text color="warning">{diff.omittedFiles} more files omitted (preview limit).</Text>}
+              {diff.truncated && <Text dimColor>Preview shortened at whole hunks; total limit 60 KB.</Text>}
+            </Box>
+          )}
+          {confirmation && !view.operation && (
+            <Box key="review-confirmation" flexDirection="column" borderStyle="round" borderColor="warning" paddingX={1} gap={1}>
+              <Text color="warning" bold wrap="wrap">{confirmation.action === 'land'
+                ? `Land ${confirmation.id}? This cherry-picks onto main.` : `Discard ${confirmation.id}?`}</Text>
+              <Box flexDirection="row" gap={1}>
+                <Button key={`confirm-${confirmation.action}`} label="Confirm" hotkey="y" variant="primary"
+                  onPress={() => confirmReview($, bin, curatorBin, confirmation)} />
+                <Button key="cancel-review" label="Cancel" hotkey="n" onPress={() => quiet(() => update($, review, value => ({ ...value, confirmation: null })))} />
+              </Box>
+            </Box>
+          )}
+          {view.message && <Text color={outcomeColor(view.message)} bold wrap="wrap">{view.message}</Text>}
+          <Box key="review-actions" flexDirection="row" flexWrap="wrap" gap={1}>
+            {selected && canAct && selected.kind === 'branch' && <Button key="land" label="Land" variant="primary" hotkey="l" onPress={() => armReview($, selected.id, 'land')} />}
+            {selected && canAct && <Button key="discard" label="Discard" hotkey="d" onPress={() => armReview($, selected.id, 'discard')} />}
+            <Button key="refresh-review" label="Refresh" hotkey="r" onPress={() => refresh($, bin, curatorBin)} />
+            <Button key="close-review" label="Close" role="dismiss" onPress={() => closeReview($)} />
+          </Box>
         </Box>
       )
     } catch {

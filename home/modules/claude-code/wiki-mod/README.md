@@ -43,35 +43,59 @@ Zero subagents, zero pending items, and an absent curator summary are omitted.
 Failed refreshes preserve previously fetched data. The summary path is derived
 from `$.env.get('HOME')`.
 
-In `/wiki`, select a suggestion or submit whitespace-separated search terms. Page
-previews use `$.fs.read`, remove opening YAML frontmatter, and display up to 8000
-characters as Markdown. Insert path and Insert link insert at the prompt cursor.
+Both panes use colored header badges, numbered selection controls, a bold `▶`
+marker for the selected row, rounded detail cards, and a row of actions. The
+theme keys used are `claude`, `permission`, `success`, `error`, `warning`, and
+`inactive`; the border style is `round`. This build types colors and border
+styles as strings rather than enumerating their names; the rendering tests
+exercise these concrete values on terminal and desktop.
+
+In `/wiki`, select a suggestion or submit whitespace-separated search terms.
+Suggestion sources have distinct badges: remind in warning, recall in permission,
+subagent in claude, and skill-prompt in success. Search results separate the title,
+colored type, and dim date. The first nine page rows share unique `1`–`9` shortcuts
+across suggestions and search results. Page previews have a titled border, use
+`$.fs.read`, remove opening YAML frontmatter, and display up to 8000 characters as
+Markdown. Insert path (`p`) and Insert link (`i`) insert at the prompt cursor.
 Links use the CLI's canonical relative path (`pages/knowledge/build.md` becomes
 `[[knowledge/build]]`). Close dismisses the pane; Escape also closes it. Drawing
 values live in declared session state, and late search/preview responses cannot
 replace newer selections.
 
-Open `/wiki-review`, or press **Review curator** in `/wiki`, to browse rejected
-and deferred curator items. Each entry shows its type, outcome, summary or
-reason, and page count. Selecting an entry runs `wiki-curator show <id>` and
-shows its reason, Codex problems, and diff. Diff previews are capped at about
-60 KB of UTF-8 text. Short unified diffs use `Code` with `format="diff"`; longer,
-truncated, or non-hunk output uses `Text` with bounded children to respect this
-build's 10000-character element limit.
+Open `/wiki-review`, or press **Review curator** (`r`) in `/wiki`, to browse
+rejected and deferred curator items. Its header shows rejected/error and
+deferred/warning badges and the last curator summary. Each row has a plain
+numbered button (`1`–`9` for the first nine), an outcome badge, an accent-colored
+type, a summary fitted to the available width, and a dim page count. Selecting
+an entry runs `wiki-curator show <id>`. Its outcome-colored detail card groups
+the summary, type/run date/page count, red reason, warning-colored Codex bullets,
+and shortened page names.
 
-**Land** is available only for branch items and invokes `wiki-curator land
-<branch> --json`. **Discard** invokes `wiki-curator discard <id> --json` for
+Diff rendering splits the complete response at `diff --git` boundaries. It shows
+only the commit subject above per-file headers: A in success, M in warning, D in
+error, and R in permission. Each parseable file gets its own `Code` with
+`format="diff"`, the file path, and complete hunks. Each Code is capped at 10000
+characters by omitting whole trailing hunks and showing their count. A single
+hunk larger than that limit is counted as omitted. Files with no parseable hunks
+(including binary and rename-only metadata) use bounded `Text` children, without
+affecting colored hunks in other files. The total preview budget remains about
+60 KB of UTF-8 text; omitted files/hunks are reported. Large commit messages and
+stat tables do not consume the hunk budget.
+
+**Land** (`l`, primary) is available only for branch items and invokes
+`wiki-curator land <branch> --json`. **Discard** (`d`) invokes `wiki-curator discard <id> --json` for
 either item kind. Neither first press executes a command: it reveals a separate
-**Confirm Land** or **Confirm Discard** button and **Cancel**. Only that confirm
-press starts the action. Confirmation is bound to the item and its metadata,
+warning-colored confirmation box naming the item, a primary **Confirm** (`y`)
+button, and **Cancel** (`n`). Land also explains that it cherry-picks onto main.
+Only the confirm press starts the action. Confirmation is bound to the item and its metadata,
 consumed atomically, and cleared on selection changes, changed/removed items,
 close, or hot reload. Repeated presses cannot start the same confirmed action
 twice. Mutation controls stay unavailable while an action runs.
 
-The pane displays the CLI outcome and reason, including deferred/busy and
-invalid-item responses, then refreshes its list and the status line. It does not
+The pane displays the CLI outcome and reason in success (merged/discarded),
+warning (deferred), or error colors, then refreshes its list and the status line. It does not
 retry mutations automatically. A timeout or reload calls for checking the
-refreshed list before attempting another action. **Refresh** retries a failed
+refreshed list before attempting another action. **Refresh** (`r`) retries a failed
 list query; selecting an item again retries its diff. All drawing values,
 including confirmations and progress, live in the declared session state.
 
@@ -85,7 +109,8 @@ nix shell nixpkgs#typescript --command tsc -p "$PWD"
 
 Tests mock the CLI, filesystem, environment, and clock using `claude-code/testing`;
 they do not access the wiki, land/discard real proposals, or launch subagents.
-They cover both panes on terminal and desktop, confirmations and concurrent
+They cover both panes on terminal and desktop, style props and hotkeys,
+per-file diff splitting and hunk-boundary limits, confirmations and concurrent
 presses, delayed/stale responses, CLI failures and deferred actions, status
 refreshes, subagent injection, and skill injection. The tsconfig follows this
 build's API header and includes the locally generated `.claude-plugin/types`

@@ -36,6 +36,7 @@ export type WikiReviewItem = {
   branch: string | null
   diff: string | null
   commit: string | null
+  run: string | null
   type: string
   pages: string[]
   outcome: 'rejected' | 'deferred'
@@ -58,6 +59,7 @@ export type WikiReview = {
   selectedId: string | null
   selectionRequest: number
   diff: string
+  diffView?: WikiDiffPreview
   diffLoading: boolean
   diffTruncated: boolean
   diffError: string
@@ -65,6 +67,21 @@ export type WikiReview = {
   actionToken: number
   operation: WikiReviewConfirmation | null
   message: string
+}
+
+export type WikiDiffFile = {
+  path: string
+  oldPath: string | null
+  status: 'A' | 'M' | 'D' | 'R'
+  code: string
+  fallback: string
+  omittedHunks: number
+}
+export type WikiDiffPreview = {
+  subject: string
+  files: WikiDiffFile[]
+  omittedFiles: number
+  truncated: boolean
 }
 
 declare module 'claude-code' {
