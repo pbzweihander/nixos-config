@@ -17,7 +17,7 @@ sys.path.insert(0, str(PACKAGE))
 
 from wiki_curator.gitutil import changes, git, status
 from wiki_curator.preservation import preserved, tokens
-from wiki_curator.runner import run
+from wiki_curator.runner import DIFF_LIMIT, DIFF_TRUNCATED, read_state, run, save_rejection_diff
 from wiki_curator.selection import DAY, select_tasks
 
 
@@ -120,6 +120,37 @@ class RepoTest(unittest.TestCase):
 
 
 class SelectionTests(RepoTest):
+    def test_not_duplicates_suppresses_only_the_pair_until_expiry(self):
+        self.write(B, page("Related but distinct facts.\n"))
+        self.commit()
+        lint = {"duplicates": [{"a": B, "b": A, "score": .99}],
+                "missing-queries": [{"path": A, "detail": "missing"}]}
+        now = time.time()
+        cached = {f"{A}|{B}": now + 90 * DAY}
+        tasks = select_tasks(self.wiki, lint, {}, now, not_duplicates=cached)
+        self.assertEqual([t.type for t in tasks], ["missing-queries"])
+        self.assertEqual(tasks[0].primary, [A])
+        for deadline in (now - 1, now):
+            tasks = select_tasks(self.wiki, lint, {}, now, not_duplicates={f"{A}|{B}": deadline})
+            self.assertEqual([t.type for t in tasks], ["duplicates"])
+        tasks = select_tasks(self.wiki, lint, {}, now, not_duplicates={f"{A}|{REF}": now + DAY})
+        self.assertEqual([t.type for t in tasks], ["duplicates"])
+
+    def test_duplicate_snapshot_exclusions_apply_to_either_page_and_only_filter(self):
+        dated = "pages/knowledge/design-2020-02-01-round.md"
+        for path in (dated, B):
+            self.write(path, page("A separate snapshot.\n"))
+        self.commit()
+        for snapshot_page, listed in ((dated, False), (dated, True), (B, True)):
+            for a, b in ((A, snapshot_page), (snapshot_page, A)):
+                with self.subTest(a=a, b=b, listed=listed):
+                    lint = {"duplicates": [{"a": a, "b": b, "score": .99}]}
+                    if listed:
+                        lint["snapshots"] = [{"path": snapshot_page, "detail": "dated"}]
+                    self.assertEqual(select_tasks(self.wiki, lint, {}, time.time(), only=["duplicates"]), [])
+                    tasks = select_tasks(self.wiki, lint, {}, time.time())
+                    self.assertEqual([t.type for t in tasks], ["snapshots"] if listed and snapshot_page == dated else [])
+
     def test_priority_dedup_groups_and_limits(self):
         for name in ("dup1", "dup2", "log", "2020-02-01-snapshot", *[f"query{i}" for i in range(7)],
                      *[f"tag{i}" for i in range(24)]):
@@ -191,6 +222,35 @@ class SelectionTests(RepoTest):
         self.assertEqual(select_tasks(self.wiki, lint, {}, time.time()), [])
 
 
+class StateTests(RepoTest):
+    def test_not_duplicates_defaults_for_missing_and_legacy_state(self):
+        self.assertEqual(read_state(self.cache), {"cooldowns": {}, "not_duplicates": {}})
+        self.cache.mkdir(parents=True)
+        cooldowns = {A: time.time() + DAY}
+        (self.cache / "state.json").write_text(json.dumps({"cooldowns": cooldowns}))
+        self.assertEqual(read_state(self.cache), {"cooldowns": cooldowns, "not_duplicates": {}})
+        state = {"cooldowns": cooldowns, "not_duplicates": {f"{A}|{B}": time.time() + 90 * DAY}}
+        (self.cache / "state.json").write_text(json.dumps(state))
+        self.assertEqual(read_state(self.cache), state)
+
+    def test_invalid_not_duplicates_fails_closed(self):
+        self.cache.mkdir(parents=True)
+        invalid = [None, [], "bad", {A: 1}, {f"{B}|{A}": 1}, {f"{A}|{A}": 1},
+                   {f"{A}|{B}|{REF}": 1}, {f"{A}|pages/projects/proj.md": 1},
+                   {"../outside.md|pages/knowledge/a.md": 1}, {f"{A}|": 1}]
+        invalid += [{f"{A}|{B}": value} for value in (True, False, None, "123", {}, [], float("nan"), float("inf"))]
+        for value in invalid:
+            with self.subTest(value=value):
+                text = json.dumps({"cooldowns": {}, "not_duplicates": value})
+                (self.cache / "state.json").write_text(text)
+                with self.assertRaises(ValueError):
+                    read_state(self.cache)
+                self.assertEqual((self.cache / "state.json").read_text(), text)
+        code, _ = self.execute()
+        self.assertEqual(code, 1)
+        self.assertFalse(self.calls("claude"))
+
+
 class PreservationTests(RepoTest):
     def check_change(self, old, new, explanation=None):
         self.write(A, page(old))
@@ -255,6 +315,134 @@ class RunTests(RepoTest):
                        REF: page("See [[knowledge/a|cache notes]].\n")},
             "deletes": [B], "justification": justification(dropped=[], redirects={B: A}),
         }
+
+    def test_duplicate_abstention_records_reason_and_suppresses_pair_for_90_days(self):
+        self.duplicate_fixture()
+        self.fixture["writes"] = {}
+        self.fixture["deletes"] = []
+        reason = "not duplicates: separate review rounds with different findings"
+        self.fixture["justification"] = justification(summary=reason, dropped=[])
+        self.fixture["lint"]["duplicates"][0].update(a=B, b=A)
+        before = git(self.wiki, "rev-parse", "HEAD").strip()
+        result = self.result()
+        self.assertEqual(result["outcome"], "no-op", result)
+        self.assertEqual(result["reason"], reason)
+        self.assertNotIn("commit", result)
+        self.assertNotIn("diff", result)
+        self.assertFalse(self.calls("codex"))
+        self.assertEqual(git(self.wiki, "rev-parse", "HEAD").strip(), before)
+        self.assertEqual(status(self.wiki), {})
+        state = read_state(self.cache)
+        self.assertEqual(state["cooldowns"], {})
+        self.assertEqual(list(state["not_duplicates"]), [f"{A}|{B}"])
+        self.assertAlmostEqual(state["not_duplicates"][f"{A}|{B}"] - time.time(), 90 * DAY, delta=10)
+        self.assertIn(reason, (self.cache / "latest.md").read_text())
+        prompt = self.calls("claude")[0]["prompt"]
+        self.assertIn("not duplicates: <reason>", prompt)
+        self.assertIn("change no page", prompt)
+        code, report = self.execute()
+        self.assertEqual(code, 0, report)
+        self.assertEqual(report["tasks"], [])
+        self.assertEqual(len(self.calls("claude")), 1)
+
+    def test_duplicate_noop_suppression_does_not_require_full_justification(self):
+        self.duplicate_fixture()
+        self.fixture["writes"] = {}
+        self.fixture["deletes"] = []
+        for explanation in (None, {"summary": 123}, {"summary": "not duplicates: separate systems"}):
+            with self.subTest(explanation=explanation):
+                (self.cache / "state.json").unlink(missing_ok=True)
+                if explanation is None:
+                    self.fixture.pop("justification", None)
+                else:
+                    self.fixture["justification"] = explanation
+                result = self.result()
+                self.assertEqual(result["outcome"], "no-op")
+                if explanation and isinstance(explanation["summary"], str):
+                    self.assertEqual(result["reason"], explanation["summary"])
+                else:
+                    self.assertNotIn("reason", result)
+                self.assertIn(f"{A}|{B}", read_state(self.cache)["not_duplicates"])
+
+    def test_rejected_scope_diff_includes_edits_deletions_and_new_binary_pages(self):
+        self.fixture["writes"].update({B: page("A new page: 안녕하세요.\n"),
+                                       "pages/knowledge/binary.md": "binary\x00payload",
+                                       "outside.txt": "outside edits are not archived"})
+        self.fixture["deletes"] = [REF]
+        self.write("notes.txt", "unrelated staged work\n")
+        git(self.wiki, "add", "notes.txt")
+        self.write("notes.txt", "unrelated unstaged work\n")
+        before_head = git(self.wiki, "rev-parse", "HEAD")
+        before_index = git(self.wiki, "diff", "--cached", "--binary")
+        before_status = status(self.wiki)
+        code, report = self.execute()
+        self.assertEqual(code, 0, report)
+        result = report["tasks"][0]
+        self.assertEqual(result["outcome"], "rejected", result)
+        self.assertNotIn("commit", result)
+        path = Path(result["diff"])
+        self.assertEqual(path, self.cache / "runs" / f"{report['timestamp']}-1.diff")
+        diff = path.read_text()
+        self.assertIn("+Measured `probe --fast` takes 45s. [[knowledge/reference]]", diff)
+        self.assertIn("new file mode", diff)
+        self.assertIn("+A new page: 안녕하세요.", diff)
+        self.assertIn(f"a/{REF}", diff)
+        self.assertIn("-Reference for the probe.", diff)
+        self.assertIn("GIT binary patch", diff)
+        self.assertNotIn("outside.txt", diff)
+        self.assertNotIn(".curator", diff)
+        self.assertNotIn("notes.txt", diff)
+        git(self.wiki, "apply", "--check", str(path))
+        self.assertEqual(git(self.wiki, "rev-parse", "HEAD"), before_head)
+        self.assertEqual(git(self.wiki, "diff", "--cached", "--binary"), before_index)
+        self.assertEqual(status(self.wiki), before_status)
+        self.assertEqual((self.wiki / "notes.txt").read_text(), "unrelated unstaged work\n")
+        self.assertIn(str(path), next(line for line in (self.cache / "latest.md").read_text().splitlines()
+                                      if line.startswith("- rejected:")))
+
+    def test_diff_saved_for_check_and_claude_failure_with_page_changes(self):
+        for failure in ({"check_exit": 2}, {"claude_exit": 1}):
+            with self.subTest(failure=failure):
+                self.fixture = {"lint": self.fixture["lint"], "writes": {A: page(NEW)},
+                                "justification": justification(), **failure}
+                (self.cache / "state.json").unlink(missing_ok=True)
+                result = self.result()
+                self.assertEqual(result["outcome"], "rejected")
+                self.assertNotIn("commit", result)
+                self.assertIn("+Measured", Path(result["diff"]).read_text())
+                self.assertFalse(self.calls("codex"))
+        (self.cache / "state.json").unlink()
+        self.fixture["writes"] = {}
+        result = self.result()
+        self.assertEqual(result["outcome"], "rejected")
+        self.assertNotIn("diff", result)
+
+    def test_rejection_diff_is_capped_in_bytes_with_a_marker(self):
+        self.fixture["writes"][A] = page("가" * DIFF_LIMIT)
+        self.fixture["claude_exit"] = 1
+        result = self.result()
+        diff = Path(result["diff"]).read_bytes()
+        self.assertEqual(len(diff), DIFF_LIMIT)
+        self.assertTrue(diff.startswith(b"diff --git "))
+        self.assertTrue(diff.endswith(DIFF_TRUNCATED))
+
+    def test_rejection_diff_preserves_non_utf8_text_and_ignored_new_files(self):
+        parent = git(self.wiki, "rev-parse", "HEAD").strip()
+        worktree = self.root / "evidence-worktree"
+        git(self.wiki, "worktree", "add", "--detach", str(worktree), parent)
+        try:
+            (worktree / A).write_bytes(b"non-UTF8 text: \xff\n")
+            (worktree / ".gitignore").write_text("pages/knowledge/new.md\n")
+            (worktree / "pages/knowledge/new.md").write_text("Ignored new page\n")
+            destination = self.root / "evidence.diff"
+            self.assertEqual(save_rejection_diff(worktree, parent, destination), str(destination))
+            diff = destination.read_bytes()
+            self.assertIn(b"+non-UTF8 text: \xff", diff)
+            self.assertIn(b"+Ignored new page", diff)
+            self.assertNotIn(b".gitignore", diff)
+            git(self.wiki, "apply", "--check", str(destination))
+        finally:
+            git(self.wiki, "worktree", "remove", "--force", str(worktree))
 
     def test_merge_preserves_facts_and_updates_backlinks(self):
         self.duplicate_fixture()
@@ -384,6 +572,7 @@ class RunTests(RepoTest):
         self.assertEqual(result["gates"]["preservation"]["missing_tokens"], ["45s"])
         self.assertFalse(self.calls("codex"))
         self.assertTrue(result["branch"].startswith("curator/rejected/"))
+        self.assertNotIn("diff", result)
         self.assertEqual(git(self.wiki, "rev-parse", result["branch"]).strip(), result["commit"])
         cooldown = json.loads((self.cache / "state.json").read_text())["cooldowns"][A]
         self.assertAlmostEqual(cooldown - time.time(), 14 * DAY, delta=10)
@@ -463,6 +652,7 @@ class RunTests(RepoTest):
         (self.cache / "state.json").unlink()
         self.fixture["writes"] = {}
         self.assertEqual(self.result()["outcome"], "no-op")
+        self.assertEqual(read_state(self.cache)["not_duplicates"], {})
 
     def test_query_probe_requires_zero(self):
         self.fixture["lint"] = {"missing-queries": [{"path": A, "detail": "missing"}]}

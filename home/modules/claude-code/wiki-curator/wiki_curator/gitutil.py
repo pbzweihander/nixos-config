@@ -10,11 +10,11 @@ import subprocess
 PAGE = re.compile(r"pages/(knowledge|followups|history|projects)/[a-z0-9][a-z0-9._-]*\.md\Z")
 
 
-def command(argv, cwd, *, env=None, input=None, timeout=120, check=True):
+def command(argv, cwd, *, env=None, input=None, timeout=120, check=True, text=True):
     # Kill the entire process group, including tool children, on timeout/interruption.
     process = subprocess.Popen(
         [str(a) for a in argv], cwd=cwd, env=env, stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=text,
         start_new_session=True,
     )
     try:

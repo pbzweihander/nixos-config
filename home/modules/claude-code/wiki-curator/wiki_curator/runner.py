@@ -18,12 +18,14 @@ from .gitutil import (changed_texts, changes, command, git, page_text,
                       regular_page, safe_page, status)
 from .preservation import LINK, load_justification, preserved, strict_json
 from .prompts import claude_prompt, review_prompt
-from .selection import DAY, blocked, select_tasks
+from .selection import DAY, blocked, pair_key, select_tasks
 
 
 CLAUDE_TIMEOUT = 20 * 60
 CODEX_TIMEOUT = 15 * 60
 LOCK_TIMEOUT = 120
+DIFF_LIMIT = 1024 * 1024
+DIFF_TRUNCATED = b"\n[wiki-curator: diff truncated at 1 MiB]\n"
 ALLOWED_TOOLS = [
     "Read", "Edit", "Write", "Glob", "Grep", "Bash(claude-wiki check:*)",
     "Bash(claude-wiki tags)", "Bash(claude-wiki links:*)", "Bash(claude-wiki search:*)",
@@ -66,7 +68,7 @@ def snapshot(worktree):
 
 def atomic_write(path, text):
     temporary = path.with_name(path.name + ".tmp")
-    with temporary.open("w") as stream:
+    with temporary.open("wb" if isinstance(text, bytes) else "w") as stream:
         stream.write(text)
         stream.flush()
         os.fsync(stream.fileno())
@@ -86,7 +88,32 @@ def read_state(cache):
         if (not safe_page(path) or isinstance(until, bool) or not isinstance(until, (int, float))
                 or not math.isfinite(until)):
             raise ValueError("invalid cooldown in state.json")
+    not_duplicates = state.setdefault("not_duplicates", {})
+    if not isinstance(not_duplicates, dict):
+        raise ValueError("invalid not_duplicates in state.json")
+    for pair, until in not_duplicates.items():
+        paths = pair.split("|")
+        if (len(paths) != 2 or any(not safe_page(p) for p in paths)
+                or paths[0] >= paths[1] or isinstance(until, bool)
+                or not isinstance(until, (int, float)) or not math.isfinite(until)):
+            raise ValueError("invalid not_duplicates entry in state.json")
     return state
+
+
+def save_rejection_diff(worktree, parent, destination):
+    """Keep page edits before cleanup; only the disposable worktree index is used."""
+    untracked = git(worktree, "ls-files", "--others", "-z", "--", "pages/").split("\0")
+    for path in filter(None, untracked):
+        # Include ignored new pages too: scope checks can reject those very edits.
+        git(worktree, "add", "--intent-to-add", "--force", "--", path)
+    diff = git(worktree, "diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-color",
+               "--src-prefix=a/", "--dst-prefix=b/", parent, "--", "pages/", text=False)
+    if not diff:
+        return None
+    if len(diff) > DIFF_LIMIT:
+        diff = diff[:DIFF_LIMIT - len(DIFF_TRUNCATED)] + DIFF_TRUNCATED
+    atomic_write(destination, diff)
+    return str(destination)
 
 
 @contextmanager
@@ -258,10 +285,20 @@ def perform_task(wiki, worktree, timestamp, task, state, result):
     if any(not p.startswith(".curator/") and not safe_page(p) for p in dirty):
         reject("scope", "changed a protected page or a path outside pages/ and .curator/")
         return
+    justification_path = worktree / ".curator/justification.json"
     if not page_paths:
         result["outcome"] = "no-op"
+        if task.type == "duplicates" and not (worktree / ".curator").is_symlink():
+            try:
+                if justification_path.is_file() and not justification_path.is_symlink():
+                    explanation = strict_json(justification_path.read_text())
+                    if (isinstance(explanation, dict) and isinstance(explanation.get("summary"), str)
+                            and explanation["summary"].strip()):
+                        result["reason"] = explanation["summary"]
+            except (OSError, ValueError):
+                # No-op suppression does not depend on Claude supplying valid JSON.
+                pass
         return
-    justification_path = worktree / ".curator/justification.json"
     try:
         if (worktree / ".curator").is_symlink() or justification_path.is_symlink():
             raise ValueError("justification must not be a symlink")
@@ -349,7 +386,8 @@ def summary(report):
     if not report["tasks"]:
         lines.append("No eligible tasks.")
     for result in report["tasks"]:
-        lines.append(f"- {result['outcome']}: {result['type']} ({', '.join(result['pages'])})")
+        evidence = f"; diff: {result['diff']}" if result.get("diff") else ""
+        lines.append(f"- {result['outcome']}: {result['type']} ({', '.join(result['pages'])}){evidence}")
         for key in ("reason", "branch", "commit", "landed_commit"):
             if result.get(key):
                 lines.append(f"  {key}: {result[key]}")
@@ -377,7 +415,8 @@ def run(wiki, cache, max_tasks=5, only=None):
             cleanup_worktree(wiki, worktree)
             env = {**os.environ, "CLAUDE_WIKI_DIR": str(wiki)}
             lint = command(["claude-wiki", "lint", "--json"], wiki, env=env)
-            tasks = select_tasks(wiki, strict_json(lint.stdout), state["cooldowns"], time.time(), max_tasks, only)
+            tasks = select_tasks(wiki, strict_json(lint.stdout), state["cooldowns"], time.time(), max_tasks, only,
+                                 not_duplicates=state["not_duplicates"])
             registered = True
             git(wiki, "worktree", "add", "--detach", str(worktree), "main")
             for number, task in enumerate(tasks, 1):
@@ -401,6 +440,9 @@ def run(wiki, cache, max_tasks=5, only=None):
                     report["error"] = str(error)
                 except Exception as error:
                     result.update(outcome="error", reason=f"{type(error).__name__}: {error}")
+                if task.type == "duplicates" and result["outcome"] == "no-op":
+                    state["not_duplicates"][pair_key(*task.primary)] = time.time() + 90 * DAY
+                    write_json(cache / "state.json", state)
                 if result["outcome"] in ("rejected", "deferred", "error"):
                     days = 1 if result["outcome"] == "deferred" else 14
                     for path in task.pages:
@@ -412,6 +454,10 @@ def run(wiki, cache, max_tasks=5, only=None):
                         branch = f"curator/{label}/{timestamp}-{number}"
                         git(wiki, "branch", branch, result["commit"])
                         result["branch"] = branch
+                    elif result.get("parent_commit") and result["outcome"] != "deferred":
+                        diff = save_rejection_diff(worktree, result["parent_commit"], runs / f"{timestamp}-{number}.diff")
+                        if diff:
+                            result["diff"] = diff
                 write_json(runs / f"{timestamp}.json", report)
                 if report.get("error"):
                     break

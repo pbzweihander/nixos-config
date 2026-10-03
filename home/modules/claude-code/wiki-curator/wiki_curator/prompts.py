@@ -26,7 +26,14 @@ Do not record user preferences, instructions, secrets or invented explanations.
 
 INSTRUCTIONS = {
     "broken-links": "Fix or remove the dangling links described in the findings.",
-    "duplicates": "Merge into details.keep, delete details.remove with git rm, and update every wiki link to the removed page. Keep the designated older/more-linked slug.",
+    "duplicates": """First decide whether these are true duplicates: the same topic,
+system and facts, not different versions, dates, rounds or machines. Similarity alone
+is not evidence of duplication; related design pages and separate review rounds can
+be distinct. If they are not true duplicates, change no page and write the
+justification with summary starting 'not duplicates: <reason>', dropped: [] and
+redirects: {}. Abstaining is a successful no-op; do not force a merge.
+Only for true duplicates: merge into details.keep, delete details.remove with git rm,
+and update every wiki link to the removed page. Keep the designated older/more-linked slug.""",
     "snapshots": "Use git mv to move the dated knowledge page to details.destination, preserving its slug date, and update every wiki link to it.",
     "log-growth": "Rewrite the page to its present state. Move its timeline into the new details.destination history entry; link both ways.",
     "missing-queries": "Add 2–3 queries to each target knowledge page; every query must pass claude-wiki check --probe.",

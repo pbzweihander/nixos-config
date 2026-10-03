@@ -7,9 +7,16 @@ delay and catch-up after downtime. It attempts at most five tasks per run.
 The job reads `claude-wiki lint --json` and considers, in order:
 
 1. Broken links, one page per task.
-2. Duplicate knowledge pages or two open follow-ups with similarity at least 0.90.
-   Keep the earlier `created` date; break ties by backlink count, then path. Unknown
-   creation dates rank last. Merge facts, remove the other page, update its links.
+2. Candidate duplicate knowledge pages or two open follow-ups with similarity at
+   least 0.90. Claude first checks that they describe the same topic, system and
+   facts, rather than different versions, dates, rounds or machines. Related pages
+   need not be duplicates: abstain by changing no page and writing a justification
+   whose summary starts `not duplicates: <reason>`, with empty `dropped` and
+   `redirects`. For true duplicates, keep the earlier `created` date; break ties by
+   backlink count, then path. Unknown creation dates rank last. Merge facts, remove
+   the other page, update its links. Pairs containing a dated knowledge slug or any
+   page in lint's `snapshots` category are excluded, even with `--only duplicates`;
+   snapshot tasks handle those pages instead.
 3. Dated knowledge snapshots, moved with `git mv` to dated history paths. Dates
    anywhere in the slug are moved to the front; existing destinations are skipped.
 4. Log-like knowledge or follow-up pages: present state in the page, timeline in a
@@ -21,6 +28,12 @@ Projects, dirty pages, pages modified within 24 hours, and pages on cooldown are
 skipped. Necessary backlink updates and new destinations are part of a task's page
 set, so a protected backlink skips the whole merge or move. A page participates in
 at most one task per run. There are no stale-follow-up, orphan, or unread tasks.
+
+Every duplicate task that finishes as a no-op suppresses that pair for 90 days,
+including no-ops without a valid justification. The justification's summary, if
+present and readable, is recorded as the task's reason. Suppression applies only to
+that pair, independent of its order in lint; both pages remain eligible for other
+tasks and other pairs. Once the deadline expires, the pair is eligible again.
 
 ## Isolation and gates
 
@@ -63,9 +76,18 @@ or stages files in the main checkout. Git hooks and commit signing are disabled
 for curator Git commands.
 
 Rejected candidates with a commit are retained as
-`curator/rejected/<UTC timestamp>-<task number>`. Rejections before a commit have
-their reason in the run report instead. Rejected/error tasks cool down all their
-target pages for fourteen days; deferred tasks for one day. Deferred commits are
+`curator/rejected/<UTC timestamp>-<task number>`. When page edits are rejected before
+a commit (including scope/validation errors or Claude failure), their patch is saved
+as `runs/<UTC timestamp>-<task number>.diff` in the curator cache before worktree
+cleanup. The task result's `diff` field and its summary line give the path. The patch
+compares the worktree to the task's parent, includes tracked edits/deletions and new
+files (including binary files), and includes only `pages/`. Its size is capped at
+1 MiB including a truncation marker; a truncated patch is for inspection, not replay.
+Empty page diffs do not create an artifact. Capture uses only the disposable
+worktree's index; the main checkout and its index remain untouched.
+
+Rejected/error tasks cool down all their target pages for fourteen days; deferred
+tasks for one day. Deferred commits are
 also retained, as `curator/deferred/<UTC timestamp>-<task number>`. Accepted commits
 have a `curator: <type>: <summary>` subject and a `Curator-Run` trailer.
 
@@ -97,10 +119,14 @@ wiki-curator.service`, under `[Service]` using `Environment=NAME=value`.
 `run.lock` excludes concurrent runs; another invocation exits successfully right
 away. `runs/<UTC timestamp>.json` records tasks, outcomes, gate results, Codex
 problems, candidate/landed SHAs and retained branches. `latest.md` is the human
-summary; `state.json` stores Unix-time cooldown deadlines. Reports and cooldowns
-are checkpointed between tasks. A corrupt state file fails the run rather than
-bypassing cooldowns. Normal completion, exceptions and handled service termination
-remove the worktree; a later run removes a registered leftover after an abrupt
+summary; `state.json` stores Unix-time deadlines in `cooldowns` (per page) and
+`not_duplicates` (90-day suppression, keyed by two sorted page paths joined with
+`|`, for example `pages/knowledge/a.md|pages/knowledge/b.md`). Old state files without
+`not_duplicates` load with an empty map. Both maps are validated strictly; invalid
+paths, unsorted/repeated pairs, nonnumeric or nonfinite deadlines fail the run.
+Reports and state are checkpointed between tasks. A corrupt state file fails the
+run rather than bypassing suppression. Normal completion, exceptions and handled
+service termination remove the worktree; a later run removes a registered leftover after an abrupt
 kill. Task rejection/failure exits zero; run setup or cleanup failure exits nonzero.
 
 Inspect retained work without changing the main checkout:
@@ -109,6 +135,7 @@ Inspect retained work without changing the main checkout:
 git -C ~/.local/share/claude-wiki branch --list 'curator/rejected/*'
 git -C ~/.local/share/claude-wiki show 'curator/rejected/<timestamp>-<n>'
 git -C ~/.local/share/claude-wiki worktree add --detach /tmp/wiki-review 'curator/rejected/<timestamp>-<n>'
+less ~/.cache/wiki-curator/runs/<timestamp>-<n>.diff
 ```
 
 For debugging, run inside a wiki repo:

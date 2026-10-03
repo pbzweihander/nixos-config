@@ -11,6 +11,11 @@ from .preservation import LINK
 
 TYPES = ("broken-links", "duplicates", "snapshots", "log-growth", "missing-queries", "singleton-tags")
 DAY = 86400
+SLUG_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def pair_key(a, b):
+    return "|".join(sorted((a, b)))
 
 
 @dataclass
@@ -73,12 +78,17 @@ def blocked(repo, pages, cooldowns, now, dirty=None):
     return None
 
 
-def select_tasks(repo, worklist, cooldowns, now, max_tasks=5, only=None):
+def select_tasks(repo, worklist, cooldowns, now, max_tasks=5, only=None, *, not_duplicates=None):
     if not isinstance(worklist, dict) or any(not isinstance(v, list) for v in worklist.values()):
         raise ValueError("lint did not return a category-to-list object")
     dirty = status(repo)
     texts = catalog(repo, dirty)
     selected, occupied, seen = [], set(), set()
+    not_duplicates = not_duplicates or {}
+    snapshots = worklist.get("snapshots", [])
+    if any(not isinstance(i, dict) or not isinstance(i.get("path"), str) for i in snapshots):
+        raise ValueError("invalid lint items in snapshots")
+    snapshot_pages = {i["path"] for i in snapshots}
 
     def incoming(path):
         target = path[6:-3]
@@ -111,6 +121,11 @@ def select_tasks(repo, worklist, cooldowns, now, max_tasks=5, only=None):
                     continue
                 seen.add(key)
                 if a not in texts or b not in texts or not safe_page(a) or not safe_page(b):
+                    continue
+                if not_duplicates.get(pair_key(a, b), 0) > now:
+                    continue
+                if any(p in snapshot_pages or (p.startswith("pages/knowledge/")
+                       and SLUG_DATE.search(p.rsplit("/", 1)[1][:-3])) for p in (a, b)):
                     continue
                 page_kind = a.split("/")[1]
                 if page_kind != b.split("/")[1] or page_kind not in ("knowledge", "followups"):
@@ -148,7 +163,7 @@ def select_tasks(repo, worklist, cooldowns, now, max_tasks=5, only=None):
                 if not path.startswith("pages/knowledge/"):
                     continue
                 slug = path.rsplit("/", 1)[1][:-3]
-                match = re.search(r"\d{4}-\d{2}-\d{2}", slug)
+                match = SLUG_DATE.search(slug)
                 if not match:
                     continue
                 try:
