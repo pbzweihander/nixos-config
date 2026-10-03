@@ -7,6 +7,7 @@
 
     ../../home/modules/claude-code/wiki-recap
     ../../home/modules/claude-code/wiki-embed
+    ../../home/modules/claude-code/wiki-curator
     ../../home/modules/kde.nix
   ];
 

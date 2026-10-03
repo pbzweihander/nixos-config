@@ -1,0 +1,134 @@
+# wiki-curator
+
+Daily, conservative maintenance for the shared `claude-wiki` git repository. On
+rossmann the user timer starts at 05:00 local time, with up to 15 minutes of random
+delay and catch-up after downtime. It attempts at most five tasks per run.
+
+The job reads `claude-wiki lint --json` and considers, in order:
+
+1. Broken links, one page per task.
+2. Duplicate knowledge pages or two open follow-ups with similarity at least 0.90.
+   Keep the earlier `created` date; break ties by backlink count, then path. Unknown
+   creation dates rank last. Merge facts, remove the other page, update its links.
+3. Dated knowledge snapshots, moved with `git mv` to dated history paths. Dates
+   anywhere in the slug are moved to the front; existing destinations are skipped.
+4. Log-like knowledge or follow-up pages: present state in the page, timeline in a
+   new dated history entry, with links both ways.
+5. Missing queries, one batch of up to five knowledge pages.
+6. Singleton tags, one batch of up to twenty tags, reusing existing tags when suitable.
+
+Projects, dirty pages, pages modified within 24 hours, and pages on cooldown are
+skipped. Necessary backlink updates and new destinations are part of a task's page
+set, so a protected backlink skips the whole merge or move. A page participates in
+at most one task per run. There are no stale-follow-up, orphan, or unread tasks.
+
+## Isolation and gates
+
+Each run owns a detached worktree in the cache. Before each task it checks out the
+latest `main` and cleans untracked files. Claude runs there with wiki hooks disabled,
+no session persistence, an explicit editing-tool allowlist, a 40-turn limit and a
+20-minute timeout. It receives a short copy of the wiki's writing rules and must
+write `.curator/justification.json` with a summary, explained dropped tokens, and
+redirects. The worktree's semantic daemon socket is disabled.
+
+Before committing, the curator checks scope, redirects and required link updates,
+and runs `claude-wiki check`. Blocking validation errors, unexpected exit codes,
+non-regular files, protected pages, unplanned edits, missing/invalid justification,
+and failed Claude invocations reject the attempt. Ordinary validation warnings are
+allowed; query tasks require exit **0** from `check --probe`. Empty attempts are
+no-ops. `.curator/` is never committed.
+
+Two more gates apply to the resulting candidate commit:
+
+- **Preservation:** compare the parent bodies of modified/deleted/renamed pages to
+  the union of new bodies of changed pages. Inline code, numbers/versions/units,
+  URLs and wiki-link targets must survive. Fenced code contents are included;
+  frontmatter is excluded. Links are normalized using Git's `-M` rename detection
+  and the planned redirects. Only exact tokens explicitly listed in `dropped` are
+  exempted. This checks token presence, not meaning or how often a fact occurs.
+- **Codex:** a read-only review receives the task, justification, writing rules and
+  full old/new page texts. It checks every fact, distinct versions/dates/machines,
+  provenance, inventions, scope and page types. Dropped-token exceptions still need
+  semantic approval. Only a strictly valid final-line JSON acceptance without
+  problems passes. Nonzero exits, malformed/missing output or a 15-minute timeout
+  reject the attempt.
+
+To land, the job takes the wiki's existing `flock(2)` lock for at most 120 seconds,
+verifies that its checkout is on `main` with no Git operation in progress, rechecks
+the touched paths, and runs `git cherry-pick -x`. Unrelated **unstaged** edits remain
+untouched. Any staged changes defer landing, because cherry-pick requires a clean
+index. New backlinks that appeared during review also defer a move/merge. Conflicts
+are aborted and deferred. The curator never resets, stashes, checks out, cleans,
+or stages files in the main checkout. Git hooks and commit signing are disabled
+for curator Git commands.
+
+Rejected candidates with a commit are retained as
+`curator/rejected/<UTC timestamp>-<task number>`. Rejections before a commit have
+their reason in the run report instead. Rejected/error tasks cool down all their
+target pages for fourteen days; deferred tasks for one day. Deferred commits are
+also retained, as `curator/deferred/<UTC timestamp>-<task number>`. Accepted commits
+have a `curator: <type>: <summary>` subject and a `Curator-Run` trailer.
+
+## Run and inspect
+
+```sh
+wiki-curator run
+wiki-curator run --max-tasks 2 --only broken-links missing-queries
+wiki-curator run --wiki /path/to/test-wiki
+wiki-curator status
+systemctl --user status wiki-curator.timer wiki-curator.service
+journalctl --user -u wiki-curator.service
+```
+
+The wiki defaults to `~/.local/share/claude-wiki`. Environment settings:
+
+| Variable | Meaning |
+| --- | --- |
+| `CLAUDE_WIKI_DIR` | Wiki root; `--wiki` takes precedence. |
+| `WIKI_CURATOR_MAX_TASKS` | Default task limit (five); `--max-tasks` takes precedence. Zero selects no tasks. |
+| `WIKI_CURATOR_MODEL` | Optional Claude model, passed as `--model`. |
+| `XDG_CACHE_HOME` | Cache root, default `~/.cache`. State is in its `wiki-curator/` directory. |
+
+The service PATH includes `~/.local/bin`, the home profile's `bin`, and
+`/run/current-system/sw/bin`. Claude and Codex must already be authenticated for
+unattended use. Set service environment overrides with `systemctl --user edit
+wiki-curator.service`, under `[Service]` using `Environment=NAME=value`.
+
+`run.lock` excludes concurrent runs; another invocation exits successfully right
+away. `runs/<UTC timestamp>.json` records tasks, outcomes, gate results, Codex
+problems, candidate/landed SHAs and retained branches. `latest.md` is the human
+summary; `state.json` stores Unix-time cooldown deadlines. Reports and cooldowns
+are checkpointed between tasks. A corrupt state file fails the run rather than
+bypassing cooldowns. Normal completion, exceptions and handled service termination
+remove the worktree; a later run removes a registered leftover after an abrupt
+kill. Task rejection/failure exits zero; run setup or cleanup failure exits nonzero.
+
+Inspect retained work without changing the main checkout:
+
+```sh
+git -C ~/.local/share/claude-wiki branch --list 'curator/rejected/*'
+git -C ~/.local/share/claude-wiki show 'curator/rejected/<timestamp>-<n>'
+git -C ~/.local/share/claude-wiki worktree add --detach /tmp/wiki-review 'curator/rejected/<timestamp>-<n>'
+```
+
+For debugging, run inside a wiki repo:
+
+```sh
+wiki-curator check-preservation <parent> <commit> --justification /path/to/justification.json
+```
+
+It prints `{"missing_tokens": [...]}` and exits one on missing tokens or invalid
+input. Without `--justification`, no dropped-token exemptions or explicit redirects
+apply. The justification also lives in the candidate's commit body and run JSON.
+
+## Build and tests
+
+The package uses only Python's standard library and Git. Its Nix `checkPhase` runs
+the unittest suite with Git on PATH. All tests use temporary repositories and fake
+Claude, Codex and wiki executables; they never access the live wiki or run models.
+
+From the configuration repository:
+
+```sh
+nix shell nixpkgs#python3 nixpkgs#git -c python3 -m unittest discover -s home/modules/claude-code/wiki-curator/tests -v
+```

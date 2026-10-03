@@ -447,6 +447,13 @@ truncation. Categories are:
 
 `lint` exits 0 unless it fails to run. It does not edit pages.
 
+## Curator
+
+A daily job on rossmann consolidates a few lint findings. It lands commits titled
+`curator: ...` after a deterministic preservation check and a Codex review. Rejected
+attempts with a commit are kept on branches `curator/rejected/*`. Sessions do not
+need to do anything about them.
+
 ## Maintenance
 
 - `claude-wiki sync --rebuild` rebuilds the index from scratch.
