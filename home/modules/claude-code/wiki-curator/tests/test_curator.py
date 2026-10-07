@@ -285,6 +285,20 @@ class PreservationTests(RepoTest):
         self.assertTrue(any(flag.startswith("R") for flag, _, _ in changes(self.wiki, parent, commit)))
         self.assertEqual(preserved(self.wiki, parent, commit, justification(dropped=[])), [])
 
+    def test_numbers_in_link_targets_are_not_tokens(self):
+        found = tokens(page("See [[knowledge/b-2020-01-02|the 45s page]].\n"))
+        self.assertIn("45s", found)
+        self.assertFalse({"2020", "01", "02"} & found)
+        self.write(A, page("See [[knowledge/b-2020-01-02]].\n"))
+        self.write("pages/knowledge/b-2020-01-02.md", page("The exact same facts.\n" * 10))
+        parent = self.commit()
+        target = "pages/history/2020-01-02-b.md"
+        (self.wiki / target).parent.mkdir(parents=True)
+        git(self.wiki, "mv", "pages/knowledge/b-2020-01-02.md", target)
+        self.write(A, page("See [[history/2020-01-02-b]].\n"))
+        commit = self.commit()
+        self.assertEqual(preserved(self.wiki, parent, commit, justification(dropped=[])), [])
+
     def test_redirects_for_merge_and_union_of_changed_pages(self):
         self.write(A, page("Measured `first` takes 45s. [[knowledge/b]]\n"))
         self.write(B, page("Measured `second` takes 75s.\n"))

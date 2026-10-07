@@ -13,6 +13,7 @@ NUMBER = re.compile(
     r"(?:[-+][a-zA-Z]+(?:[.-]?\d+)*)?(?:[a-zA-Zµμ°]+|%)?(?![\w])"
 )
 URL = re.compile(r"(?:https?|ftp)://[^\s<>`\]\"']+")
+LINK_SPAN = re.compile(r"\[\[[a-z]+/[a-z0-9._-]+(?:\|([^\]\n]*))?\]\]")
 
 
 def strict_json(text):
@@ -42,7 +43,9 @@ def body(text):
 
 def tokens(text):
     text = body(text)
-    result = set(NUMBER.findall(text))
+    # Link targets are compared as normalized links below; numbers in a renamed slug
+    # (a dated knowledge page moved to history) are not facts. Display text still counts.
+    result = set(NUMBER.findall(LINK_SPAN.sub(lambda m: f" {m[1] or ''} ", text)))
     result.update(m.group().rstrip(".,;:!?)") for m in URL.finditer(text))
     result.update(f"[[{m[1]}]]" for m in LINK.finditer(text))
     # Fences themselves are not inline spans; do not remove their contents.
