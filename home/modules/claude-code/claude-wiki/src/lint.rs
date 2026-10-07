@@ -29,6 +29,17 @@ fn cosine(value: &str) -> std::result::Result<f64, String> {
         .ok_or_else(|| "min must be a finite cosine between -1 and 1".into())
 }
 
+/// A slug date marks a snapshot only when it is the page's own date. A date far from
+/// `created`, such as a release cutoff (`minio-before-2024-09-13-...`), is a fact about
+/// the topic, not a snapshot. Without a valid `created`, any valid slug date counts.
+fn snapshot_slug(date: &Regex, stem: &str, created: &str) -> bool {
+    let parse = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok();
+    let created = parse(created.trim());
+    date.find_iter(stem)
+        .filter_map(|m| parse(m.as_str()))
+        .any(|d| created.is_none_or(|c| (d - c).num_days().abs() <= 7))
+}
+
 fn worklist(root: &Path, db: &Connection, now: i64) -> Result<BTreeMap<String, Vec<Value>>> {
     static DATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d{4}-\d{2}-\d{2}").unwrap());
     static LOG: LazyLock<Regex> =
@@ -82,16 +93,20 @@ fn worklist(root: &Path, db: &Connection, now: i64) -> Result<BTreeMap<String, V
         for finding in sync::broken_links(root, &page) {
             add("broken-links", finding);
         }
-        if page.kind == "knowledge" {
-            if DATE.is_match(
+        if page.kind == "knowledge"
+            && snapshot_slug(
+                &DATE,
                 Path::new(&row.path)
                     .file_stem()
                     .unwrap_or_default()
                     .to_string_lossy()
                     .as_ref(),
-            ) {
-                add("snapshots", "dated knowledge slug".into());
-            }
+                &page.created,
+            )
+        {
+            add("snapshots", "dated knowledge slug".into());
+        }
+        if page.kind == "knowledge" {
             if row.backlinks == 0 && page.links.is_empty() {
                 add("orphans", "no backlinks or outgoing links".into());
             }
@@ -231,6 +246,21 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn snapshot_slug_needs_a_date_near_created() {
+        let date = Regex::new(r"\d{4}-\d{2}-\d{2}").unwrap();
+        assert!(snapshot_slug(&date, "review-2026-09-19", "2026-09-19"));
+        assert!(snapshot_slug(&date, "review-2026-09-19", "2026-09-24"));
+        assert!(!snapshot_slug(
+            &date,
+            "minio-before-2024-09-13-ignores",
+            "2026-09-28"
+        ));
+        assert!(snapshot_slug(&date, "review-2026-09-19", ""));
+        assert!(!snapshot_slug(&date, "review-2026-13-45", ""));
+        assert!(!snapshot_slug(&date, "plain-topic", "2026-09-19"));
+    }
+
     #[test]
     fn categories_are_complete_and_deterministic() -> Result<()> {
         let mut wiki = usage::tests::Wiki::new()?;

@@ -476,7 +476,9 @@ truncation. Categories are:
 - `duplicates`: page-vector cosine pairs of knowledge and open follow-ups, at or
   above `--min` (default `0.88`), drawn from the daemon's top 500 pairs. An unavailable
   daemon is noted (on stderr for JSON).
-- `snapshots`: knowledge slugs containing a `YYYY-MM-DD` date.
+- `snapshots`: knowledge slugs containing a `YYYY-MM-DD` date within 7 days of the
+  page's `created` (any valid date when `created` is missing); a release or cutoff
+  date far from `created` is not a snapshot.
 - `log-growth`: knowledge and follow-ups with at least three headings containing
   a date or `Round N`, or beginning with `Update`; fenced code is excluded.
 - `stale-followups`: open follow-ups with mtime older than 14 days, oldest first.
