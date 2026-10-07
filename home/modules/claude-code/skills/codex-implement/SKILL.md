@@ -126,8 +126,8 @@ exist, so the review diff is meaningful. Pick a **new run directory**
 `<scratchpad>/codex-run-<slug>` for every run, including resumes and retries; the
 runner creates it and refuses a directory that already has `events.jsonl`.
 
-Start codex in two parts, so every codex step arrives in this session as a
-notification while it works, and codex survives the watcher:
+Start codex in two parts, so codex survives anything watching it and the session
+hears only about the events that need a decision:
 
 1. Start the runner with a plain **Bash** call (no `run_in_background`); it returns
    immediately with `[STARTED]`:
@@ -142,24 +142,45 @@ notification while it works, and codex survives the watcher:
     [-c 'projects."<project root>".trust_level="trusted"'] \
     - < "<scratchpad>/codex-spec-<slug>.md"
   ```
-2. Follow its progress with the **Monitor** tool:
-   - `command`: `~/.claude/skills/codex-implement/scripts/codex-watch.sh "<run dir>"`
-   - `description`: `codex: <slug>`
-   - `timeout_ms`: `1800000`
+2. Follow it with a **watcher subagent**: the Agent tool with
+   `subagent_type: general-purpose`, `model: haiku`,
+   `description: codex watch: <slug>`, and this prompt with the run directory
+   filled in:
+   ```
+   Watch a codex run. Run this exact Bash command, with timeout 600000:
+   ~/.claude/skills/codex-implement/scripts/codex-watch.sh --wait 540 "<run dir>"
+   Never prefix it or add other commands, sleep, or polling.
+   If its output has a line starting with [EXIT], [FAILED], [BLOCKED, [STUCK?] or
+   [QUIET], stop. Otherwise (it ended with [WAITING], or printed only [DONE] or
+   [ERROR] lines) run the same command again.
+   When you stop, reply with every line the watch printed across all runs,
+   verbatim, and nothing else.
+   ```
+   Then end your turn or keep doing independent work. You are notified when the
+   watcher returns.
+
+Why a subagent and not the Monitor tool: Claude Code holds back its "waiting for
+your input" notification (and the terminal bell with it) only while an agent or a
+workflow runs, not while a Monitor or a background shell does. Under Monitor every
+progress line woke this session, which then ended its turn and rang the bell. If you
+cannot start agents (you are a subagent yourself), run the same loop with your own
+foreground Bash calls.
+
+When the watcher returns, act on its lines (table below). If the run has not reached
+`[EXIT]` and should go on, start a new watcher with the same prompt.
+`codex-watch.sh` remembers how many lines of `progress.log` it consumed
+(`<run dir>/progress.seen`), so every watch continues where the last one stopped. It
+prints only the lines that may need a decision; the routine ones (`[plan]`,
+`[FAIL rc=N]`, `[FAIL mcp]`) stay in `progress.log`. With `--wait SECS` it returns at
+the first `[EXIT]`, `[FAILED]`, `[BLOCKED`, `[STUCK?]` or `[QUIET]` line, or prints
+`[WAITING]` after about SECS seconds; on a finished run it prints the `[EXIT]` line
+again. After 15 seconds without a new line it checks whether the run is alive and
+reports `[FAILED]` if the runner disappeared without writing `[EXIT]`.
 
 The runner detaches itself into a user systemd scope, or a separate process group
 when user systemd is unavailable. Codex must not remain a child of anything Claude
-Code can kill: Monitor expiry, the background Bash time limit, or low-memory reaping.
-
-Run only the watch under Monitor. Monitor has no `persistent` option; `timeout_ms`
-defaults to 5 minutes and is capped at 30, and on expiry Monitor kills its command
-with every child.
-
-When the watch expires before `[EXIT]`, arm the same Monitor again. `codex-watch.sh`
-remembers how many lines it already printed (`<run dir>/progress.seen`), so a new
-watch continues without repeating events. It exits after `[EXIT]`. After 15 seconds
-without a new line, it also checks whether the run is alive and reports `[FAILED]`
-if the runner disappeared without writing `[EXIT]`.
+Code can kill: a watcher that is stopped, a Monitor's expiry, the background Bash
+time limit, or low-memory reaping.
 
 Replace `--sandbox workspace-write` with `--approve-for-me` when you chose auto
 review in step 2; never pass both.
@@ -213,23 +234,24 @@ time. When that happens, rerun the **whole spec** on the next account: sessions 
 under `CODEX_HOME`, so another account cannot resume the previous account's run. Say in
 your report which account did the work.
 
-Event lines:
+Event lines (those marked *log only* are not printed by the watch):
 
 | Line | Meaning | What to do |
 |---|---|---|
-| `[STARTED] <unit.scope or pid N> — follow with codex-watch.sh "<run dir>"` | The detached runner has started. | Arm the Monitor watch. |
-| `[FAIL rc=N] <cmd> :: <last output line>` | A command failed. Sent once per distinct command. | Usually nothing; codex fixes its own failures. |
+| `[STARTED] <unit.scope or pid N> — follow with codex-watch.sh "<run dir>"` | The detached runner has started. | Start the watcher. |
+| `[FAIL rc=N] <cmd> :: <last output line>` | *Log only.* A command failed; once per distinct command. | Nothing; codex fixes its own failures. |
 | `[BLOCKED rc=N] <cmd> :: <line>` | The failure looks like a sandbox denial: DNS or network errors, `Operation not permitted`, read-only filesystem. | codex cannot fix this. If the spec needs it, stop and resume with the missing flag. |
 | `[STUCK?] same command failed 3 times: <cmd>` | codex keeps retrying one failing command. | Read the raw events; stop it if it is going nowhere. |
 | `[QUIET] no codex events for <time>; still running: <cmd>` | Nothing new for `--quiet-secs` seconds (default 600). Sent once per silent stretch. | Normal for a long test suite or the first nix build. A server started in the foreground that never returns is a hang: stop it. |
-| `[plan d/n] next: <item>` | codex's todo list advanced. | Nothing. |
-| `[FAIL mcp] <server>.<tool>` | An MCP tool call failed. | Usually nothing. |
+| `[plan d/n] next: <item>` | *Log only.* codex's todo list advanced. | Nothing. |
+| `[FAIL mcp] <server>.<tool>` | *Log only.* An MCP tool call failed. | Nothing. |
 | `[ERROR] ...` | A non-fatal error, such as a dropped stream codex retries. | Nothing unless it repeats. |
-| `[DONE] N cmds (M failed), K files changed, ...` | The turn completed. | Wait for `[EXIT]`. |
+| `[DONE] N cmds (M failed), K files changed, ...` | The turn completed. | The watch goes on to `[EXIT]`. |
 | `[FAILED] ...` | The turn failed, or codex exited without finishing one. | Read the reason; see below. |
 | `[FAILED] runner is gone without [EXIT]; see ...` | The run died without an exit marker. | Read `runner.out` and `stderr.log`, then retry or resume in a new run directory. |
 | `[EXIT] codex rc=N` | Always last; the stream then ends. | Go to step 4. |
 | `[EXIT] codex stopped by codex-stop.sh` | The run was stopped. | Resume in a new run directory if needed. |
+| `[WAITING] codex is still running; run the watch again` | `--wait` ran out of time. | The watcher runs it again. |
 
 Not sent: successful commands, codex's messages, per-file edits, and web searches.
 Exit code 1 from `rg`, `grep`, `test`, `diff`, or `cmp` counts as "no match" and is
@@ -240,9 +262,9 @@ While it runs:
 - Act only on `[BLOCKED]`, `[STUCK?]`, a `[QUIET]` that points at a hang, and
   `[FAILED]`. To stop codex, run
   `~/.claude/skills/codex-implement/scripts/codex-stop.sh "<run dir>"`, then resume
-  as in step 4. TaskStop on the Monitor only ends the watch.
+  as in step 4. Stopping the watcher only ends the watch.
 - Tell the user about those same events and what you decided. Do not relay the rest.
-- Do not poll or sleep. Keep doing independent work, or wait for events.
+- Do not poll or sleep. Keep doing independent work, or wait for the watcher.
 - File edits are not shown live. Check for edits outside the spec's area in step 4.
 - If the project's test suite routinely runs longer than ten minutes, pass
   `--quiet-secs <seconds>` before the run directory to raise the threshold.

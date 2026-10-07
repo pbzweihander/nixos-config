@@ -92,8 +92,8 @@ let
       # a leading `//` marks an absolute path in permission rules
       "Read(/${wikiDir}/**)"
       "Edit(/${wikiDir}/**)"
-      # codex-implement detaches its runner, follows it with codex-watch.sh under Monitor,
-      # and stops it with codex-stop.sh. Monitor uses Bash rules. Whether `~` is expanded
+      # codex-implement detaches its runner, follows it with codex-watch.sh from a watcher
+      # subagent's Bash calls, and stops it with codex-stop.sh. Whether `~` is expanded
       # before matching is undocumented, so allow both spellings.
       "Bash(~/${codexScripts}/codex-monitor.sh *)"
       "Bash(${homeDir}/${codexScripts}/codex-monitor.sh *)"
