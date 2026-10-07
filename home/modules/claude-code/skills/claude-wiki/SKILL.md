@@ -244,7 +244,9 @@ warning reports it. Shorten the project page or lower the overview budget to fit
      from their file name.
    - `status`: `open` or `done`, follow-ups only.
    - `created`: today's date. The update date comes from the file mtime.
-   - `queries` (optional): questions in a future session's words; Korean is fine here even though the body is English.
+   - `queries` (optional): searches in a future session's words: a question, or an
+     exact error message or symptom line as a session would paste it, not a list of
+     keywords. Korean is fine here even though the body is English.
 3. **Run `claude-wiki check --probe <page>`** before syncing. Reword the title or add
    relevant identifiers until every query finds the page.
 4. **Run `claude-wiki sync -m "<short summary>" <pages>`** after every write, passing

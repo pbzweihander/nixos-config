@@ -19,8 +19,10 @@ behaviour checked), reported, unverified (relayed claims not checked). Never upg
 certainty. Keep corrections in 'What looked right and was not': the tempting wrong
 conclusion, why it looked plausible, and what disproved it; retain correction tags.
 Knowledge and followups link their history entry; the entry links back to the page.
-Queries are 2–3 nonempty questions in a future session's words, optionally one Korean;
-run claude-wiki check --probe and revise until every query passes.
+Queries are 2–3 nonempty searches in a future session's words, optionally one Korean:
+a question, or an exact error message or symptom line as a session would paste it.
+Not a bag of keywords assembled to pass the probe. Run claude-wiki check --probe and
+revise until every query passes.
 Do not record user preferences, instructions, secrets or invented explanations.
 """
 
