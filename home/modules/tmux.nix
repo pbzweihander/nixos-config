@@ -41,6 +41,11 @@
       set -g set-titles on
       set -g set-titles-string "#T"
 
+      # Desktop notifications (OSC 9 and 777) reach ghostty only through a DCS
+      # passthrough, which Claude Code emits inside tmux; `all` lets a pane in a
+      # window that is not visible notify too.
+      set -g allow-passthrough all
+
       # tmux opens a new pane in the path tmux itself started in; keep the pane's own
       # directory instead, which is nearly always what the split is for.
       bind '"' split-window -c "#{pane_current_path}"

@@ -48,6 +48,10 @@ let
           }
       '';
 
+  # Claude Code skips the idle notification when the user typed anything since the
+  # turn ended, so a short wait stays quiet while they are at the terminal.
+  idleNotifThresholdMs = 10000;
+
   homeDir = config.home.homeDirectory;
   wikiDir = "${config.xdg.dataHome}/claude-wiki";
 
@@ -79,6 +83,10 @@ let
     # searches them and the recall benchmark was mined from them. Claude Code deletes
     # them after 30 days unless told otherwise; they grow by roughly 25 GB a year.
     cleanupPeriodDays = 3650;
+    # OSC 9 desktop notification plus a BEL; ghostty turns the bell into a sound and
+    # a 🔔 on the tab (ghostty.nix). Inside tmux Claude Code wraps the OSC in a DCS
+    # passthrough, which tmux.nix allows.
+    preferredNotifChannel = "iterm2_with_bell";
     permissions.allow = [
       "Bash(claude-wiki *)"
       # a leading `//` marks an absolute path in permission rules
@@ -197,6 +205,26 @@ in
         printf '%s\n' "$merged" > "$settings"
       else
         warnEcho "$settings is not valid JSON; not merging Claude Code settings"
+      fi
+      done
+
+      # The idle notification waits 60 s by default, and the key is read from the global
+      # config (.claude.json, which CLAUDE_CONFIG_DIR moves), not from settings.json.
+      # Written only when it differs: Claude Code rewrites this file all the time.
+      for global in ${
+        lib.escapeShellArgs (
+          map (
+            dir: if dir == ".claude" then "${homeDir}/.claude.json" else "${homeDir}/${dir}/.claude.json"
+          ) configDirs
+        )
+      }; do
+      [ -e "$global" ] || continue
+      if [ "$(${lib.getExe pkgs.jq} '.messageIdleNotifThresholdMs' "$global")" != ${toString idleNotifThresholdMs} ]; then
+        if updated="$(${lib.getExe pkgs.jq} '.messageIdleNotifThresholdMs = ${toString idleNotifThresholdMs}' "$global")"; then
+          printf '%s\n' "$updated" > "$global"
+        else
+          warnEcho "$global is not valid JSON; not setting messageIdleNotifThresholdMs"
+        fi
       fi
       done
     '';
