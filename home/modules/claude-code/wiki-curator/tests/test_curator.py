@@ -18,7 +18,7 @@ sys.path.insert(0, str(PACKAGE))
 from wiki_curator.gitutil import changes, git, status
 from wiki_curator.preservation import preserved, tokens
 from wiki_curator.runner import DIFF_LIMIT, DIFF_TRUNCATED, read_state, run, save_rejection_diff
-from wiki_curator.selection import DAY, select_tasks
+from wiki_curator.selection import tags, DAY, select_tasks
 
 
 A = "pages/knowledge/a.md"
@@ -220,6 +220,20 @@ class SelectionTests(RepoTest):
         self.assertEqual(tasks[0].details["destination"], "pages/history/2020-02-01-service-state.md")
         self.write(B, page("Dirty backlink.\n"))
         self.assertEqual(select_tasks(self.wiki, lint, {}, time.time()), [])
+
+
+    def test_decision_snapshot_is_renamed_within_knowledge(self):
+        for extra in ("tags: [fenix, decision]\n", "tags:\n  - fenix\n  - decision\n"):
+            with self.subTest(extra=extra):
+                source = "pages/knowledge/fenix-decisions-2020-02-01-observe.md"
+                self.write(source, f"---\ntitle: Decisions\n{extra}created: 2020-02-01\n---\n\nKept.\n")
+                self.commit()
+                lint = {"snapshots": [{"path": source, "detail": "dated"}]}
+                task = select_tasks(self.wiki, lint, {}, time.time())[0]
+                self.assertEqual(task.details["destination"], "pages/knowledge/fenix-decisions-observe.md")
+                self.assertEqual(task.details["redirects"], {source: "pages/knowledge/fenix-decisions-observe.md"})
+        self.assertEqual(tags(page("x", extra="")), {"nix"})
+        self.assertEqual(tags("no frontmatter"), set())
 
 
 class StateTests(RepoTest):

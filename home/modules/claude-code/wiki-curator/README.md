@@ -19,6 +19,8 @@ The job reads `claude-wiki lint --json` and considers, in order:
    snapshot tasks handle those pages instead.
 3. Dated knowledge snapshots, moved with `git mv` to dated history paths. Dates
    anywhere in the slug are moved to the front; existing destinations are skipped.
+   A page tagged `decision` is renamed within knowledge without the date instead,
+   because history is excluded from recall and decision records must stay findable.
 4. Log-like knowledge or follow-up pages: present state in the page, timeline in a
    new dated history entry, with links both ways.
 5. Missing queries, one batch of up to five knowledge pages.

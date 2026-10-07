@@ -40,6 +40,20 @@ def scalar(text, key):
     return values[0].strip().split(" #", 1)[0].strip().strip("\"'")
 
 
+def tags(text):
+    """Frontmatter tags in flow (`[a, b]`) or block (`- a`) style; empty when unsure."""
+    parts = re.split(r"(?m)^---\s*$", text, maxsplit=2)
+    if len(parts) != 3 or parts[0].strip():
+        return set()
+    flow = scalar(text, "tags")
+    if flow.startswith("[") and flow.endswith("]"):
+        return {t.strip().strip("\"'") for t in flow[1:-1].split(",") if t.strip()}
+    block = re.search(r"(?m)^tags:\s*\n((?:[ \t]+-[^\n]*\n?)+)", parts[1])
+    if not block:
+        return set()
+    return {line.strip()[1:].strip().strip("\"'") for line in block[1].splitlines() if line.strip()}
+
+
 def catalog(repo, dirty):
     paths = git(repo, "ls-tree", "-r", "--name-only", "-z", "main", "--", "pages/").split("\0")
     texts = {}
@@ -172,7 +186,10 @@ def select_tasks(repo, worklist, cooldowns, now, max_tasks=5, only=None, *, not_
                     continue
                 rest = "-".join(part.strip("-_.") for part in (slug[:match.start()], slug[match.end():])
                                 if part.strip("-_."))
-                destination = f"pages/history/{match[0]}-{rest}.md"
+                # History is excluded from recall; a decision record must stay findable
+                # so sessions do not ask again, so it is renamed within knowledge.
+                destination = (f"pages/knowledge/{rest}.md" if "decision" in tags(texts[path])
+                               else f"pages/history/{match[0]}-{rest}.md")
                 if not rest or (repo / destination).exists():
                     continue
                 add(kind, [path], {"destination": destination, "redirects": {path: destination}},

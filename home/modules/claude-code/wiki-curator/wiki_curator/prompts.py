@@ -36,7 +36,10 @@ justification with summary starting 'not duplicates: <reason>', dropped: [] and
 redirects: {}. Abstaining is a successful no-op; do not force a merge.
 Only for true duplicates: merge into details.keep, delete details.remove with git rm,
 and update every wiki link to the removed page. Keep the designated older/more-linked slug.""",
-    "snapshots": "Use git mv to move the dated knowledge page to details.destination, preserving its slug date, and update every wiki link to it.",
+    "snapshots": """Use git mv to move the dated knowledge page to details.destination and update
+every wiki link to it. A pages/history destination preserves the slug date. A pages/knowledge
+destination renames a decision record, which stays knowledge so recall keeps offering it: keep
+its type, frontmatter and body; only the slug loses its date.""",
     "log-growth": "Rewrite the page to its present state. Move its timeline into the new details.destination history entry; link both ways.",
     "missing-queries": "Add 2–3 queries to each target knowledge page; every query must pass claude-wiki check --probe.",
     "singleton-tags": "For each listed singleton tag, replace it with an existing tag when one fits. Otherwise leave it. Do not invent tags.",
