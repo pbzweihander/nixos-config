@@ -34,6 +34,7 @@ in
       # and title are the defaults: taskbar highlight and a 🔔 on the tab.
       bell-features = "audio,attention,title";
       bell-audio-path = "${pkgs.sound-theme-freedesktop}/share/sounds/freedesktop/stereo/message-new-instant.oga";
+      bell-audio-volume = 1.0;
       background-opacity = 0.9;
       copy-on-select = false;
       font-family = "Sarasa Term K";
