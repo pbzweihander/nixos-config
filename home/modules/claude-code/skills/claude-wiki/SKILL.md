@@ -447,9 +447,11 @@ as are relative page paths when the tool cwd or a preceding `cd`
 resolves to the wiki root. These are observed tool calls, not proof of successful
 reading or comprehension. One tool call can access several pages.
 
-The report includes distinct session/page injections per source (`remind`,
-`recall-skill`, `recall-failure`, `context`), later reads in the same session, and
-rates. It counts pages and read pages by type, pages read by a session that never
+The report includes distinct session/page injections, later reads in the same
+session, and rates for every source in the time window (including `subagent` and
+`skill-prompt` when logged), sorted by name. The known sources `remind`,
+`recall-skill`, `recall-failure`, and `context` remain listed even at zero.
+It counts pages and read pages by type, pages read by a session that never
 wrote them, and pages older than 14 days never read. Age uses `created`, falling
 back to mtime. It also lists the ten pages most often injected without a later
 read, counting distinct sessions across sources, and transcript/session counts

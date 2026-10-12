@@ -47,13 +47,17 @@ write `.curator/justification.json` with a summary, explained dropped tokens, an
 redirects. The worktree's semantic daemon socket is disabled.
 
 Before committing, the curator checks scope, redirects and required link updates,
-and runs `claude-wiki check`. Blocking validation errors, unexpected exit codes,
+rejects new broken wiki links, and runs `claude-wiki check`. For each added or
+modified page, missing `[[type/slug]]` targets are compared with those already
+missing in that same page at the parent. Existing broken links are tolerated;
+new ones are recorded in the `broken-links` gate and reject the attempt.
+Blocking validation errors, unexpected exit codes,
 non-regular files, protected pages, unplanned edits, missing/invalid justification,
 and failed Claude invocations reject the attempt. Ordinary validation warnings are
 allowed; query tasks require exit **0** from `check --probe`. Empty attempts are
 no-ops. `.curator/` is never committed.
 
-Two more gates apply to the resulting candidate commit:
+Three more gates apply to the resulting candidate commit, in this order:
 
 - **Preservation:** compare the parent bodies of modified/deleted/renamed pages to
   the union of new bodies of changed pages. Inline code, numbers/versions/units,
@@ -61,8 +65,22 @@ Two more gates apply to the resulting candidate commit:
   frontmatter is excluded. Links are normalized using Git's `-M` rename detection
   and the planned redirects. Only exact tokens explicitly listed in `dropped` are
   exempted. This checks token presence, not meaning or how often a fact occurs.
+- **Recall:** probe every parent-frontmatter query of modified, deleted or renamed
+  pages, plus queries of added pages. Expected pages follow Git's `-M` renames and
+  justification redirects. Deleted pages with queries need a surviving target;
+  moved or merged queries must appear there as exactly the same strings.
+  Temporarily check out the parent, then restore the candidate in a `finally`
+  block and rank both versions with `search --json --no-semantic -n 10`, splitting
+  queries into whitespace-separated arguments. A parent rank of 1–3 must remain
+  in the top 3. Existing failures are reported without rejecting the change;
+  added pages have no parent rank. The `recall` gate records every probe's page,
+  expected page, query and both ranks (null means absent from the top 10).
+  The stdlib parser supports ordinary inline and block lists of plain,
+  single-quoted or JSON-quoted strings; unsupported query syntax and search errors
+  reject the attempt. All searches use the isolated worktree and disabled daemon.
 - **Codex:** a read-only review receives the task, justification, writing rules and
-  full old/new page texts. It checks every fact, distinct versions/dates/machines,
+  full old/new page texts, together with all gate results including recall ranks.
+  It checks every fact, distinct versions/dates/machines,
   provenance, inventions, scope and page types. Dropped-token exceptions still need
   semantic approval. Only a strictly valid final-line JSON acceptance without
   problems passes. Nonzero exits, malformed/missing output or a 15-minute timeout

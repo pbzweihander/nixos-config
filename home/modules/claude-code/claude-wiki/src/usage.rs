@@ -509,7 +509,12 @@ pub fn older_than(created: &str, mtime: i64, now: i64, days: i64) -> bool {
 fn aggregate(db: &Connection, index: &Connection, since: i64, now: i64) -> Result<Value> {
     let mut sources = BTreeMap::new();
     let mut ignored = BTreeMap::<String, i64>::new();
-    for source in ["remind", "recall-skill", "recall-failure", "context"] {
+    let mut source_names = db
+        .prepare("select distinct source from injections where at>=?")?
+        .query_map([since], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<HashSet<_>>>()?;
+    source_names.extend(["remind", "recall-skill", "recall-failure", "context"].map(String::from));
+    for source in source_names {
         let rows = db.prepare("select i.session_id, i.path, exists(select 1 from accesses a join tools t using(tool_use_id) where a.path=i.path and t.session_id=i.session_id and a.kind='read' and t.at>i.first_at) from (select session_id, path, min(at) as first_at from injections where source=? and at>=? group by session_id, path) i")?
             .query_map(params![source, since], |r| Ok((r.get::<_, String>(1)?, r.get::<_, bool>(2)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1004,6 +1009,55 @@ pub(crate) mod tests {
             db.query_row("select count(*) from tools", [], |r| r.get::<_, i64>(0))?,
             5
         );
+        Ok(())
+    }
+
+    #[test]
+    fn stats_include_all_sources_in_the_window_and_zero_known_sources() -> Result<()> {
+        let wiki = Wiki::new()?;
+        let db = open(&wiki.root)?;
+        db.execute_batch(
+            "insert into injections values
+            ('s','pages/knowledge/one.md','subagent',10),
+            ('s','pages/knowledge/one.md','subagent',11),
+            ('s','pages/knowledge/two.md','subagent',10),
+            ('s','pages/knowledge/one.md','skill-prompt',10),
+            ('s','pages/knowledge/one.md','custom-source',10),
+            ('s','pages/knowledge/one.md','expired-source',9);
+            insert into tools values ('r','s',12);
+            insert into accesses values ('r','pages/knowledge/one.md','read');",
+        )?;
+        let report = aggregate(&db, &wiki.index, 10, 1800000000)?;
+        let sources = report["sources"].as_object().unwrap();
+        assert_eq!(
+            sources.keys().map(String::as_str).collect::<Vec<_>>(),
+            [
+                "context",
+                "custom-source",
+                "recall-failure",
+                "recall-skill",
+                "remind",
+                "skill-prompt",
+                "subagent"
+            ]
+        );
+        assert_eq!(
+            sources["subagent"],
+            json!({"injections": 2, "read_later": 1, "rate": 0.5})
+        );
+        assert_eq!(
+            sources["skill-prompt"],
+            json!({"injections": 1, "read_later": 1, "rate": 1.0})
+        );
+        assert_eq!(sources["custom-source"], sources["skill-prompt"]);
+        for source in ["context", "recall-failure", "recall-skill", "remind"] {
+            assert_eq!(
+                sources[source],
+                json!({"injections": 0, "read_later": 0, "rate": 0.0})
+            );
+        }
+        let recent = aggregate(&db, &wiki.index, 12, 1800000000)?;
+        assert_eq!(recent["sources"].as_object().unwrap().len(), 4);
         Ok(())
     }
 

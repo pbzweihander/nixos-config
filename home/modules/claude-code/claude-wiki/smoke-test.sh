@@ -501,6 +501,9 @@ mkdir -p "$sessions_dir/usage/parent/subagents"
 cp "$fixtures/usage.jsonl" "$sessions_dir/usage/parent/subagents/agent.jsonl"
 check "stats scans subagent wiki access" 'knowledge: .*1 cross-session' "$wiki" stats
 check "stats JSON" '"cross_session_read":1' "$wiki" stats --json
+"$wiki" skill-pages codex-implement --cwd "$HOME/demo-worktree" --session stats-custom --source skill-prompt >/dev/null
+check "stats includes custom source in text" '^skill-prompt: 1 injections,' "$wiki" stats
+check "stats includes custom source in JSON" '"skill-prompt":{"injections":1,' "$wiki" stats --json
 check "lint worklist" 'missing-queries (' "$wiki" lint
 check "lint JSON" '"unread":' "$wiki" lint --json
 before=$(git -C "$CLAUDE_WIKI_DIR" rev-parse HEAD)

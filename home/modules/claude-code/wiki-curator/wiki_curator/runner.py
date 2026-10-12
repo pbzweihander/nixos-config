@@ -19,6 +19,7 @@ from .gitutil import (changed_texts, changes, command, git, page_text,
                       regular_page, safe_page, status)
 from .preservation import LINK, load_justification, preserved, strict_json
 from .prompts import claude_prompt, review_prompt
+from .recall import recall
 from .selection import DAY, blocked, pair_key, select_tasks
 
 
@@ -230,6 +231,24 @@ def check_scope(worktree, parent, task, justification, paths):
         raise ValueError("unplanned page deletion")
 
 
+def new_broken_links(worktree, parent, paths):
+    """Subtract only links already missing in this same page at the parent."""
+    previous = set(filter(None, git(worktree, "ls-tree", "-r", "--name-only", "-z",
+                                   parent, "--", "pages/").split("\0")))
+    broken = []
+    for path in sorted(paths):
+        if not regular_page(worktree, path):
+            continue
+        old = page_text(worktree, parent, path) if path in previous else ""
+        missing_before = {f"pages/{m[1]}.md" for m in LINK.finditer(old)
+                          if f"pages/{m[1]}.md" not in previous}
+        missing_after = {f"pages/{m[1]}.md" for m in LINK.finditer((worktree / path).read_text())
+                         if not regular_page(worktree, f"pages/{m[1]}.md")}
+        broken.extend({"page": path, "target": target}
+                      for target in sorted(missing_after - missing_before))
+    return broken
+
+
 def land(wiki, parent, commit, cooldowns):
     """Shared landing gate for the service and explicit human review."""
     edits = changes(wiki, parent, commit)
@@ -279,8 +298,8 @@ def perform_task(wiki, worktree, timestamp, task, state, result):
     result["parent_commit"] = parent
     gates = result["gates"]
 
-    def reject(gate, reason):
-        gates[gate] = {"accept": False, "reason": reason}
+    def reject(gate, reason, **details):
+        gates[gate] = {**details, "accept": False, "reason": reason}
         result.update(outcome="rejected", reason=reason)
 
     tags = command(["claude-wiki", "tags"], worktree, env=env).stdout if task.type == "singleton-tags" else "Run claude-wiki tags when needed."
@@ -337,6 +356,15 @@ def perform_task(wiki, worktree, timestamp, task, state, result):
         reject("scope", str(error))
         return
     gates["scope"] = {"accept": True}
+    try:
+        broken = new_broken_links(worktree, parent, page_paths)
+    except (OSError, ValueError, RuntimeError) as error:
+        reject("broken-links", str(error))
+        return
+    if broken:
+        reject("broken-links", "new broken wiki links", links=broken)
+        return
+    gates["broken-links"] = {"accept": True, "links": []}
     check_argv = ["claude-wiki", "check"]
     if task.type == "missing-queries":
         check_argv.append("--probe")
@@ -373,6 +401,17 @@ def perform_task(wiki, worktree, timestamp, task, state, result):
     gates["preservation"] = {"accept": not missing, "missing_tokens": missing}
     if missing:
         result.update(outcome="rejected", reason="preservation check failed")
+        return
+    try:
+        gates["recall"] = recall(worktree, parent, commit, justification, env)
+        if (git(worktree, "rev-parse", "HEAD").strip() != commit or snapshot(worktree) != after
+                or any(not p.startswith(".curator/") for p in status(worktree))):
+            raise ValueError("recall validation changed candidate files")
+    except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
+        reject("recall", str(error))
+        return
+    if not gates["recall"]["accept"]:
+        reject("recall", "recall check failed", **gates["recall"])
         return
     output = worktree / ".curator/codex-review.txt"
     output.unlink(missing_ok=True)

@@ -11,11 +11,12 @@ import time
 fixture = json.loads(Path(os.environ["CURATOR_FIXTURE"]).read_text())
 name = Path(sys.argv[0]).name
 prompt = sys.stdin.read()
+head = subprocess.run(["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
 with Path(os.environ["CURATOR_CALLS"]).open("a") as stream:
     stream.write(json.dumps({"name": name, "args": sys.argv[1:], "cwd": os.getcwd(),
                              "wiki": os.environ.get("CLAUDE_WIKI_DIR"),
                              "socket": os.environ.get("CLAUDE_WIKI_SOCKET"),
-                             "prompt": prompt}) + "\n")
+                             "prompt": prompt, "head": head}) + "\n")
 
 
 def git(root, *args):
@@ -44,6 +45,12 @@ if name == "claude-wiki":
     if sys.argv[1] == "check":
         print("fake page validation")
         sys.exit(fixture.get("check_exit", 0))
+    if sys.argv[1] == "search":
+        revision = "parent" if head == fixture.get("parent_commit") else "commit"
+        query = " ".join(sys.argv[sys.argv.index("--") + 1:])
+        hits = fixture.get("search", {}).get(revision, {}).get(query, [])
+        print(fixture.get("search_raw", {}).get(revision, json.dumps({"hits": [{"rel": p} for p in hits]})))
+        sys.exit(fixture.get("search_exit", {}).get(revision, 0))
     raise SystemExit("unexpected wiki command")
 elif name == "claude":
     if fixture.get("wait_for"):
