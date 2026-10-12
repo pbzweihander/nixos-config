@@ -65,7 +65,7 @@ class RepoTest(unittest.TestCase):
             "CURATOR_MAIN": str(self.wiki), "CLAUDE_WIKI_DIR": str(self.wiki),
             "PYTHONPATH": str(PACKAGE), "PYTHONDONTWRITEBYTECODE": "1",
         }
-        for key in ("WIKI_CURATOR_MODEL", "WIKI_CURATOR_MAX_TASKS", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        for key in ("WIKI_CURATOR_MODEL", "WIKI_CURATOR_MAX_TASKS", "WIKI_CURATOR_ADJUDICATE", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
             self.env.pop(key, None)
         self.environment = patch.dict(os.environ, self.env, clear=True)
         self.environment.start()
@@ -708,7 +708,7 @@ class RunTests(RepoTest):
             {"review": '{"accept": false, "problems": ["Lost the machine qualification"]}'},
             {"review": "not JSON"}, {"codex_exit": 3}, {"no_review_file": True},
             {"review": '{"accept": "true", "problems": []}'},
-            {"review": '{"accept": true, "problems": ["unsure"]}'}, {"codex_sleep": 2},
+            {"codex_sleep": 2},
             {"review": '{"accept": false, "accept": true, "problems": []}'},
         ]
         for case in cases:

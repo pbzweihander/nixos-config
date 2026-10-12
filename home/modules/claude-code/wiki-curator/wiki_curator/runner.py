@@ -15,10 +15,11 @@ import stat
 import subprocess
 import time
 
+from .adjudication import apply_edits, frontmatter_only, parse_adjudication, singleton_tags
 from .gitutil import (changed_texts, changes, command, git, page_text,
                       regular_page, safe_page, status)
 from .preservation import LINK, load_justification, preserved, strict_json
-from .prompts import claude_prompt, review_prompt
+from .prompts import adjudicate_prompt, claude_prompt, review_prompt
 from .recall import recall
 from .selection import DAY, blocked, pair_key, select_tasks
 
@@ -188,8 +189,6 @@ def parse_review(text):
             or type(value["accept"]) is not bool or not isinstance(value["problems"], list)
             or any(not isinstance(p, str) for p in value["problems"])):
         raise ValueError("invalid Codex review schema")
-    if value["accept"] and value["problems"]:
-        raise ValueError("Codex accepted but also reported problems")
     return value
 
 
@@ -348,99 +347,198 @@ def perform_task(wiki, worktree, timestamp, task, state, result):
             raise ValueError("justification must not be a symlink")
         justification = load_justification(justification_path)
         result["justification"] = justification
-        check_scope(worktree, parent, task, justification, page_paths)
-        reason = blocked(wiki, page_paths, state["cooldowns"], time.time())
-        if reason:
-            raise ValueError(reason)
-    except (OSError, ValueError, RuntimeError) as error:
+    except (OSError, ValueError) as error:
         reject("scope", str(error))
         return
-    gates["scope"] = {"accept": True}
-    try:
-        broken = new_broken_links(worktree, parent, page_paths)
-    except (OSError, ValueError, RuntimeError) as error:
-        reject("broken-links", str(error))
+
+    def candidate(page_paths, after, checks):
+        def fail(gate, reason, **details):
+            checks[gate] = {**details, "accept": False, "reason": reason}
+            result.update(outcome="rejected", reason=reason)
+
+        try:
+            check_scope(worktree, parent, task, justification, page_paths)
+            reason = blocked(wiki, page_paths, state["cooldowns"], time.time())
+            if reason:
+                raise ValueError(reason)
+        except (OSError, ValueError, RuntimeError) as error:
+            fail("scope", str(error))
+            return
+        checks["scope"] = {"accept": True}
+        try:
+            broken = new_broken_links(worktree, parent, page_paths)
+        except (OSError, ValueError, RuntimeError) as error:
+            fail("broken-links", str(error))
+            return
+        if broken:
+            fail("broken-links", "new broken wiki links", links=broken)
+            return
+        checks["broken-links"] = {"accept": True, "links": []}
+        check_argv = ["claude-wiki", "check"]
+        if task.type == "missing-queries":
+            check_argv.append("--probe")
+        # Include deleted paths: the wiki CLI accepts them for deletion/link validation.
+        try:
+            check = command([*check_argv, *page_paths], worktree, env=env, check=False)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            fail("check", str(error))
+            return
+        valid_codes = (0,) if task.type == "missing-queries" else (0, 1)
+        checks["check"] = {"accept": check.returncode in valid_codes, "exit_code": check.returncode,
+                          "stdout": check.stdout, "stderr": check.stderr}
+        if check.returncode not in valid_codes:
+            result.update(outcome="rejected", reason="wiki validation failed")
+            return
+        if snapshot(worktree) != after:
+            fail("check", "page validation changed candidate files")
+            return
+        if task.type == "singleton-tags":
+            try:
+                checks["singleton-tags"] = singleton_tags(worktree, parent, page_paths)
+            except (OSError, ValueError, RuntimeError) as error:
+                fail("singleton-tags", str(error))
+                return
+            if not checks["singleton-tags"]["accept"]:
+                result.update(outcome="rejected", reason="; ".join(checks["singleton-tags"]["problems"]))
+                return
+        # Validation is allowed to update ignored indexes, but never candidate content.
+        git(worktree, "reset", "--mixed", parent)
+        git(worktree, "add", "--", *page_paths)
+        message = (f"curator: {task.type}: {justification['summary']}\n\n"
+                   f"Task: {json.dumps(task.data(), ensure_ascii=False)}\n\n"
+                   f"Justification: {json.dumps(justification, ensure_ascii=False)}\n\n"
+                   f"Curator-Run: {timestamp}\n")
+        git(worktree, "commit", "-F", "-", input=message)
+        commit = git(worktree, "rev-parse", "HEAD").strip()
+        result["commit"] = commit
+        try:
+            missing = preserved(worktree, parent, commit, justification)
+        except (ValueError, RuntimeError) as error:
+            fail("preservation", str(error))
+            return
+        checks["preservation"] = {"accept": not missing, "missing_tokens": missing}
+        if missing:
+            result.update(outcome="rejected", reason="preservation check failed")
+            return
+        try:
+            checks["recall"] = recall(worktree, parent, commit, justification, env)
+            if (git(worktree, "rev-parse", "HEAD").strip() != commit or snapshot(worktree) != after
+                    or any(not p.startswith(".curator/") for p in status(worktree))):
+                raise ValueError("recall validation changed candidate files")
+        except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
+            fail("recall", str(error))
+            return
+        if not checks["recall"]["accept"]:
+            fail("recall", "recall check failed", **checks["recall"])
+            return
+        return commit
+
+    commit = candidate(page_paths, after, gates)
+    if not commit:
         return
-    if broken:
-        reject("broken-links", "new broken wiki links", links=broken)
-        return
-    gates["broken-links"] = {"accept": True, "links": []}
-    check_argv = ["claude-wiki", "check"]
-    if task.type == "missing-queries":
-        check_argv.append("--probe")
-    # Include deleted paths: the wiki CLI accepts them for deletion/link validation.
-    try:
-        check = command([*check_argv, *page_paths], worktree, env=env, check=False)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        reject("check", str(error))
-        return
-    valid_codes = (0,) if task.type == "missing-queries" else (0, 1)
-    gates["check"] = {"accept": check.returncode in valid_codes, "exit_code": check.returncode,
-                      "stdout": check.stdout, "stderr": check.stderr}
-    if check.returncode not in valid_codes:
-        result.update(outcome="rejected", reason="wiki validation failed")
-        return
-    if snapshot(worktree) != after:
-        reject("check", "page validation changed candidate files")
-        return
-    # Validation is allowed to update ignored indexes, but never candidate content.
-    git(worktree, "reset", "--mixed", parent)
-    git(worktree, "add", "--", *page_paths)
-    message = (f"curator: {task.type}: {justification['summary']}\n\n"
-               f"Task: {json.dumps(task.data(), ensure_ascii=False)}\n\n"
-               f"Justification: {json.dumps(justification, ensure_ascii=False)}\n\n"
-               f"Curator-Run: {timestamp}\n")
-    git(worktree, "commit", "-F", "-", input=message)
-    commit = git(worktree, "rev-parse", "HEAD").strip()
-    result["commit"] = commit
-    try:
-        missing = preserved(worktree, parent, commit, justification)
-    except (ValueError, RuntimeError) as error:
-        reject("preservation", str(error))
-        return
-    gates["preservation"] = {"accept": not missing, "missing_tokens": missing}
-    if missing:
-        result.update(outcome="rejected", reason="preservation check failed")
-        return
-    try:
-        gates["recall"] = recall(worktree, parent, commit, justification, env)
-        if (git(worktree, "rev-parse", "HEAD").strip() != commit or snapshot(worktree) != after
-                or any(not p.startswith(".curator/") for p in status(worktree))):
-            raise ValueError("recall validation changed candidate files")
-    except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
-        reject("recall", str(error))
-        return
-    if not gates["recall"]["accept"]:
-        reject("recall", "recall check failed", **gates["recall"])
-        return
-    output = worktree / ".curator/codex-review.txt"
-    output.unlink(missing_ok=True)
-    try:
-        review = command(["codex", "exec", "--skip-git-repo-check", "-s", "read-only",
-                          "--color", "never", "-o", str(output), "-"], worktree, env=env,
-                         input=review_prompt(task, justification, changed_texts(worktree, parent, commit), gates),
-                         timeout=CODEX_TIMEOUT, check=False)
-        if review.returncode:
-            raise ValueError(f"Codex exited {review.returncode}: {review.stderr.strip()}")
-        if output.is_symlink() or not output.is_file():
-            raise ValueError("Codex output must be a regular file")
-        verdict = parse_review(output.read_text())
-    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
-        reject("codex", str(error))
-        result["codex_problems"] = [str(error)]
-        return
+
+    def unchanged(commit, expected):
+        return (git(worktree, "rev-parse", "HEAD").strip() == commit
+                and snapshot(worktree) == expected
+                and not any(not p.startswith(".curator/") for p in status(worktree)))
+
+    def codex_review(commit, checks):
+        output = worktree / ".curator/codex-review.txt"
+        output.unlink(missing_ok=True)
+        try:
+            review = command(["codex", "exec", "--skip-git-repo-check", "-s", "read-only",
+                              "--color", "never", "-o", str(output), "-"], worktree, env=env,
+                             input=review_prompt(task, justification, changed_texts(worktree, parent, commit), checks),
+                             timeout=CODEX_TIMEOUT, check=False)
+            if review.returncode:
+                raise ValueError(f"Codex exited {review.returncode}: {review.stderr.strip()}")
+            if output.is_symlink() or not output.is_file():
+                raise ValueError("Codex output must be a regular file")
+            return parse_review(output.read_text())
+        except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+            return {"accept": False, "reason": str(error), "problems": [str(error)]}
+
+    verdict = codex_review(commit, gates)
     gates["codex"] = verdict
     result["codex_problems"] = verdict["problems"]
-    if not verdict["accept"]:
-        result.update(outcome="rejected", reason="Codex rejected the change")
-        return
-    if (git(worktree, "rev-parse", "HEAD").strip() != commit or snapshot(worktree) != after
-            or any(not p.startswith(".curator/") for p in status(worktree))):
+    # Check integrity even on rejection or malformed output before adjudicating.
+    if not unchanged(commit, after):
         reject("codex", "worktree changed during read-only review")
         return
+    if not verdict["accept"]:
+        result.update(outcome="rejected", reason=verdict.get("reason", "Codex rejected the change"))
+        if os.environ.get("WIKI_CURATOR_ADJUDICATE") == "0":
+            return
+        adjudicated = {"accept": False, "verdict": "uphold", "reason": "", "edits": [],
+                       "original_commit": commit}
+        # Serialize the prompt before adding the stage's own results.
+        prompt = adjudicate_prompt(task, justification, changed_texts(worktree, parent, commit), gates)
+        gates["adjudicate"] = adjudicated
+        argv = ["claude", "-p", "--setting-sources", "", "--no-session-persistence",
+                "--tools", "", "--max-turns", "1"]
+        if os.environ.get("WIKI_CURATOR_MODEL"):
+            argv += ["--model", os.environ["WIKI_CURATOR_MODEL"]]
+        try:
+            process = command(argv, worktree, env=env, input=prompt,
+                              timeout=CLAUDE_TIMEOUT, check=False)
+            adjudicated.update(exit_code=process.returncode, stdout=process.stdout, stderr=process.stderr)
+            if process.returncode:
+                raise ValueError(f"Claude adjudicator exited {process.returncode}: {process.stderr.strip()}")
+            adjudicated.update(parse_adjudication(process.stdout))
+            if not unchanged(commit, after):
+                raise ValueError("worktree changed during tool-free adjudication")
+            if adjudicated["verdict"] == "override":
+                adjudicated["frontmatter_only"] = frontmatter_only(worktree, parent, commit)
+                if not adjudicated["frontmatter_only"]:
+                    adjudicated.update(verdict="uphold", requested_verdict="override",
+                                       error="override requires byte-identical page bodies at the same paths")
+                    return
+            elif adjudicated["verdict"] == "revise":
+                apply_edits(worktree, parent, commit, adjudicated["edits"])
+                after = snapshot(worktree)
+                revision = adjudicated["gates"] = {}
+                # Compare the whole revised candidate to the original parent, and
+                # replace the commit so land() cherry-picks the complete change.
+                revised = candidate(page_paths, after, revision)
+                if not revised:
+                    adjudicated["error"] = result["reason"]
+                    return
+                commit = revised
+                adjudicated["commit"] = commit
+                second = codex_review(commit, revision)
+                adjudicated["second_review"] = second
+                revision["codex"] = second
+                if not unchanged(commit, after):
+                    raise ValueError("worktree changed during second read-only review")
+                if not second["accept"]:
+                    result["reason"] = second.get("reason", "Codex rejected the revised change")
+                    return
+            else:
+                return
+            adjudicated["accept"] = True
+        except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
+            adjudicated["error"] = str(error)
+            return
+        result.pop("reason", None)
     landing = land(wiki, parent, commit, state["cooldowns"])
     gates["landing"] = landing.copy()
     result.update(landing)
+
+
+def review_details(problems, adjudication):
+    lines = ["  " + " ".join(problem.splitlines()) for problem in problems]
+    if not isinstance(adjudication, dict):
+        return lines
+    verdict, reason = adjudication.get("verdict"), adjudication.get("reason")
+    if isinstance(verdict, str) and isinstance(reason, str):
+        lines.append(f"  adjudicate ({verdict}): {' '.join(reason.splitlines())}")
+    if isinstance(adjudication.get("error"), str):
+        lines.append("  adjudicate error: " + " ".join(adjudication["error"].splitlines()))
+    if adjudication.get("edits"):
+        lines.append("  edits: " + json.dumps(adjudication["edits"], ensure_ascii=False))
+    if isinstance(adjudication.get("second_review"), dict):
+        lines.append("  second review: " + json.dumps(adjudication["second_review"], ensure_ascii=False))
+    return lines
 
 
 def summary(report):
@@ -451,7 +549,12 @@ def summary(report):
         lines.append("No eligible tasks.")
     for result in report["tasks"]:
         evidence = f"; diff: {result['diff']}" if result.get("diff") else ""
-        lines.append(f"- {result['outcome']}: {result['type']} ({', '.join(result['pages'])}){evidence}")
+        outcome = result["outcome"]
+        adjudication = result.get("gates", {}).get("adjudicate")
+        if outcome == "merged" and adjudication and adjudication.get("accept"):
+            outcome += f" (adjudicated: {adjudication['verdict']})"
+        lines.append(f"- {outcome}: {result['type']} ({', '.join(result['pages'])}){evidence}")
+        lines.extend(review_details(result.get("codex_problems", []), adjudication))
         for key in ("reason", "branch", "commit", "landed_commit"):
             if result.get(key):
                 lines.append(f"  {key}: {result[key]}")

@@ -75,11 +75,11 @@ class ReviewTests(RepoTest):
         items = json.loads(self.cli("review", "--json"))["items"]
         self.assertEqual([i["id"] for i in items], [diff_id, branch, missing, deferred])
         self.assertEqual(set(items[0]), {"id", "kind", "branch", "diff", "run", "task", "type", "pages",
-                                       "outcome", "reason", "codex_problems", "summary", "commit"})
+                                       "outcome", "reason", "codex_problems", "adjudicate", "summary", "commit"})
         self.assertEqual(items[0], {"id": diff_id, "kind": "diff", "branch": None, "diff": str(diff_path),
                                    "run": diff_timestamp, "task": 2, "type": "duplicates", "pages": [A, B],
                                    "outcome": "rejected", "reason": "scope", "codex_problems": [],
-                                   "summary": "candidate summary", "commit": None})
+                                   "summary": "candidate summary", "commit": None, "adjudicate": None})
         self.assertEqual(items[1]["codex_problems"], ["Lost qualification", "Check the number"])
         self.assertEqual(items[1]["commit"], result["commit"])
         self.assertEqual(items[1]["summary"], result["justification"]["summary"])

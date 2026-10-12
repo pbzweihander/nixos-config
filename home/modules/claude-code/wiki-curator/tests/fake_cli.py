@@ -44,6 +44,10 @@ if name == "claude-wiki":
         sys.exit(0)
     if sys.argv[1] == "check":
         print("fake page validation")
+        if fixture.get("revision_check_exit") and any(
+                json.loads(line)["name"] == "codex"
+                for line in Path(os.environ["CURATOR_CALLS"]).read_text().splitlines()):
+            sys.exit(fixture["revision_check_exit"])
         sys.exit(fixture.get("check_exit", 0))
     if sys.argv[1] == "search":
         revision = "parent" if head == fixture.get("parent_commit") else "commit"
@@ -53,6 +57,11 @@ if name == "claude-wiki":
         sys.exit(fixture.get("search_exit", {}).get(revision, 0))
     raise SystemExit("unexpected wiki command")
 elif name == "claude":
+    if "--tools" in sys.argv:
+        time.sleep(fixture.get("adjudicate_sleep", 0))
+        edits(Path.cwd(), fixture.get("adjudicate_writes", {}))
+        print(fixture.get("adjudicate", '{"verdict": "uphold", "reason": "검토 필요", "edits": []}'))
+        sys.exit(fixture.get("adjudicate_exit", 0))
     if fixture.get("wait_for"):
         while not Path(fixture["wait_for"]).exists():
             time.sleep(0.02)
@@ -66,6 +75,10 @@ elif name == "claude":
             git(Path.cwd(), "add", ".curator")
     sys.exit(fixture.get("claude_exit", 0))
 elif name == "codex":
+    count = sum(json.loads(line)["name"] == "codex"
+                for line in Path(os.environ["CURATOR_CALLS"]).read_text().splitlines())
+    if count > 1:
+        fixture.update(fixture.get("second_review", {}))
     time.sleep(fixture.get("codex_sleep", 0))
     if fixture.get("move_main"):
         main = Path(os.environ["CURATOR_MAIN"])

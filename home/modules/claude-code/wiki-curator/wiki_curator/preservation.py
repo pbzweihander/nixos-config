@@ -41,11 +41,13 @@ def strict_json(text):
 
 
 def body(text):
+    # Accept bytes as well: frontmatter-only gates must not normalize line endings.
+    markers = (b"---", b"...") if isinstance(text, bytes) else ("---", "...")
     lines = text.splitlines(keepends=True)
-    if lines and lines[0].strip() == "---":
+    if lines and lines[0].strip() == markers[0]:
         for index, line in enumerate(lines[1:], 1):
-            if line.strip() in ("---", "..."):
-                return "".join(lines[index + 1:])
+            if line.strip() in markers:
+                return text[:0].join(lines[index + 1:])
     # An unterminated header cannot hide facts from the gate.
     return text
 

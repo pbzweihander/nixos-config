@@ -9,7 +9,7 @@ import time
 
 from .gitutil import changes, git, safe_page
 from .preservation import strict_json
-from .runner import DIFF_LIMIT, DIFF_TRUNCATED, artifact_key, land, read_state, write_json
+from .runner import DIFF_LIMIT, DIFF_TRUNCATED, artifact_key, land, read_state, review_details, write_json
 from .selection import DAY
 
 
@@ -84,12 +84,15 @@ def item(cache, identity, *, commit=None, diff=None):
         return value if isinstance(value, list) and all(isinstance(v, str) for v in value) else []
 
     explanation = task.get("justification")
+    gates = task.get("gates")
+    adjudication = gates.get("adjudicate") if isinstance(gates, dict) else None
     return {
         "id": identity, "kind": "branch" if branch else "diff", "branch": branch,
         "diff": str(diff.resolve()) if diff else None, "run": timestamp, "task": number,
         "type": string(task.get("type")), "pages": strings(task.get("pages")),
         "outcome": branch.split("/")[1] if branch else "rejected",
         "reason": string(task.get("reason")), "codex_problems": strings(task.get("codex_problems")),
+        "adjudicate": adjudication if isinstance(adjudication, dict) else None,
         "summary": string(explanation.get("summary")) if isinstance(explanation, dict) else None,
         "commit": commit,
     }
@@ -200,8 +203,8 @@ def execute(args, cache):
                     fields = [entry["id"], entry["outcome"], entry["type"], ", ".join(entry["pages"]),
                               entry["summary"], entry["reason"]]
                     print(" | ".join(" ".join(value.splitlines()) for value in fields if value))
-                    for problem in entry["codex_problems"]:
-                        print("  " + " ".join(problem.splitlines()))
+                    for line in review_details(entry["codex_problems"], entry["adjudicate"]):
+                        print(line)
             return 0
         if args.command == "show":
             sys.stdout.buffer.write(show(wiki, cache, args.id))

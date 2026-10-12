@@ -24,7 +24,8 @@ The job reads `claude-wiki lint --json` and considers, in order:
 4. Log-like knowledge or follow-up pages: present state in the page, timeline in a
    new dated history entry, with links both ways.
 5. Missing queries, one batch of up to five knowledge pages.
-6. Singleton tags, one batch of up to twenty tags, reusing existing tags when suitable.
+6. Singleton tags, one batch of up to twenty tags: replace one-for-one with suitable
+   existing tags, or leave them.
 
 Within each type, candidates with higher lint usage importance come first. Duplicate
 pairs use the greater importance of their two pages. Ties keep the existing path
@@ -63,6 +64,13 @@ and failed Claude invocations reject the attempt. Ordinary validation warnings a
 allowed; query tasks require exit **0** from `check --probe`. Empty attempts are
 no-ops. `.curator/` is never committed.
 
+For singleton-tags tasks, a deterministic `singleton-tags` gate also requires every
+changed page's body to remain byte-identical and its tag count not to decrease
+(duplicates cannot make up for lost tags). Each disappeared tag needs a distinct replacement that existed on another
+wiki page at the original parent; new tags are forbidden. Failures list the dropped
+tags per page. The parser accepts ordinary flow/block lists and fails closed on
+unsupported metadata syntax.
+
 Three more gates apply to the resulting candidate commit, in this order:
 
 - **Preservation:** compare the parent bodies of modified/deleted/renamed pages to
@@ -96,9 +104,38 @@ Three more gates apply to the resulting candidate commit, in this order:
   full old/new page texts, together with all gate results including recall ranks.
   It checks every fact, distinct versions/dates/machines,
   provenance, inventions, scope and page types. Dropped-token exceptions still need
-  semantic approval. Only a strictly valid final-line JSON acceptance without
-  problems passes. Nonzero exits, malformed/missing output or a 15-minute timeout
-  reject the attempt.
+  semantic approval. Query wording/form alone cannot reject a change unless the
+  query is a bare keyword list, unrelated to its page, or false. Tag preference
+  alone cannot reject when the tag gate passed. Such style notes may appear in
+  `problems` with `accept: true`. A strictly valid final-line JSON acceptance passes;
+  rejection, nonzero exits, malformed/missing output or a 15-minute timeout go to
+  adjudication when every deterministic gate passed and the worktree is intact.
+
+By default, a single Claude adjudicator receives the task, justification, all gate
+results, Codex problems, and full before/after texts. It uses the same settings
+isolation, model and timeout as the editing call, with no tools, one turn and no
+session persistence. Its final-line JSON contains `verdict`, a Korean `reason`, and
+`edits` (objects with `path`, `old`, `new`):
+
+- **override:** land through the normal guarded landing function only when every
+  page body is byte-identical at the same path. A body change, addition, deletion or
+  move converts the verdict to uphold, retaining the requested verdict in the report.
+- **revise:** validate at most ten nonoverlapping exact edits against the reviewed
+  commit. Each nonempty `old` must occur exactly once, and each path must already
+  be changed by that commit. Apply the edits in the worktree and rerun scope, broken
+  links, check, the tag gate when applicable, preservation, recall and Codex. The
+  replacement candidate has the original parent, so landing includes the complete
+  change and retained branches remain compatible with manual `land`. Only a passing
+  second review can land; there is never a second adjudication.
+- **uphold**, unusable output, invalid edits, or any failed revision: retain the
+  rejection and normal cooldown. The branch keeps the latest candidate commit;
+  failures before a replacement commit keep the original candidate.
+
+`gates.adjudicate` records the verdict, Korean reason, edits, errors, original commit,
+revision gates and second review when present. `latest.md` and `wiki-curator review`
+show the reason below the original Codex problems, followed by edits and the second
+review. Successful summaries say `merged (adjudicated: override|revise)`.
+Set `WIKI_CURATOR_ADJUDICATE=0` to disable this stage.
 
 To land, the job takes the wiki's existing `flock(2)` lock for at most 120 seconds,
 verifies that its checkout is on `main` with no Git operation in progress, rechecks
@@ -143,6 +180,7 @@ The wiki defaults to `~/.local/share/claude-wiki`. Environment settings:
 | `CLAUDE_WIKI_DIR` | Wiki root; `--wiki` takes precedence. |
 | `WIKI_CURATOR_MAX_TASKS` | Default task limit (five); `--max-tasks` takes precedence. Zero selects no tasks. |
 | `WIKI_CURATOR_MODEL` | Optional Claude model, passed as `--model`. |
+| `WIKI_CURATOR_ADJUDICATE` | Set to `0` to disable adjudication of Codex rejections; enabled otherwise. |
 | `XDG_CACHE_HOME` | Cache root, default `~/.cache`. State is in its `wiki-curator/` directory. |
 
 The service PATH includes `~/.local/bin`, the home profile's `bin`, and
@@ -181,7 +219,7 @@ All four commands accept `--wiki` and use the same wiki/cache environment settin
 as `run`. `review` lists every rejected and deferred branch, plus undismissed diff
 artifacts whose run timestamp is within the last `--days` days (default 30), newest
 first. The age limit applies only to diffs. Text output gives one line per item,
-with Codex problems indented below it. Reports are joined by timestamp and task
+with Codex problems and any adjudication details indented below it. Reports are joined by timestamp and task
 number; missing, unreadable or corrupt report fields become nulls or empty lists.
 Branches with nonstandard names within the curator prefixes remain visible, with
 null run/task fields and their commit date used for ordering.
@@ -189,7 +227,8 @@ null run/task fields and their commit date used for ordering.
 For a mod pane, `review --json` returns `{"items": [...]}`. Each item has `id`,
 `kind` (`branch` or `diff`), `branch`, `diff` (an absolute path), `run` (UTC timestamp),
 `task` (one-based number), `type`, `pages`, `outcome` (`rejected` or `deferred`),
-`reason`, `codex_problems`, `summary` (from the justification), and `commit`. Fields
+`reason`, `codex_problems`, `adjudicate` (the adjudication gate or null), `summary`
+(from the justification), and `commit`. Fields
 that do not apply are null; page/problem lists default to empty. IDs are exact branch
 names or `diff:<timestamp>-<n>`, not arbitrary paths or Git revision expressions.
 `show` prints `git show -M --stat -p` for a branch's current commit, or the diff file's

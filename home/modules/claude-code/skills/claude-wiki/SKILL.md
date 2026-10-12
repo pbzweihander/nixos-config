@@ -524,6 +524,11 @@ A daily job on rossmann consolidates a few lint findings. It lands commits title
 `curator: ...` after a deterministic preservation check and a Codex review. Rejected
 attempts with a commit are kept on branches `curator/rejected/*`. Sessions do not
 need to do anything about them.
+When deterministic gates pass but Codex rejects, a tool-free Claude adjudicator may
+override frontmatter-only changes or propose one small revision that must pass every
+gate and Codex again (`WIKI_CURATOR_ADJUDICATE=0` disables this).
+Singleton-tag tasks must preserve page bodies and replace tags one-for-one with
+tags already used elsewhere, or leave them.
 
 ## Maintenance
 
