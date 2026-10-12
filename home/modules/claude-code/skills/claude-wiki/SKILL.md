@@ -178,7 +178,7 @@ each hit. `--after` and `--before` accept `YYYY-MM-DD`, `7d`, `24h`, or `2w`;
 `--after` is inclusive and `--before` is exclusive, with dates at midnight UTC.
 `--exclude-session ID` and the `CLAUDE_SESSION_ID` environment variable exclude the
 current session. `--reindex` rebuilds the transcript index. Only `sessions` updates
-this text index. `stats` separately scans transcript tool calls for wiki usage.
+this text index. `stats` and `lint` separately scan transcript tool calls for wiki usage.
 
 Sources are the colon-separated directories in `$CLAUDE_WIKI_SESSIONS_DIRS`;
 empty entries and missing directories are skipped, and symlinked duplicates are
@@ -429,12 +429,12 @@ claude-wiki stats [--since 7d|YYYY-MM-DD] [--json]
 claude-wiki lint [--all] [--json] [--min 0.88]
 ```
 
-`stats` incrementally scans main and subagent transcripts under the same source
-directories as `sessions`. It attributes tool calls by `sessionId`, so subagent
-accesses count for the parent, and deduplicates resumed copies by tool-use ID.
+`stats` and `lint` incrementally scan main and subagent transcripts under the same source
+directories as `sessions`. They attribute tool calls by `sessionId`, so subagent
+accesses count for the parent, and deduplicate resumed copies by tool-use ID.
 Only new complete lines are consumed; offsets and file fingerprints detect
 truncation and rewrites. A scan-format change rebuilds derived transcript tables
-on the next `stats` run and preserves injections. Otherwise, usage is retained
+on the next `stats` or `lint` run and preserves injections. Otherwise, usage is retained
 when transcripts disappear; a rebuild can only recover available transcripts.
 
 Read accesses are Read tool calls or page paths in Bash segments beginning with
@@ -488,8 +488,32 @@ truncation. Categories are:
 - `frontmatter` and `broken-links`: the same findings as `check`.
 - `missing-queries`: knowledge without queries.
 - `singleton-tags`: tags used by exactly one unblocked page.
-- `unread`: pages older than 14 days never read, included only after `stats` scans
-  with the current scan format.
+- `unread`: pages older than 14 days never read, included only after a usage scan
+  with the current scan format; oldest first using `created`, falling back to mtime.
+
+`lint` refreshes usage with the same incremental transcript scan as `stats`; unchanged
+transcripts are cheap to revisit. Every JSON item naming a page includes `usage` with
+`reads` (read accesses), `read_sessions` (distinct reading sessions), `last_read`
+(Unix seconds or null), `injected_unread`, and `importance`. Duplicate pairs instead
+have `usage_a` and `usage_b`. `injected_unread` counts distinct session/page injections
+across sources with no read strictly after the first injection in that session.
+Writes do not count as reads. Pages without usage have zero counts and importance,
+and a null `last_read`.
+
+For pages with reads, importance uses all collected history:
+
+```text
+days_since_last_read = max(0, now - last_read) / 86400
+importance = ln(1 + reads) * exp(-days_since_last_read / 30)
+           + 0.5 * ln(1 + read_sessions) - 0.1 * ln(1 + injected_unread)
+```
+
+Never-read pages have importance 0, including pages with unread injections. Items
+sort by descending importance within each category (duplicates use the greater of
+both pages), preserving the existing order on ties. `stale-followups` and `unread`
+keep oldest-first age order. Text items with reads show a compact `· N reads` marker;
+duplicate pairs show it beside each page. Importance only orders maintenance work;
+it never deletes or compacts pages and does not affect search ranking.
 
 `lint` exits 0 unless it fails to run. It does not edit pages.
 

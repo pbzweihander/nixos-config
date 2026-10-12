@@ -69,6 +69,7 @@ fn worklist(root: &Path, db: &Connection, now: i64) -> Result<BTreeMap<String, V
     if unread.is_some() {
         result.insert("unread".into(), vec![]);
     }
+    let mut unread_ages = BTreeMap::new();
     let mut tags: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let rows = db
         .prepare(&format!(
@@ -141,6 +142,10 @@ fn worklist(root: &Path, db: &Connection, now: i64) -> Result<BTreeMap<String, V
             .is_some_and(|read| !read.contains(&row.path))
             && usage::older_than(&page.created, row.mtime, now, 14)
         {
+            unread_ages.insert(
+                row.path.clone(),
+                usage::age_seconds(&page.created, row.mtime, now),
+            );
             result
                 .get_mut("unread")
                 .unwrap()
@@ -166,11 +171,58 @@ fn worklist(root: &Path, db: &Connection, now: i64) -> Result<BTreeMap<String, V
             .cmp(&b["mtime"].as_i64())
             .then(a["path"].as_str().cmp(&b["path"].as_str()))
     });
+    if let Some(items) = result.get_mut("unread") {
+        items.sort_by(|a, b| {
+            let a = a["path"].as_str().unwrap();
+            let b = b["path"].as_str().unwrap();
+            unread_ages[b].cmp(&unread_ages[a]).then(a.cmp(b))
+        });
+    }
     Ok(result)
 }
 
+fn importance(item: &Value) -> f64 {
+    if item.get("a").is_some() {
+        item["usage_a"]["importance"]
+            .as_f64()
+            .unwrap_or_default()
+            .max(item["usage_b"]["importance"].as_f64().unwrap_or_default())
+    } else {
+        item["usage"]["importance"].as_f64().unwrap_or_default()
+    }
+}
+
+fn prioritize(
+    result: &mut BTreeMap<String, Vec<Value>>,
+    usage: &BTreeMap<String, usage::PageUsage>,
+) {
+    let empty = usage::PageUsage::default();
+    for (category, items) in result {
+        for item in items.iter_mut() {
+            for (path_key, usage_key) in [("path", "usage"), ("a", "usage_a"), ("b", "usage_b")] {
+                if let Some(path) = item[path_key].as_str() {
+                    item[usage_key] = json!(usage.get(path).unwrap_or(&empty));
+                }
+            }
+        }
+        if !matches!(category.as_str(), "stale-followups" | "unread") {
+            // Stable sorting preserves the original path/tag/score order on ties.
+            items.sort_by(|a, b| importance(b).total_cmp(&importance(a)));
+        }
+    }
+}
+
+fn reads_marker(usage: &Value) -> String {
+    match usage["reads"].as_i64() {
+        Some(reads) if reads > 0 => format!(" · {reads} reads"),
+        _ => String::new(),
+    }
+}
+
 pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
-    let mut result = worklist(root, db, Utc::now().timestamp())?;
+    let usage = usage::refresh(root)?;
+    let now = Utc::now().timestamp();
+    let mut result = worklist(root, db, now)?;
     let eligible: HashSet<String> = db.prepare("select fts.path from fts join files on files.id=fts.rowid where files.blocked='' and (fts.type='knowledge' or (fts.type='followups' and fts.status='open'))")?
         .query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
     let available = if let Some(pairs) = semantic::pairs(args.min) {
@@ -198,6 +250,7 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
     } else {
         false
     };
+    prioritize(&mut result, &usage::per_page(&usage, now)?);
     if args.json {
         if !available {
             eprintln!("note: duplicates: daemon unavailable");
@@ -218,9 +271,11 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
             for item in items.iter().take(limit) {
                 if let Some(score) = item["score"].as_f64() {
                     println!(
-                        "  {} <-> {} ({score:.2})",
+                        "  {}{} <-> {}{} ({score:.2})",
                         item["a"].as_str().unwrap(),
-                        item["b"].as_str().unwrap()
+                        reads_marker(&item["usage_a"]),
+                        item["b"].as_str().unwrap(),
+                        reads_marker(&item["usage_b"])
                     );
                 } else {
                     let detail = if let Some(age) = item["age_days"].as_i64() {
@@ -232,7 +287,11 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
                             .unwrap_or_default()
                             .into()
                     };
-                    println!("  {}: {detail}", item["path"].as_str().unwrap());
+                    println!(
+                        "  {}: {detail}{}",
+                        item["path"].as_str().unwrap(),
+                        reads_marker(&item["usage"])
+                    );
                 }
             }
             if items.len() > limit {
@@ -246,6 +305,110 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unread_is_oldest_first_using_created_or_mtime() -> Result<()> {
+        let mut wiki = usage::tests::Wiki::new()?;
+        wiki.page(
+            "pages/knowledge/a.md",
+            "---\ntitle: Newer\ncreated: 2020-03-01\n---\ntext",
+        )?;
+        wiki.page(
+            "pages/knowledge/z.md",
+            "---\ntitle: Older\ncreated: 2020-01-01\n---\ntext",
+        )?;
+        wiki.page(
+            "pages/knowledge/b.md",
+            "---\ntitle: Missing date\n---\ntext",
+        )?;
+        let now = Utc::now().timestamp();
+        wiki.index.execute(
+            "update files set mtime_ns=0 where path='pages/knowledge/b.md'",
+            [],
+        )?;
+        let db = usage::open(&wiki.root)?;
+        db.execute_batch("insert into state values ('scanned', 1), ('scan_format', 2);")?;
+        let result = worklist(&wiki.root, &wiki.index, now)?;
+        assert_eq!(
+            result["unread"]
+                .iter()
+                .map(|i| i["path"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "pages/knowledge/b.md",
+                "pages/knowledge/z.md",
+                "pages/knowledge/a.md"
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn usage_fields_and_stable_ordering_include_pairs_and_age_exceptions() -> Result<()> {
+        let original: BTreeMap<String, Vec<Value>> = serde_json::from_value(json!({
+            "duplicates": [{"a": "a", "b": "b", "score": 0.99},
+                           {"a": "c", "b": "d", "score": 0.95},
+                           {"a": "e", "b": "d", "score": 0.90}],
+            "orphans": [{"path": "a"}, {"path": "b"}, {"path": "d"}, {"path": "e"}],
+            "stale-followups": [{"path": "a", "age_days": 30}, {"path": "d", "age_days": 20}],
+            "unread": [{"path": "a"}, {"path": "d"}]
+        }))?;
+        let mut empty = original.clone();
+        prioritize(&mut empty, &BTreeMap::new());
+        let zero = json!({"reads": 0, "read_sessions": 0, "last_read": null,
+                          "injected_unread": 0, "importance": 0.0});
+        for (category, items) in &empty {
+            for (i, item) in items.iter().enumerate() {
+                for field in ["path", "a", "b", "score", "age_days"] {
+                    assert_eq!(item[field], original[category][i][field]);
+                }
+                if category == "duplicates" {
+                    assert_eq!(item["usage_a"], zero);
+                    assert_eq!(item["usage_b"], zero);
+                } else {
+                    assert_eq!(item["usage"], zero);
+                }
+            }
+        }
+        assert_eq!(reads_marker(&zero), "");
+        assert_eq!(reads_marker(&Value::Null), "");
+        let usage = BTreeMap::from([(
+            "d".into(),
+            usage::PageUsage {
+                reads: 5,
+                read_sessions: 2,
+                last_read: Some(123),
+                injected_unread: 1,
+                importance: 1.5,
+            },
+        )]);
+        let mut ranked = original;
+        prioritize(&mut ranked, &usage);
+        assert_eq!(
+            ranked["orphans"]
+                .iter()
+                .map(|i| i["path"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["d", "a", "b", "e"]
+        );
+        assert_eq!(
+            ranked["duplicates"]
+                .iter()
+                .map(|i| i["a"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["c", "e", "a"]
+        );
+        let expected = json!({"reads": 5, "read_sessions": 2, "last_read": 123,
+                              "injected_unread": 1, "importance": 1.5});
+        assert_eq!(ranked["duplicates"][0]["usage_b"], expected);
+        assert_eq!(ranked["orphans"][0]["usage"], expected);
+        for category in ["unread", "stale-followups"] {
+            assert_eq!(ranked[category][0]["path"], "a");
+            assert_eq!(ranked[category][1]["usage"], expected);
+        }
+        assert_eq!(reads_marker(&expected), " · 5 reads");
+        Ok(())
+    }
     #[test]
     fn snapshot_slug_needs_a_date_near_created() {
         let date = Regex::new(r"\d{4}-\d{2}-\d{2}").unwrap();

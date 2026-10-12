@@ -14,6 +14,15 @@ NUMBER = re.compile(
 )
 URL = re.compile(r"(?:https?|ftp)://[^\s<>`\]\"']+")
 LINK_SPAN = re.compile(r"\[\[[a-z]+/[a-z0-9._-]+(?:\|([^\]\n]*))?\]\]")
+PATH = re.compile(r"(?<![\w./~:-])(?:~/|/)(?:[\w.@+%-]+/)+[\w.@+%-]+/?")
+FILENAME = re.compile(
+    r"(?<![\w.-])\.?[a-zA-Z0-9_][\w.-]*\."
+    r"(?:rs|py|nix|toml|json|yaml|yml|md|ts|tsx|js|go|sh|fish|sql|conf|service|timer)"
+    r"(?![\w-]|\.\w)"
+)
+UPPER_SNAKE = re.compile(r"(?<!\w)[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+(?!\w)")
+SNAKE = re.compile(r"(?<!\w)[a-z][a-z0-9]*(?:_[a-z][a-z0-9]*)+(?!\w)")
+ERROR_CODE = re.compile(r"(?<!\w)(?:E[0-9]{2,4}|HTTP[0-9]{3})(?!\w)")
 
 
 def strict_json(text):
@@ -45,7 +54,13 @@ def tokens(text):
     text = body(text)
     # Link targets are compared as normalized links below; numbers in a renamed slug
     # (a dated knowledge page moved to history) are not facts. Display text still counts.
-    result = set(NUMBER.findall(LINK_SPAN.sub(lambda m: f" {m[1] or ''} ", text)))
+    facts = LINK_SPAN.sub(lambda m: f" {m[1] or ''} ", text)
+    result = set(NUMBER.findall(facts))
+    for pattern in (PATH, FILENAME, UPPER_SNAKE, ERROR_CODE):
+        result.update(m.group().rstrip(".,;:!?)]}>") for m in pattern.finditer(facts))
+    # Require a word component: a_b (or a_b_c) in prose is usually notation.
+    result.update(m.group() for m in SNAKE.finditer(facts)
+                  if any(sum(c.isalpha() for c in part) > 1 for part in m.group().split("_")))
     result.update(m.group().rstrip(".,;:!?)") for m in URL.finditer(text))
     result.update(f"[[{m[1]}]]" for m in LINK.finditer(text))
     # Fences themselves are not inline spans; do not remove their contents.

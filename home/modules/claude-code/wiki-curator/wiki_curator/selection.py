@@ -18,6 +18,14 @@ def pair_key(a, b):
     return "|".join(sorted((a, b)))
 
 
+def importance(item):
+    def score(key):
+        usage = item.get(key, {})
+        value = usage.get("importance", 0) if isinstance(usage, dict) else 0
+        return value if type(value) in (int, float) and math.isfinite(value) else 0
+    return max(score("usage_a"), score("usage_b")) if "a" in item else score("usage")
+
+
 @dataclass
 class Task:
     type: str
@@ -126,6 +134,7 @@ def select_tasks(repo, worklist, cooldowns, now, max_tasks=5, only=None, *, not_
             items = sorted(items, key=lambda i: (-float(i["score"]), i["a"], i["b"]))
         else:
             items = sorted(items, key=lambda i: (i["path"], i.get("tag", ""), i.get("detail", "")))
+        items.sort(key=importance, reverse=True)
         grouped = []
         for item in items:
             if kind == "duplicates":

@@ -3,6 +3,7 @@ use anyhow::Result;
 use chrono::{DateTime, NaiveDate, Utc};
 use clap::Args as ClapArgs;
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, HashSet, VecDeque},
@@ -49,7 +50,7 @@ fn prepare_scan(db: &Connection) -> Result<()> {
         })
         .optional()?;
     if version != Some(SCAN_FORMAT) {
-        // Only stats rebuilds derived data. Hooks must never discard injections.
+        // Only transcript scans rebuild derived data. Hooks never discard injections.
         db.execute_batch(
             "drop table tools; drop table accesses; drop table transcripts; drop table sessions;
             delete from state where key='scanned';",
@@ -497,13 +498,75 @@ pub fn scanned(db: &Connection) -> Result<bool> {
     )?)
 }
 
-pub fn older_than(created: &str, mtime: i64, now: i64, days: i64) -> bool {
+#[derive(Debug, Default, Serialize)]
+pub struct PageUsage {
+    pub reads: i64,
+    pub read_sessions: i64,
+    pub last_read: Option<i64>,
+    pub injected_unread: i64,
+    pub importance: f64,
+}
+
+pub fn per_page(db: &Connection, now: i64) -> Result<BTreeMap<String, PageUsage>> {
+    let mut pages = BTreeMap::<String, PageUsage>::new();
+    let mut stmt = db.prepare(
+        "select path, sum(kind='read'), count(distinct case when kind='read' then session_id end),
+         max(case when kind='read' then at end) from accesses join tools using(tool_use_id) group by path",
+    )?;
+    for row in stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            PageUsage {
+                reads: r.get(1)?,
+                read_sessions: r.get(2)?,
+                last_read: r.get(3)?,
+                ..PageUsage::default()
+            },
+        ))
+    })? {
+        let (path, usage) = row?;
+        pages.insert(path, usage);
+    }
+    // Collapse sources/repeated injections to one session/page, and require a
+    // strictly later read than the first injection, just like stats.
+    let mut stmt = db.prepare(
+        "select i.path, sum(not exists(select 1 from accesses a join tools t using(tool_use_id)
+         where a.path=i.path and t.session_id=i.session_id and a.kind='read' and t.at>i.first_at))
+         from (select session_id, path, min(at) as first_at from injections group by session_id, path) i
+         group by i.path",
+    )?;
+    for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+        let (path, count) = row?;
+        pages.entry(path).or_default().injected_unread = count;
+    }
+    for usage in pages.values_mut() {
+        if let Some(last_read) = usage.last_read {
+            let days = now.saturating_sub(last_read).max(0) as f64 / 86400.0;
+            usage.importance = (usage.reads as f64).ln_1p() * (-days / 30.0).exp()
+                + 0.5 * (usage.read_sessions as f64).ln_1p()
+                - 0.1 * (usage.injected_unread as f64).ln_1p();
+        }
+    }
+    Ok(pages)
+}
+
+pub fn refresh(root: &Path) -> Result<Connection> {
+    let mut db = open(root)?;
+    scan(root, &mut db, &sessions::source_dirs()?)?;
+    Ok(db)
+}
+
+pub fn age_seconds(created: &str, mtime: i64, now: i64) -> i64 {
     let at = NaiveDate::parse_from_str(created, "%Y-%m-%d")
         .ok()
         .and_then(|d| d.and_hms_opt(0, 0, 0))
         .map(|d| d.and_utc().timestamp())
         .unwrap_or(mtime / 1_000_000_000);
-    now - at > days * 86400
+    now - at
+}
+
+pub fn older_than(created: &str, mtime: i64, now: i64, days: i64) -> bool {
+    age_seconds(created, mtime, now) > days * 86400
 }
 
 fn aggregate(db: &Connection, index: &Connection, since: i64, now: i64) -> Result<Value> {
@@ -571,8 +634,7 @@ pub fn run(root: &Path, index: &Connection, args: &Args) -> Result<()> {
         .map(|s| DateTime::parse_from_rfc3339(&s).map(|d| d.timestamp()))
         .transpose()?
         .unwrap_or(i64::MIN);
-    let mut db = open(root)?;
-    scan(root, &mut db, &sessions::source_dirs()?)?;
+    let db = refresh(root)?;
     let report = aggregate(&db, index, since, now.timestamp())?;
     if args.json {
         println!("{}", serde_json::to_string(&report)?);
@@ -652,6 +714,48 @@ pub(crate) mod tests {
     }
     fn line(id: &str, name: &str, input: Value) -> Value {
         json!({"type": "assistant", "sessionId": "parent", "timestamp": "2026-09-01T01:00:00Z", "message": {"content": [{"type":"tool_use", "id":id, "name":name, "input":input}]}})
+    }
+
+    #[test]
+    fn page_usage_counts_sessions_later_reads_and_decay() -> Result<()> {
+        let wiki = Wiki::new()?;
+        let db = open(&wiki.root)?;
+        assert!(per_page(&db, 100)?.is_empty());
+        db.execute_batch(
+            "insert into tools values ('r1','s1',50), ('r2','s1',100), ('r3','s2',100),
+             ('w1','s3',200), ('w2','s4',200);
+             insert into accesses values ('r1','used','read'), ('r2','used','read'),
+             ('r3','used','read'), ('w1','used','write'), ('w2','write-only','write');
+             insert into injections values
+             ('s1','used','remind',75), ('s1','used','context',150),
+             ('s2','used','remind',100), ('s2','used','context',100),
+             ('s3','used','remind',100), ('s4','used','remind',101),
+             ('s5','unread','remind',1), ('s5','unread','context',2);",
+        )?;
+        let report = per_page(&db, 100)?;
+        let used = &report["used"];
+        assert_eq!(used.reads, 3);
+        assert_eq!(used.read_sessions, 2);
+        assert_eq!(used.last_read, Some(100));
+        // Reads at/before the injection and writes do not count as read later.
+        assert_eq!(used.injected_unread, 3);
+        let baseline = 0.5 * 3_f64.ln() - 0.1 * 4_f64.ln();
+        assert!((used.importance - (4_f64.ln() + baseline)).abs() < 1e-12);
+        for (days, decay) in [(15, (-0.5_f64).exp()), (30, (-1_f64).exp())] {
+            let later = per_page(&db, 100 + days * 86400)?;
+            assert!((later["used"].importance - (4_f64.ln() * decay + baseline)).abs() < 1e-12);
+        }
+        // A clock skew must not amplify reads in the future.
+        assert_eq!(per_page(&db, 0)?["used"].importance, used.importance);
+        for path in ["unread", "write-only"] {
+            assert_eq!(report[path].reads, 0);
+            assert_eq!(report[path].read_sessions, 0);
+            assert_eq!(report[path].last_read, None);
+            assert_eq!(report[path].importance, 0.0);
+        }
+        assert_eq!(report["unread"].injected_unread, 1);
+        assert_eq!(report["write-only"].injected_unread, 0);
+        Ok(())
     }
 
     #[test]

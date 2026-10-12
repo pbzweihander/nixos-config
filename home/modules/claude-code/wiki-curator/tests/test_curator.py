@@ -120,6 +120,72 @@ class RepoTest(unittest.TestCase):
 
 
 class SelectionTests(RepoTest):
+    def test_importance_orders_each_type_with_existing_ties_and_type_priority(self):
+        for path in (B, "pages/knowledge/c.md", "pages/knowledge/d.md"):
+            self.write(path, page("Text.\n"))
+        self.commit()
+        paths = [A, B, "pages/knowledge/c.md", "pages/knowledge/d.md"]
+        for kind in ("broken-links", "log-growth", "missing-queries", "singleton-tags"):
+            with self.subTest(kind=kind):
+                items = [{"path": p, "detail": "finding", "tag": "tag",
+                          "usage": {"importance": 2 if p in paths[1:3] else 0}}
+                         for p in reversed(paths)]
+                tasks = select_tasks(self.wiki, {kind: items}, {}, time.time(), max_tasks=2)
+                if kind in ("missing-queries", "singleton-tags"):
+                    self.assertEqual([i["path"] for i in tasks[0].details["items"]],
+                                     [B, paths[2], A, paths[3]])
+                else:
+                    self.assertEqual([t.primary for t in tasks], [[B], [paths[2]]])
+                for item in items:
+                    item.pop("usage")
+                tasks = select_tasks(self.wiki, {kind: items}, {}, time.time(), max_tasks=2)
+                if kind in ("missing-queries", "singleton-tags"):
+                    self.assertEqual([i["path"] for i in tasks[0].details["items"]], paths)
+                else:
+                    self.assertEqual([t.primary for t in tasks], [[A], [B]])
+        lint = {"broken-links": [{"path": A, "detail": "missing"}],
+                "log-growth": [{"path": B, "usage": {"importance": 100}}]}
+        self.assertEqual([t.type for t in select_tasks(self.wiki, lint, {}, time.time(), max_tasks=1)],
+                         ["broken-links"])
+
+    def test_duplicate_importance_uses_either_side_then_score_then_paths(self):
+        for name in ("b", "c", "d", "e", "f"):
+            self.write(f"pages/knowledge/{name}.md", page("Text.\n"))
+        self.commit()
+        pairs = [{"a": A, "b": B, "score": .99},
+                 {"a": "pages/knowledge/c.md", "b": "pages/knowledge/d.md", "score": .95},
+                 {"a": "pages/knowledge/e.md", "b": "pages/knowledge/f.md", "score": .95}]
+        for side in ("usage_a", "usage_b"):
+            with self.subTest(side=side):
+                items = [{**pair, side: {"importance": 0 if i == 0 else 3}}
+                         for i, pair in reversed(list(enumerate(pairs)))]
+                tasks = select_tasks(self.wiki, {"duplicates": items}, {}, time.time())
+                self.assertEqual([t.details["score"] for t in tasks], [.95, .95, .99])
+                self.assertEqual([t.primary[0] for t in tasks], [pairs[1]["a"], pairs[2]["a"], A])
+        tasks = select_tasks(self.wiki, {"duplicates": list(reversed(pairs))}, {}, time.time())
+        self.assertEqual([t.primary[0] for t in tasks], [A, pairs[1]["a"], pairs[2]["a"]])
+
+    def test_usage_priority_applies_before_batch_limits(self):
+        for kind, limit in (("missing-queries", 5), ("singleton-tags", 20)):
+            items = []
+            for i in range(limit + 2):
+                path = f"pages/knowledge/item{i:02}.md"
+                self.write(path, page("Text.\n"))
+                items.append({"path": path, "tag": f"tag{i}", "usage": {"importance": i}})
+            self.commit()
+            task = select_tasks(self.wiki, {kind: items}, {}, time.time())[0]
+            self.assertEqual(task.details["items"], list(reversed(items))[:limit])
+
+    def test_snapshot_importance_precedes_path_order(self):
+        paths = [f"pages/knowledge/{name}-2020-02-01.md" for name in ("a", "b", "c")]
+        for path in paths:
+            self.write(path, page("Snapshot.\n"))
+        self.commit()
+        items = [{"path": path, "usage": {"importance": int(path != paths[0])}}
+                 for path in reversed(paths)]
+        tasks = select_tasks(self.wiki, {"snapshots": items}, {}, time.time(), max_tasks=2)
+        self.assertEqual([t.primary for t in tasks], [[paths[1]], [paths[2]]])
+
     def test_not_duplicates_suppresses_only_the_pair_until_expiry(self):
         self.write(B, page("Related but distinct facts.\n"))
         self.commit()
@@ -280,6 +346,37 @@ class PreservationTests(RepoTest):
         self.assertEqual(self.check_change(old, old.replace("45s", "46s")), ["45s"])
         self.assertEqual(self.check_change(old, old.replace("`probe --fast`", "the probe")), ["`probe --fast`"])
         self.assertEqual(self.check_change(old, old.replace("123ms", "quickly")), ["123ms"])
+
+    def test_identifier_patterns_in_prose_inline_and_fenced_code(self):
+        identifiers = ["/etc/nixos", "~/.config/fish", "UPPER_SNAKE", "MAX_RETRIES_3",
+                       "snake_case", "x_axis", "foo_bar_baz", "E12", "E123", "E1234", "HTTP503"]
+        extensions = "rs py nix toml json yaml yml md ts tsx js go sh fish sql conf service timer".split()
+        identifiers += [f"config.{extension}" for extension in extensions]
+        identifiers += [".config.nix", "my-config.test.tsx"]
+        for token in identifiers:
+            for wrap in (lambda t: f"Use {t}, then continue.", lambda t: f"`{t}`",
+                         lambda t: f"```text\n{t}\n```", lambda t: f"~~~\n{t}\n~~~"):
+                with self.subTest(token=token, text=wrap(token)):
+                    self.assertIn(token, tokens(page(wrap(token))))
+            self.assertIn(token, tokens(page(f"({token}).")))
+        for text in ("a_b", "a_b_c", "word", "CamelCase", "snake_", "_snake",
+                     "foo_123", "123_foo", "UPPER", "UPPER_", "mixed_SNAKE",
+                     "E1", "E12345", "HTTP50", "HTTP5030", "xE123", "HTTP503x",
+                     "/etc", "~/config", "relative/path", "config.txt", "config.rs.bak",
+                     "config.python", "config.tsxx"):
+            with self.subTest(negative=text):
+                self.assertEqual(tokens(page(text)), set())
+
+    def test_identifiers_are_not_taken_from_renamed_link_targets(self):
+        self.assertEqual(tokens(page("[[knowledge/snake_case.md|HTTP503]]")),
+                         {"[[knowledge/snake_case.md]]", "HTTP503"})
+
+    def test_new_tokens_fail_preservation_and_allow_exact_dropped_exceptions(self):
+        old = "/etc/nixos snake_case UPPER_SNAKE config.rs E123 HTTP503"
+        found = tokens(page(old))
+        self.assertEqual(self.check_change(old, "Replacement prose."), sorted(found))
+        self.assertEqual(self.check_change(old, "Replacement prose.", justification(
+            dropped=[{"token": token, "reason": "verified obsolete"} for token in found])), [])
 
     def test_dropped_exception_and_frontmatter_exclusion(self):
         self.assertEqual(self.check_change("Takes 45s.\n", "Takes a while.\n",

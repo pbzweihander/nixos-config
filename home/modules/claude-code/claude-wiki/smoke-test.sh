@@ -497,8 +497,14 @@ rm "$P/history/link-source.md"
 check "removed source has no links" '(none)' "$wiki" links knowledge/replica-notes
 
 check "usage database is git-ignored" 'usage.sqlite\*' cat "$CLAUDE_WIKI_DIR/.gitignore"
+check "lint JSON defaults without reads" '"usage":{"importance":0.0,"injected_unread":0,"last_read":null,"read_sessions":0,"reads":0}' "$wiki" lint --json
 mkdir -p "$sessions_dir/usage/parent/subagents"
 cp "$fixtures/usage.jsonl" "$sessions_dir/usage/parent/subagents/agent.jsonl"
+check "lint scans usage before stats" '"last_read":[0-9]' "$wiki" lint --json
+check "lint reports reads" '"read_sessions":1,"reads":1' "$wiki" lint --json
+check "lint text marks reads" 'replica-notes.md: .*· 1 reads' "$wiki" lint --all
+sed 's/usage-fixture-read/usage-fixture-read-next/g' "$fixtures/usage.jsonl" >>"$sessions_dir/usage/parent/subagents/agent.jsonl"
+check "lint incrementally scans appended reads" '"read_sessions":1,"reads":2' "$wiki" lint --json
 check "stats scans subagent wiki access" 'knowledge: .*1 cross-session' "$wiki" stats
 check "stats JSON" '"cross_session_read":1' "$wiki" stats --json
 "$wiki" skill-pages codex-implement --cwd "$HOME/demo-worktree" --session stats-custom --source skill-prompt >/dev/null

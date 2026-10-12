@@ -26,6 +26,12 @@ The job reads `claude-wiki lint --json` and considers, in order:
 5. Missing queries, one batch of up to five knowledge pages.
 6. Singleton tags, one batch of up to twenty tags, reusing existing tags when suitable.
 
+Within each type, candidates with higher lint usage importance come first. Duplicate
+pairs use the greater importance of their two pages. Ties keep the existing path
+order (or duplicate similarity, then paths); missing usage counts as zero. Usage
+also determines which pages/tags fit into batches. Type priority and task/batch
+limits are unchanged. Importance only orders work; it is never a deletion criterion.
+
 Projects, dirty pages, pages modified within 24 hours, and pages on cooldown are
 skipped. Necessary backlink updates and new destinations are part of a task's page
 set, so a protected backlink skips the whole merge or move. A page participates in
@@ -61,7 +67,15 @@ Three more gates apply to the resulting candidate commit, in this order:
 
 - **Preservation:** compare the parent bodies of modified/deleted/renamed pages to
   the union of new bodies of changed pages. Inline code, numbers/versions/units,
-  URLs and wiki-link targets must survive. Fenced code contents are included;
+  URLs and wiki-link targets must survive. The gate also preserves absolute and `~/`
+  paths with at least two segments, filenames ending in `rs`, `py`, `nix`, `toml`,
+  `json`, `yaml`, `yml`, `md`, `ts`, `tsx`, `js`, `go`, `sh`, `fish`, `sql`, `conf`,
+  `service`, or `timer`, UPPER_SNAKE identifiers, snake_case identifiers with letters
+  in every component and at least one component containing two letters (excluding
+  prose notation such as `a_b`), `E` plus 2–4 digits, and `HTTP` plus 3 digits.
+  These patterns apply in prose, inline code and fenced code; trailing punctuation
+  is stripped. Link targets remain subject to redirect normalization rather than
+  identifier matching. Fenced code contents are included;
   frontmatter is excluded. Links are normalized using Git's `-M` rename detection
   and the planned redirects. Only exact tokens explicitly listed in `dropped` are
   exempted. This checks token presence, not meaning or how often a fact occurs.
@@ -222,6 +236,23 @@ input. Without `--justification`, no dropped-token exemptions or explicit redire
 apply. The justification also lives in the candidate's commit body and run JSON.
 
 ## Build and tests
+
+To replay the current preservation gate against historical `curator:` commits,
+run from this configuration repository with an explicit wiki repository path:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=home/modules/claude-code/wiki-curator \
+  nix shell nixpkgs#python3 nixpkgs#git -c python3 -m wiki_curator.replay /path/to/wiki
+```
+
+The helper reads history reachable from HEAD; add `--all` to include all refs,
+including retained rejected/deferred candidates. Each commit is compared with its
+first parent using the `Justification: {...}` line from its message body. It prints
+failing commit IDs, subjects and missing tokens (or malformed-justification errors),
+then a count; exit status is 1 when any fail, otherwise 0. It never checks out a
+revision, runs models, updates usage, or writes the repo/cache. This is an audit of
+token presence, not a replay of the semantic reviewer. Run it yourself on the wiki
+you want to inspect.
 
 The package uses only Python's standard library and Git. Its Nix `checkPhase` runs
 the unittest suite with Git on PATH. All tests use temporary repositories and fake
