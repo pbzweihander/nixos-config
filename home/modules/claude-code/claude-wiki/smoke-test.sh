@@ -383,7 +383,7 @@ expect_code 0 "$wiki" check --probe knowledge/probe
 check "probe counts successful questions" 'probe: 1 pages probed, 1 queries, 0 failures' echo "$out"
 sed -i 's/queries: .*/queries: [unfindableprobequestion]/' "$P/knowledge/probe.md"
 expect_code 1 "$wiki" check --probe "$P/knowledge/probe.md"
-check "probe failure reports ranks" 'warning: pages/knowledge/probe.md: query "unfindableprobequestion" does not find this page (bm25: not in top 10, semantic: unavailable)' echo "$out"
+check "probe failure reports ranks" 'warning: pages/knowledge/probe.md: query "unfindableprobequestion" does not find this page (fused: absent, bm25: not in top 40, dense: unavailable or empty)' echo "$out"
 check "probe counts failures" 'probe: 1 pages probed, 1 queries, 1 failures' echo "$out"
 expect_code 0 "$wiki" check knowledge/probe
 expect_code 0 "$wiki" check knowledge/secret

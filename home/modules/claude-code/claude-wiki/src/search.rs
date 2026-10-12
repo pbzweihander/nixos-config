@@ -3,7 +3,7 @@ use anyhow::{bail, Result};
 use chrono::{Local, TimeZone};
 use clap::Args;
 use regex::Regex;
-use rusqlite::{params_from_iter, types::Value, Connection};
+use rusqlite::{params_from_iter, types::Value, Connection, OptionalExtension};
 use serde_json::json;
 use std::{io::Write, path::Path, sync::LazyLock};
 
@@ -96,8 +96,13 @@ fn show(
     row: &Row,
     snippet: Option<String>,
     section: Option<(String, i64, i64)>,
+    meaning: bool,
 ) -> std::io::Result<()> {
-    let path = root.join(&row.path).display().to_string();
+    let path = format!(
+        "{}{}",
+        root.join(&row.path).display(),
+        if meaning { " (meaning)" } else { "" }
+    );
     if !row.blocked.is_empty() {
         return writeln!(out, "{}", row.blocked_line(&path));
     }
@@ -162,6 +167,135 @@ pub fn bm25(db: &Connection, query: &str, n: i64, filters: &Filters) -> Result<V
     Ok(rows)
 }
 
+pub const CANDIDATES: i64 = 40;
+
+pub struct SearchHit {
+    pub row: Row,
+    snippet: String,
+    section: Option<(String, i64, i64)>,
+    pub bm25_rank: Option<usize>,
+    pub dense_rank: Option<usize>,
+}
+
+impl SearchHit {
+    fn score(&self) -> f64 {
+        let (bm25, bm25_denominator) = self
+            .bm25_rank
+            .map_or((0.0, 1.0), |rank| (2.0, 60.0 + rank as f64));
+        let (dense, dense_denominator) = self
+            .dense_rank
+            .map_or((0.0, 1.0), |rank| (1.0, 60.0 + rank as f64));
+        let (weight, scale) = if self.row.kind == "history" {
+            (9.0, 10.0)
+        } else {
+            (1.0, 1.0)
+        };
+        // Divide once so equal rational scores tie, without rounding each term
+        // separately (e.g. ranks 4/36 and 6/28 both score 1/24).
+        weight * (bm25 * dense_denominator + dense * bm25_denominator)
+            / (scale * bm25_denominator * dense_denominator)
+    }
+
+    fn via(&self) -> &'static str {
+        match (self.bm25_rank, self.dense_rank) {
+            (Some(_), Some(_)) => "both",
+            (Some(_), None) => "bm25",
+            _ => "dense",
+        }
+    }
+}
+
+fn sort_hits(hits: &mut [SearchHit]) {
+    hits.sort_by(|a, b| {
+        b.score()
+            .total_cmp(&a.score())
+            .then_with(|| {
+                a.bm25_rank
+                    .unwrap_or(usize::MAX)
+                    .cmp(&b.bm25_rank.unwrap_or(usize::MAX))
+            })
+            .then_with(|| a.row.path.cmp(&b.row.path))
+    });
+}
+
+fn fuse(
+    db: &Connection,
+    bm25: Vec<(Row, String)>,
+    dense: Vec<crate::semantic::Hit>,
+    filters: &Filters,
+) -> Result<Vec<SearchHit>> {
+    let mut hits: Vec<_> = bm25
+        .into_iter()
+        .enumerate()
+        .map(|(i, (row, snippet))| SearchHit {
+            row,
+            snippet,
+            section: None,
+            bm25_rank: Some(i + 1),
+            dense_rank: None,
+        })
+        .collect();
+    let (where_sql, params) = filters.sql();
+    let mut stmt = db.prepare(&format!(
+        "select {COLUMNS} {JOIN} where files.path = ?{where_sql}"
+    ))?;
+    // Keep the daemon's original ranks after filtering its top 40 candidates.
+    for (i, hit) in dense.into_iter().take(CANDIDATES as usize).enumerate() {
+        let path = format!("pages/{}.md", hit.path);
+        if let Some(existing) = hits.iter_mut().find(|hit| hit.row.path == path) {
+            existing.dense_rank.get_or_insert(i + 1);
+            continue;
+        }
+        let mut args = vec![Value::Text(path)];
+        args.extend(params.iter().cloned());
+        // Resolve current metadata, including blocked flags, from the local index.
+        // The daemon's snapshot can lag behind edits and deletions.
+        if let Some(row) = stmt
+            .query_row(params_from_iter(args), Row::read)
+            .optional()?
+        {
+            hits.push(SearchHit {
+                row,
+                snippet: String::new(),
+                section: hit.section,
+                bm25_rank: None,
+                dense_rank: Some(i + 1),
+            });
+        }
+    }
+    sort_hits(&mut hits);
+    Ok(hits)
+}
+
+pub fn ranked(
+    db: &Connection,
+    query: &str,
+    terms: &str,
+    n: i64,
+    filters: &Filters,
+    no_semantic: bool,
+) -> Result<Vec<SearchHit>> {
+    if n == 0 {
+        return Ok(vec![]);
+    }
+    // Preserve large and unlimited SQLite limits when dense is unavailable.
+    let mut rows = bm25(
+        db,
+        query,
+        if n < 0 { n } else { n.max(CANDIDATES) },
+        filters,
+    )?;
+    let dense = if no_semantic {
+        vec![]
+    } else {
+        crate::semantic::dense(terms, CANDIDATES)
+    };
+    if !dense.is_empty() {
+        rows.truncate(CANDIDATES as usize);
+    }
+    fuse(db, rows, dense, filters)
+}
+
 pub fn search(
     root: &Path,
     db: &Connection,
@@ -175,7 +309,10 @@ pub fn search(
     if query.is_empty() {
         bail!("no search terms");
     }
-    let rows = bm25(db, &query, n, filters)?;
+    let mut rows = ranked(db, &query, &terms.join(" "), n, filters, no_semantic)?;
+    if n >= 0 {
+        rows.truncate(n as usize);
+    }
     let json_root = if json {
         Some(root.canonicalize()?)
     } else {
@@ -183,45 +320,30 @@ pub fn search(
     };
     let mut hits = vec![];
     let mut out = std::io::stdout().lock();
-    if rows.is_empty() {
-        if !json {
-            let total: i64 = db.query_row("select count(*) from files", [], |r| r.get(0))?;
-            writeln!(out, "no pages match {query} ({total} pages in the wiki)")?;
-        }
-        if !no_semantic && filters.sql().0.is_empty() {
-            let mut printed_heading = false;
-            for hit in crate::semantic::search(&terms.join(" "), n) {
-                // The daemon's snapshot can lag behind edits and deletions. Resolve
-                // metadata here so stale or newly blocked text cannot bypass show().
-                let Ok(row) = db.query_row(
-                    &format!("select {COLUMNS} {JOIN} where files.path = ?"),
-                    [format!("pages/{}.md", hit.path)],
-                    Row::read,
-                ) else {
-                    continue;
-                };
-                if let Some(root) = &json_root {
-                    hits.push(json_hit(root, &row, "", hit.section, true));
-                    continue;
-                }
-                if !printed_heading {
-                    writeln!(out, "semantic matches (meaning, not keywords):")?;
-                    printed_heading = true;
-                }
-                show(&mut out, root, &row, None, hit.section)?;
-            }
-        }
+    if rows.is_empty() && !json {
+        let total: i64 = db.query_row("select count(*) from files", [], |r| r.get(0))?;
+        writeln!(out, "no pages match {query} ({total} pages in the wiki)")?;
     }
-    for (row, snippet) in rows {
-        let section = if row.blocked.is_empty() {
-            best_section(db, &row.path, &query)
-        } else {
+    for hit in rows {
+        let via = hit.via();
+        let section = if !hit.row.blocked.is_empty() {
             None
+        } else if hit.bm25_rank.is_some() {
+            best_section(db, &hit.row.path, &query)
+        } else {
+            hit.section
         };
         if let Some(root) = &json_root {
-            hits.push(json_hit(root, &row, &snippet, section, false));
+            hits.push(json_hit(root, &hit.row, &hit.snippet, section, via));
         } else {
-            show(&mut out, root, &row, Some(snippet), section)?;
+            show(
+                &mut out,
+                root,
+                &hit.row,
+                Some(hit.snippet),
+                section,
+                via == "dense",
+            )?;
         }
     }
     if json {
@@ -235,7 +357,7 @@ fn json_hit(
     row: &Row,
     snippet: &str,
     section: Option<(String, i64, i64)>,
-    semantic: bool,
+    via: &str,
 ) -> serde_json::Value {
     let blocked = !row.blocked.is_empty();
     let section = if blocked {
@@ -256,7 +378,8 @@ fn json_hit(
         "backlinks": row.backlinks,
         "snippet": if blocked { "" } else { snippet },
         "section": section,
-        "semantic": semantic,
+        "semantic": via == "dense",
+        "via": via,
     })
 }
 
@@ -273,7 +396,7 @@ pub fn list(root: &Path, db: &Connection, n: i64, filters: &Filters) -> Result<(
         println!("no pages");
     }
     for row in rows {
-        show(&mut std::io::stdout().lock(), root, &row, None, None)?;
+        show(&mut std::io::stdout().lock(), root, &row, None, None, false)?;
     }
     Ok(())
 }
@@ -323,6 +446,78 @@ pub fn tags(db: &Connection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn hit(path: &str, bm25_rank: Option<usize>, dense_rank: Option<usize>) -> SearchHit {
+        SearchHit {
+            row: Row {
+                path: format!("pages/{path}.md"),
+                kind: path.split('/').next().unwrap().into(),
+                status: String::new(),
+                title: path.into(),
+                project: String::new(),
+                tags: String::new(),
+                mtime: 0,
+                blocked: String::new(),
+                backlinks: 0,
+            },
+            snippet: String::new(),
+            section: None,
+            bm25_rank,
+            dense_rank,
+        }
+    }
+
+    #[test]
+    fn weighted_reciprocal_ranks_and_history_penalty() {
+        let both = hit("knowledge/both", Some(2), Some(5));
+        assert!((both.score() - (2.0 / 62.0 + 1.0 / 65.0)).abs() < 1e-15);
+        assert_eq!(both.via(), "both");
+        let bm25 = hit("knowledge/bm25", Some(1), None);
+        assert_eq!(bm25.score(), 2.0 / 61.0);
+        assert_eq!(bm25.via(), "bm25");
+        let dense = hit("knowledge/dense", None, Some(40));
+        assert_eq!(dense.score(), 1.0 / 100.0);
+        assert_eq!(dense.via(), "dense");
+        for (bm25, dense) in [(Some(1), None), (None, Some(1)), (Some(1), Some(1))] {
+            let history = hit("history/past", bm25, dense);
+            assert!(
+                (history.score() - hit("knowledge/current", bm25, dense).score() * 0.9).abs()
+                    < 1e-15
+            );
+            let mut hits = vec![
+                history,
+                hit("knowledge/current", bm25.map(|_| 2), dense.map(|_| 2)),
+            ];
+            sort_hits(&mut hits);
+            assert_eq!(hits[0].row.kind, "knowledge");
+        }
+    }
+
+    #[test]
+    fn fusion_orders_by_score_then_bm25_rank_then_path() {
+        let mut hits = vec![
+            hit("knowledge/a", Some(6), Some(28)),
+            hit("knowledge/z", Some(4), Some(36)),
+            hit("knowledge/dense-z", None, Some(1)),
+            hit("knowledge/dense-a", None, Some(1)),
+            hit("knowledge/first", Some(1), Some(1)),
+        ];
+        assert_eq!(hits[0].score(), hits[1].score());
+        sort_hits(&mut hits);
+        assert_eq!(
+            hits.iter()
+                .map(|h| h.row.title.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "knowledge/first",
+                "knowledge/z",
+                "knowledge/a",
+                "knowledge/dense-a",
+                "knowledge/dense-z"
+            ]
+        );
+    }
+
     #[test]
     fn json_metadata_sections_and_blocked_redaction() {
         let mut row = Row {
@@ -343,22 +538,22 @@ mod tests {
                 &row,
                 "[cache] details",
                 section.clone(),
-                false
+                "bm25"
             ),
             json!({
                 "path": "/wiki/pages/knowledge/foo.md", "rel": "pages/knowledge/foo.md",
                 "title": "Cache notes", "type": "knowledge", "status": "", "project": "demo",
                 "tags": ["cache", "restart"], "updated": updated(0), "stale": true, "backlinks": 2,
-                "snippet": "[cache] details", "section": {"heading": "Details", "start": 1, "end": 9}, "semantic": false
+                "snippet": "[cache] details", "section": {"heading": "Details", "start": 1, "end": 9}, "semantic": false, "via": "bm25"
             })
         );
         row.mtime = Local::now().timestamp_nanos_opt().unwrap();
-        let value = json_hit(Path::new("/wiki"), &row, "", None, true);
+        let value = json_hit(Path::new("/wiki"), &row, "", None, "dense");
         assert_eq!(value["semantic"], true);
         assert_eq!(value["stale"], false);
         assert!(value["section"].is_null());
         row.blocked = "secret".into();
-        let value = json_hit(Path::new("/wiki"), &row, "hidden snippet", section, true);
+        let value = json_hit(Path::new("/wiki"), &row, "hidden snippet", section, "dense");
         assert_eq!(value["title"], "[BLOCKED: secret]");
         assert_eq!(value["snippet"], "");
         assert!(value["section"].is_null());
@@ -402,7 +597,15 @@ mod tests {
             Some((String::new(), 1, 3)),
         ] {
             let mut out = Vec::new();
-            show(&mut out, Path::new("/wiki"), &row, None, section.clone()).unwrap();
+            show(
+                &mut out,
+                Path::new("/wiki"),
+                &row,
+                None,
+                section.clone(),
+                false,
+            )
+            .unwrap();
             let location = match section {
                 Some((heading, start, end)) => format!(
                     "  § {} (lines {start}-{end})\n",
@@ -430,6 +633,7 @@ mod tests {
             &blocked,
             None,
             Some(("hidden".into(), 1, 3)),
+            false,
         )
         .unwrap();
         assert_eq!(

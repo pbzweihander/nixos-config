@@ -233,7 +233,7 @@ def retrieve(snapshot, model, tier, query, op, n, thresholds):
         if page.path not in best or similarities[index] > similarities[best[page.path]]:
             best[page.path] = index
     order = sorted(best.values(), key=lambda i: float(similarities[i]), reverse=True)
-    if tier == "gpu":
+    if tier == "gpu" and op != "dense":
         order = order[:10]
         scores = model.rerank(query, [snapshot.rows[i][1].text for i in order])
     else:

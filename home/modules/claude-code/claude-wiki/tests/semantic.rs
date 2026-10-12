@@ -250,57 +250,105 @@ fn related_timeout_is_separate_from_hook_timeout_and_can_be_overridden() {
 }
 
 #[test]
-fn json_search_uses_keyword_results_or_semantic_fallback_with_redaction() {
+fn json_search_fuses_keyword_and_dense_results() {
     let wiki = Wiki::new();
-    let listener = wiki.listener();
-    let output = run(wiki.command(&["search", "foo", "--json"]), "");
-    let report: Value = serde_json::from_str(&output).unwrap();
-    assert_eq!(report["hits"].as_array().unwrap().len(), 1);
-    assert_eq!(report["hits"][0]["semantic"], false);
-    assert_eq!(report["hits"][0]["tags"], json!(["cache"]));
-    assert!(report["hits"][0]["snippet"]
-        .as_str()
-        .unwrap()
-        .contains("[foo]"));
-    for extra in [&["--no-semantic"][..], &["--project", "demo"][..]] {
-        let mut command = wiki.command(&["search", "nomatch", "--json"]);
-        command.args(extra);
-        assert_eq!(
-            serde_json::from_str::<Value>(&run(command, "")).unwrap(),
-            json!({"hits":[]})
-        );
-    }
-    assert_no_connection(&listener);
-    drop(listener);
-    fs::remove_file(wiki.0.join("embed.sock")).unwrap();
     fs::write(
-        wiki.0.join("wiki/pages/knowledge/blocked.md"),
-        "---\ntitle: Hidden\ncreated: 2020-01-01\n---\nghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        wiki.0.join("wiki/pages/knowledge/lexical.md"),
+        "---\ntitle: Other notes\ncreated: 2026-09-20\n---\nfoo\n",
     )
     .unwrap();
-    let (output, request) = wiki.respond(&["search", "nomatch", "--json", "-n", "3"], "", json!({"ok":true,"results":[
-        {"path":"knowledge/foo","score":1,"heading":"Recovery","start_line":7,"end_line":8},
-        {"path":"knowledge/blocked","score":1,"heading":"Hidden section","start_line":1,"end_line":9},
-        {"path":"knowledge/missing","score":1}
-    ]}));
-    assert_eq!(request, json!({"op":"search","query":"nomatch","n":3}));
+    let (output, request) = wiki.respond(
+        &["search", "foo", "--json"],
+        "",
+        json!({"ok":true,"results":[
+            {"path":"knowledge/bar","score":0.9},
+            {"path":"knowledge/foo","score":0.1},
+            {"path":"knowledge/foo","score":0.05},
+            {"path":"knowledge/missing","score":0.01}
+        ]}),
+    );
+    assert_eq!(request, json!({"op":"dense","query":"foo","n":40}));
     let report: Value = serde_json::from_str(&output).unwrap();
     let hits = report["hits"].as_array().unwrap();
-    assert_eq!(hits.len(), 2);
-    assert_eq!(hits[0]["semantic"], true);
-    assert_eq!(hits[0]["snippet"], "");
+    assert_eq!(hits.len(), 3);
     assert_eq!(
-        hits[0]["section"],
-        json!({"heading":"Recovery","start":7,"end":8})
+        hits.iter()
+            .map(|hit| hit["via"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["both", "bm25", "dense"]
     );
-    assert_eq!(hits[1]["title"], "[BLOCKED: secret]");
-    assert_eq!(hits[1]["snippet"], "");
-    assert!(hits[1]["section"].is_null());
-    assert!(!output.contains("Hidden"));
+    assert_eq!(hits[0]["rel"], "pages/knowledge/foo.md");
+    assert_eq!(hits[0]["semantic"], false);
+    assert_eq!(hits[0]["tags"], json!(["cache"]));
+    assert!(hits[0]["snippet"].as_str().unwrap().contains("[foo]"));
+    assert_eq!(hits[2]["semantic"], true);
+    assert_eq!(hits[2]["snippet"], "");
 }
 
 #[test]
-fn probe_uses_semantic_ranks_even_when_keywords_match() {
+fn dense_only_rows_apply_each_filter_and_redact_blocked_pages() {
+    for flags in [
+        vec![],
+        vec!["--type", "followups"],
+        vec!["--status", "open"],
+        vec!["--project", "target"],
+        vec!["--tag", "unique"],
+        vec![
+            "--type",
+            "followups",
+            "--status",
+            "open",
+            "--project",
+            "target",
+            "--tag",
+            "unique",
+        ],
+    ] {
+        let wiki = Wiki::new();
+        for (name, body) in [
+            ("match", "Recovery"),
+            ("blocked", "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+        ] {
+            fs::write(wiki.0.join(format!("wiki/pages/followups/{name}.md")), format!(
+                "---\ntitle: Hidden {name}\nstatus: open\nproject: target\ntags: [unique]\ncreated: 2026-09-20\n---\n{body}\n"
+            )).unwrap();
+        }
+        // A substring tag must not match the whole-tag filter.
+        fs::write(wiki.0.join("wiki/pages/knowledge/bar.md"),
+            "---\ntitle: bar\nproject: demo\ntags: [nonunique]\ncreated: 2026-09-20\n---\nOther details.\n").unwrap();
+        let mut args = vec!["search", "nomatch", "--json"];
+        args.extend(&flags);
+        let (output, request) = wiki.respond(&args, "", json!({"ok":true,"results":[
+            {"path":"knowledge/foo","score":0.9},
+            {"path":"knowledge/bar","score":0.8},
+            {"path":"followups/missing","score":0.7},
+            {"path":"followups/match","score":0.6,"heading":"Recovery","start_line":7,"end_line":8},
+            {"path":"followups/blocked","score":0.5,"heading":"Hidden section","start_line":1,"end_line":9}
+        ]}));
+        assert_eq!(request, json!({"op":"dense","query":"nomatch","n":40}));
+        let report: Value = serde_json::from_str(&output).unwrap();
+        let hits = report["hits"].as_array().unwrap();
+        assert_eq!(hits.len(), if flags.is_empty() { 4 } else { 2 }, "{output}");
+        assert!(hits
+            .iter()
+            .all(|hit| hit["via"] == "dense" && hit["semantic"] == true));
+        let matched = &hits[hits.len() - 2];
+        assert_eq!(matched["rel"], "pages/followups/match.md");
+        assert_eq!(
+            matched["section"],
+            json!({"heading":"Recovery","start":7,"end":8})
+        );
+        let blocked = hits.last().unwrap();
+        assert_eq!(blocked["title"], "[BLOCKED: secret]");
+        assert_eq!(blocked["snippet"], "");
+        assert!(blocked["section"].is_null());
+        assert!(!output.contains("Hidden blocked"));
+        assert!(!output.contains("Hidden section"));
+    }
+}
+
+#[test]
+fn probe_uses_dense_ranks_even_when_keywords_match() {
     for (query, paths, top, failure, diagnostic) in [
         (
             "캐시가 왜 사라져요?",
@@ -314,21 +362,21 @@ fn probe_uses_semantic_ranks_even_when_keywords_match() {
             vec!["knowledge/bar", "knowledge/foo"],
             "1",
             true,
-            "semantic: rank 2",
+            "fused: rank 2, bm25: not in top 40, dense: rank 2",
         ),
         (
             "캐시가 왜 사라져요?",
             vec!["knowledge/bar"],
             "3",
             true,
-            "semantic: not in top 10",
+            "dense: not in top 40",
         ),
         (
             "캐시가 왜 사라져요?",
             vec![],
             "3",
             true,
-            "semantic: unavailable",
+            "dense: unavailable or empty",
         ),
         ("foo", vec![], "1", false, ""),
     ] {
@@ -345,7 +393,7 @@ fn probe_uses_semantic_ranks_even_when_keywords_match() {
             "",
             json!({"ok": true, "results": results}),
         );
-        assert_eq!(request, json!({"op": "search", "query": query, "n": 10}));
+        assert_eq!(request, json!({"op": "dense", "query": query, "n": 40}));
         assert_eq!(output.status.code(), Some(i32::from(failure)), "{output:?}");
         let stderr = String::from_utf8(output.stderr).unwrap();
         assert!(stderr.contains(diagnostic), "{stderr}");
@@ -358,6 +406,100 @@ fn probe_uses_semantic_ranks_even_when_keywords_match() {
         );
         assert_eq!(stderr.lines().count(), if failure { 2 } else { 1 });
     }
+}
+
+#[test]
+fn probe_accepts_fused_bm25_or_dense_independently() {
+    for method in ["fused", "bm25", "dense"] {
+        let wiki = Wiki::new();
+        fs::write(
+            wiki.0.join("wiki/pages/history/past.md"),
+            "---\ntitle: Past\ncreated: 2026-09-20\n---\nOld details.\n",
+        )
+        .unwrap();
+        let baseline: Value = serde_json::from_str(&run(
+            wiki.command(&["search", "cache", "--no-semantic", "--json"]),
+            "",
+        ))
+        .unwrap();
+        let first = baseline["hits"][0]["rel"].as_str().unwrap();
+        let second = baseline["hits"][1]["rel"].as_str().unwrap();
+        let (target, paths) = match method {
+            "fused" => (second, vec!["pages/history/past.md", second]),
+            "bm25" => (first, vec![second]),
+            _ => ("pages/history/past.md", vec!["pages/history/past.md"]),
+        };
+        let path = wiki.0.join("wiki").join(target);
+        let original = fs::read_to_string(&path).unwrap();
+        fs::write(
+            &path,
+            original.replacen("---\n", "---\nqueries: [cache]\n", 1),
+        )
+        .unwrap();
+        let results: Vec<_> = paths.iter().map(|path| json!({
+            "path": path.strip_prefix("pages/").unwrap().strip_suffix(".md").unwrap(), "score": 0.1
+        })).collect();
+        let reply = json!({"ok":true,"results":results});
+        let (output, _) =
+            wiki.respond(&["search", "cache", "--json", "-n", "1"], "", reply.clone());
+        let report: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(report["hits"][0]["rel"] == target, method == "fused");
+        fs::remove_file(wiki.0.join("embed.sock")).unwrap();
+        let (output, request) =
+            wiki.respond_output(&["check", "--probe", "--probe-top", "1", target], "", reply);
+        assert_eq!(request, json!({"op":"dense","query":"cache","n":40}));
+        assert!(output.status.success(), "{method}: {output:?}");
+        assert!(String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("1 queries, 0 failures"));
+    }
+}
+
+#[test]
+fn search_uses_forty_candidates_and_preserves_large_bm25_fallbacks() {
+    let wiki = Wiki::new();
+    for i in 0..60 {
+        fs::write(
+            wiki.0.join(format!("wiki/pages/knowledge/rank-{i}.md")),
+            format!("---\ntitle: ranktoken {i}\ncreated: 2026-09-20\n---\nRanking details.\n"),
+        )
+        .unwrap();
+    }
+    let report: Value = serde_json::from_str(&run(
+        wiki.command(&["search", "ranktoken", "--no-semantic", "--json", "-n", "60"]),
+        "",
+    ))
+    .unwrap();
+    let paths: Vec<_> = report["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| hit["rel"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths.len(), 60);
+    for n in ["50", "-1"] {
+        let mut args = wiki.command(&["search", "ranktoken", "--json"]);
+        args.arg(format!("-n{n}"));
+        let fallback: Value = serde_json::from_str(&run(args, "")).unwrap();
+        assert_eq!(
+            fallback["hits"].as_array().unwrap().len(),
+            if n == "50" { 50 } else { 60 }
+        );
+    }
+    let path = paths[39]
+        .strip_prefix("pages/")
+        .unwrap()
+        .strip_suffix(".md")
+        .unwrap();
+    let (output, request) = wiki.respond(
+        &["search", "ranktoken", "--json", "-n", "1"],
+        "",
+        json!({"ok":true,"results":[{"path":path,"score":0.01}]}),
+    );
+    assert_eq!(request["n"], 40);
+    let fused: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(fused["hits"][0]["rel"], paths[39]);
+    assert_eq!(fused["hits"][0]["via"], "both");
 }
 
 #[test]
@@ -379,7 +521,7 @@ fn probe_bm25_matches_search_ranks_and_never_indexes_questions() {
     for (rank, top, failure, diagnostic) in [
         (4, "3", true, "bm25: rank 4"),
         (4, "4", false, ""),
-        (11, "3", true, "bm25: not in top 10"),
+        (11, "3", true, "bm25: rank 11"),
         (11, "11", false, ""),
     ] {
         let path = paths[rank - 1];
@@ -424,34 +566,31 @@ fn probe_bm25_matches_search_ranks_and_never_indexes_questions() {
 }
 
 #[test]
-fn keyword_hits_filters_and_opt_out_skip_daemon() {
+fn opt_out_empty_or_unset_socket_skip_daemon() {
     let wiki = Wiki::new();
     let listener = wiki.listener();
-    let output = run(wiki.command(&["search", "cache"]), "");
-    assert!(output.contains("foo cache notes"));
-    assert!(!output.contains("semantic matches"));
-    assert_no_connection(&listener);
-    for flags in [
-        vec!["--type", "knowledge"],
-        vec!["--status", "open"],
-        vec!["--project", "demo"],
-        vec!["--tag", "cache"],
-        vec!["--no-semantic"],
-    ] {
-        let mut args = vec!["search", "unmatchedmeaning"];
-        args.extend(flags);
-        let output = run(wiki.command(&args), "");
-        assert!(output.starts_with("no pages match"));
-        assert_eq!(output.lines().count(), 1);
+    for query in ["cache", "unmatchedmeaning"] {
+        let expected = run(wiki.command(&["search", query, "--no-semantic"]), "");
+        for empty in [false, true] {
+            let mut command = wiki.command(&["search", query]);
+            if empty {
+                command.env("CLAUDE_WIKI_SOCKET", "");
+            } else {
+                command
+                    .env_remove("CLAUDE_WIKI_SOCKET")
+                    .env_remove("XDG_RUNTIME_DIR");
+            }
+            assert_eq!(run(command, ""), expected);
+        }
         assert_no_connection(&listener);
     }
 }
 
 #[test]
-fn semantic_search_renders_pages_and_supplied_section() {
+fn dense_search_renders_pages_and_supplied_section() {
     let wiki = Wiki::new();
     let (output, request) = wiki.respond(
-        &["search", "unmatchedmeaning", "anotherquery", "-n", "3"],
+        &["search", "unmatchedmeaning", "anotherquery", "-n", "1"],
         "",
         json!({"ok": true, "tier": "gpu", "results": [
             {"path": "knowledge/deleted", "score": 2.0},
@@ -461,24 +600,63 @@ fn semantic_search_renders_pages_and_supplied_section() {
     );
     assert_eq!(
         request,
-        json!({"op": "search", "query": "unmatchedmeaning anotherquery", "n": 3})
+        json!({"op": "dense", "query": "unmatchedmeaning anotherquery", "n": 40})
     );
     let lines: Vec<_> = output.lines().collect();
-    assert!(lines[0].starts_with("no pages match"));
-    assert_eq!(lines[1], "semantic matches (meaning, not keywords):");
     assert_eq!(
-        lines[2],
-        wiki.0.join("wiki/pages/knowledge/foo.md").to_str().unwrap()
+        lines[0],
+        format!(
+            "{} (meaning)",
+            wiki.0.join("wiki/pages/knowledge/foo.md").display()
+        )
     );
-    assert!(lines[3].starts_with("  foo cache notes  (knowledge; updated "));
-    assert!(lines[3].ends_with("; project=demo; tags=cache)"));
-    assert_eq!(lines[4], "  § What kills it (lines 27-36)");
-    assert_eq!(
-        lines[5],
-        wiki.0.join("wiki/pages/knowledge/bar.md").to_str().unwrap()
-    );
-    assert!(lines[6].starts_with("  bar cache notes  (knowledge; updated "));
-    assert_eq!(lines.len(), 7);
+    assert!(lines[1].starts_with("  foo cache notes  (knowledge; updated "));
+    assert!(lines[1].ends_with("; project=demo; tags=cache)"));
+    assert_eq!(lines[2], "  § What kills it (lines 27-36)");
+    assert_eq!(lines.len(), 3);
+}
+
+#[test]
+fn daemon_down_error_and_timeout_preserve_bm25_output() {
+    for json in [false, true] {
+        for query in ["cache", "unmatchedmeaning"] {
+            let wiki = Wiki::new();
+            let mut args = vec!["search", query];
+            if json {
+                args.push("--json");
+            }
+            let mut command = wiki.command(&args);
+            command.arg("--no-semantic");
+            let expected = run(command, "");
+            assert_eq!(run(wiki.command(&args), ""), expected);
+            let (output, request) =
+                wiki.respond(&args, "", json!({"ok":false,"error":"unknown operation"}));
+            assert_eq!(request["op"], "dense");
+            assert_eq!(output, expected);
+            fs::remove_file(wiki.0.join("embed.sock")).unwrap();
+            let listener = wiki.listener();
+            let (release, wait) = mpsc::channel();
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = String::new();
+                BufReader::new(&mut stream).read_line(&mut request).unwrap();
+                assert_eq!(
+                    serde_json::from_str::<Value>(&request).unwrap()["op"],
+                    "dense"
+                );
+                let _ = wait.recv_timeout(Duration::from_secs(2));
+            });
+            let mut command = wiki.command(&args);
+            command.env("CLAUDE_WIKI_SEMANTIC_TIMEOUT_MS", "50");
+            let start = Instant::now();
+            let output = run(command, "");
+            let elapsed = start.elapsed();
+            let _ = release.send(());
+            server.join().unwrap();
+            assert_eq!(output, expected);
+            assert!(elapsed < Duration::from_secs(1));
+        }
+    }
 }
 
 #[test]
@@ -556,7 +734,7 @@ fn runtime_directory_socket_is_the_default() {
         writeln!(stream, "{}", json!({"ok": true, "results": []})).unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(&request).unwrap()["op"],
-            "search"
+            "dense"
         );
     });
     let mut command = wiki.command(&["search", "unmatchedmeaning"]);

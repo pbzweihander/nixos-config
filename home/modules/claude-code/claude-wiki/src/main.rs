@@ -36,7 +36,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// BM25 search; words are stemmed, prefix-matched and OR-ed
+    /// Fused BM25 and dense search; words are stemmed, prefix-matched and OR-ed
     Search {
         #[arg(required = true)]
         terms: Vec<String>,
@@ -44,7 +44,7 @@ enum Commands {
         n: i64,
         #[command(flatten)]
         filters: search::Filters,
-        /// Skip semantic fallback (also skipped with filters, which the daemon cannot apply)
+        /// Use only BM25 ranking, with history pages down-weighted
         #[arg(long)]
         no_semantic: bool,
         #[arg(long)]

@@ -42,7 +42,7 @@ enum Request {
         prompt: String,
         n: i64,
     },
-    Search {
+    Dense {
         query: String,
         n: i64,
     },
@@ -249,14 +249,13 @@ pub fn related_with_timeout(prompt: &str, timeout: Duration) -> Vec<Hit> {
     )
 }
 
-pub fn search(query: &str, n: i64) -> Vec<Hit> {
+pub fn dense(query: &str, n: i64) -> Vec<Hit> {
     if n == 0 {
         return vec![];
     }
-    request(Request::Search {
+    request(Request::Dense {
         query: query.to_owned(),
-        // SQLite accepts a negative limit as unlimited; the daemon caps at 1000.
-        n: if n < 0 { 1000 } else { n.min(1000) },
+        n: n.clamp(1, 100),
     })
 }
 
@@ -341,12 +340,12 @@ mod tests {
             serde_json::json!({"op": "related", "prompt": "캐시가 왜 사라져요?\n\"다시 시작\"", "n": 3})
         );
         assert_eq!(
-            serde_json::to_value(Request::Search {
+            serde_json::to_value(Request::Dense {
                 query: "exact error".into(),
                 n: 10
             })
             .unwrap(),
-            serde_json::json!({"op": "search", "query": "exact error", "n": 10})
+            serde_json::json!({"op": "dense", "query": "exact error", "n": 10})
         );
     }
 
@@ -445,7 +444,7 @@ mod tests {
     #[test]
     fn write_stall() {
         stalled_peer(
-            Request::Search {
+            Request::Dense {
                 query: "x".repeat(900_000),
                 n: 10,
             },

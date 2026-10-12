@@ -170,23 +170,19 @@ impl Probe {
         self.pages += 1;
         for query in &page.queries {
             self.queries += 1;
-            let limit = top.max(10);
-            let bm25 = search::bm25(
+            let hits = search::ranked(
                 db,
                 &search::fts_query(std::slice::from_ref(query)),
-                limit,
+                query,
+                search::CANDIDATES,
                 &search::Filters::default(),
+                false,
             )?;
-            let semantic = semantic::search(query, 10);
-            let bm25_rank = bm25
-                .iter()
-                .position(|(row, _)| row.path == rel)
-                .map(|i| i + 1);
-            let semantic_rank = semantic
-                .iter()
-                .position(|hit| format!("pages/{}.md", hit.path) == rel)
-                .map(|i| i + 1);
-            if [bm25_rank, semantic_rank]
+            let found = hits.iter().enumerate().find(|(_, hit)| hit.row.path == rel);
+            let fused_rank = found.map(|(i, _)| i + 1);
+            let bm25_rank = found.and_then(|(_, hit)| hit.bm25_rank);
+            let dense_rank = found.and_then(|(_, hit)| hit.dense_rank);
+            if [fused_rank, bm25_rank, dense_rank]
                 .iter()
                 .flatten()
                 .any(|rank| *rank as i64 <= top)
@@ -194,23 +190,21 @@ impl Probe {
                 continue;
             }
             self.failures += 1;
-            let bm25 = bm25_rank.map_or_else(
-                || format!("not in top {limit}"),
-                |rank| format!("rank {rank}"),
-            );
-            let semantic = semantic_rank.map_or_else(
-                || {
-                    if semantic.is_empty() {
-                        "unavailable"
-                    } else {
-                        "not in top 10"
-                    }
-                    .into()
+            let rank = |rank: Option<usize>, absent: &str| {
+                rank.map_or_else(|| absent.to_owned(), |rank| format!("rank {rank}"))
+            };
+            let fused = rank(fused_rank, "absent");
+            let bm25 = rank(bm25_rank, "not in top 40");
+            let dense = rank(
+                dense_rank,
+                if hits.iter().any(|hit| hit.dense_rank.is_some()) {
+                    "not in top 40"
+                } else {
+                    "unavailable or empty"
                 },
-                |rank| format!("rank {rank}"),
             );
             // Debug string quoting keeps multiline questions on one warning line.
-            eprintln!("warning: {rel}: query {:?} does not find this page (bm25: {bm25}, semantic: {semantic})", scan::redact(query));
+            eprintln!("warning: {rel}: query {:?} does not find this page (fused: {fused}, bm25: {bm25}, dense: {dense})", scan::redact(query));
         }
         Ok(())
     }

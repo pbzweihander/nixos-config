@@ -184,6 +184,27 @@ class PolicyTests(unittest.TestCase):
 
 
 class RetrievalTests(unittest.TestCase):
+    def test_dense_best_chunk_no_threshold_or_reranker_on_either_tier(self):
+        sections = (Section("Weak", 1, 26), Section("Best", 27, 36))
+        snapshot = example_snapshot(tuple(0.5 - i * 0.02 for i in range(60)), sections)
+        first = replace(snapshot.entries[0], chunks=(Chunk("weak", 1), Chunk("best", 27)),
+                        vectors=np.array([[-0.9, 0], [0.9, 0]], dtype=np.float32))
+        snapshot = Snapshot([first, *snapshot.entries[1:]], 1)
+        for tier in ("cpu", "gpu"):
+            model = FakeModel(tier)
+            for n in (1, 40, 100):
+                with self.subTest(tier=tier, n=n):
+                    results = retrieve(snapshot, model, tier, "q", "dense", n, Thresholds(100, 1))
+                    self.assertEqual([r["path"] for r in results],
+                                     [f"knowledge/p{i}" for i in range(min(n, 60))])
+                    self.assertAlmostEqual(results[0]["score"], 0.9)
+                    self.assertEqual(results[0]["heading"], "Best")
+                    self.assertEqual((results[0]["start_line"], results[0]["end_line"]), (27, 36))
+                    self.assertEqual(model.reranked, [])
+                    if n > 1:
+                        self.assertLess(results[-1]["score"], 0)
+            self.assertEqual(retrieve(Snapshot(), model, tier, "q", "dense", 40, Thresholds()), [])
+
     def test_cpu_threshold_and_explicit_search(self):
         model = FakeModel()
         # Two near-identical scores are no longer a reason to stay quiet: rules that
@@ -600,6 +621,28 @@ class StoreTests(unittest.TestCase):
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_dense_validation_and_dispatch_on_available_tier(self):
+        daemon = Daemon("/unused", factory=FakeModel)
+        daemon.cpu = Tier("cpu", FakeModel(), example_snapshot(tuple(-i / 100 for i in range(50))))
+        request = {"op": "dense", "query": "한국어", "n": 40}
+        for tier in ("cpu", "gpu"):
+            if tier == "gpu":
+                daemon.gpu = Tier("gpu", FakeModel("gpu"), daemon.cpu.snapshot)
+            decoded = decode_request(encode_message(request))
+            self.assertEqual(decoded, request)
+            reply = daemon.handle(decoded)
+            self.assertEqual(reply["tier"], tier)
+            self.assertEqual(len(reply["results"]), 40)
+            self.assertEqual(getattr(daemon, tier).model.reranked, [])
+        for n in (1, 100):
+            self.assertEqual(decode_request(encode_message(dict(request, n=n)))["n"], n)
+        for extra in (dict(query=None), dict(query=3), dict(query=" "), dict(n=None),
+                      dict(n=True), dict(n=1.5), dict(n="40"), dict(n=0), dict(n=-1), dict(n=101)):
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                decode_request(encode_message(dict(request, **extra)))
+        with self.assertRaises(ValueError):
+            decode_request(b'{"op":"dense","query":"q"}\n')
+
     def test_unicode_and_embedded_newlines_round_trip(self):
         request = {"op": "related", "prompt": '한국어\n"prompt"', "n": 3}
         encoded = encode_message(request)

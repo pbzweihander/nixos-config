@@ -79,13 +79,14 @@ claude-wiki tags                                                                
 
 - Terms are stemmed (Porter) and prefix-matched, and the terms are OR-ed: `configure`
   also finds `configuration` and `configured`. Pass several keywords and synonyms
-  rather than one exact phrase. Ranking is BM25, weighted title > tags > project >
-  body.
-- If no keyword matches exist and no filters are set, the local `wiki-embed`
-  daemon is asked for semantic matches. These appear under
-  `semantic matches (meaning, not keywords):`, with page metadata and a section
-  location when available. `--no-semantic` skips this fallback. Filters disable it
-  because the daemon cannot apply them; an unavailable daemon adds no output.
+  rather than one exact phrase. BM25 weights title > tags > project > body.
+- Search fuses the top 40 BM25 and top 40 dense results from local `wiki-embed`:
+  `2/(60 + BM25 rank) + 1/(60 + dense rank)`, with missing ranks contributing zero
+  and history scores multiplied by 0.9. Dense retrieval uses each page's best
+  chunk, without reranking or a threshold. Filters apply to both lists; dense-only
+  hits are marked `(meaning)`. `--no-semantic`, a disabled or unavailable socket,
+  timeout, or error uses BM25 alone, still down-weighting history. With no keyword
+  matches, available dense results are shown.
 - Quote a multi-word argument to also match it as an exact phrase; pages containing
   the phrase rank higher: `claude-wiki search "readonly database" nix sandbox`.
 - Translate the user's words into English keywords before searching. Exact error
@@ -119,9 +120,9 @@ successfully, while the overview is still resolved.
 
 `search --json` returns `{ "hits": [...] }` with absolute `path`, relative `rel`,
 `title`, `type`, `status`, `project`, `tags` (array), `updated` (YYYY-MM-DD), `stale`,
-`backlinks`, `snippet`, `section`, and `semantic`. Search and fallback rules are
-unchanged. Blocked titles become `[BLOCKED: <category>]`, with empty snippets and
-null sections.
+`backlinks`, `snippet`, `section`, `semantic` (true for dense-only hits), and `via`
+(`bm25`, `dense`, or `both`). Blocked titles become `[BLOCKED: <category>]`, with
+empty snippets and null sections.
 
 `injections` reads that session's logged pages from `usage.sqlite`, once per path,
 newest first. JSON is `{ "pages": [{ "path", "rel", "title", "sources", "at" }] }`;
@@ -274,11 +275,11 @@ exits 2 without committing anything if a selected page has errors or security fi
 
 `claude-wiki check --probe [--probe-top N] [paths...]` also tests each page's
 `queries`, a YAML list of non-empty strings. A query passes when its page is within
-the top N results (default 3) by BM25 or semantic search. BM25 uses the same query
-and ranking as `search`, without filters; semantic search asks for ten results
-when the daemon is available. Failed queries print each method's rank, or its
-absence or unavailability, and exit 1. A summary counts pages probed, queries, and
-failures. Queries are not indexed. Pages with frontmatter errors or security findings are not probed.
+the top N results (default 3) in the fused ranking, BM25 alone, or dense alone,
+using the same 40 candidates per list as `search`, without filters. Failed queries
+print all three ranks, or absence/unavailability, and exit 1. A summary counts
+pages probed, queries, and failures. Queries are not indexed. Pages with
+frontmatter errors or security findings are not probed.
 
 `sync` probes only the pages being committed and warns when a knowledge page has
 no queries. These warnings do not block the commit. Plain `check` does not warn
@@ -378,7 +379,7 @@ whitespace) are skipped. No relevant pages, an unavailable daemon, or a failed o
 slow reply produces no suggestion. The whole request has a 300 ms deadline,
 configurable with `CLAUDE_WIKI_SEMANTIC_TIMEOUT_MS`. `CLAUDE_WIKI_SOCKET` overrides
 `$XDG_RUNTIME_DIR/claude-wiki/embed.sock`; setting it to an empty string disables
-semantic retrieval. These settings also apply to the search fallback.
+semantic retrieval. These settings also apply to dense retrieval in search.
 
 Every 15 prompts without a
 `claude-wiki sync` tool call in the session transcript, it nudges the session to

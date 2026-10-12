@@ -37,14 +37,15 @@ def decode_request(line):
         page_id = exclude.removeprefix("pages/").removesuffix(".md") if isinstance(exclude, str) else ""
         if not re.fullmatch(r"(?:knowledge|followups|projects|history)/[a-z0-9._-]+", page_id):
             raise ValueError("exclude must be a page ID or relative path")
-    if op not in ("related", "search", "similar"):
+    if op not in ("related", "search", "dense", "similar"):
         raise ValueError("unknown operation")
-    key = {"related": "prompt", "search": "query", "similar": "text"}[op]
+    key = {"related": "prompt", "search": "query", "dense": "query", "similar": "text"}[op]
     if not isinstance(value.get(key), str) or not value[key].strip():
         raise ValueError(f"{key} must be a nonempty string")
-    n = value.get("n", 10 if op == "search" else 3)
-    if type(n) is not int or not 1 <= n <= 1000:
-        raise ValueError("n must be an integer between 1 and 1000")
+    n = value.get("n") if op == "dense" else value.get("n", 10 if op == "search" else 3)
+    maximum = 100 if op == "dense" else 1000
+    if type(n) is not int or not 1 <= n <= maximum:
+        raise ValueError(f"n must be an integer between 1 and {maximum}")
     result = {"op": op, key: value[key], "n": n}
     if op == "similar":
         result.update(exclude=value["exclude"], min=minimum)
