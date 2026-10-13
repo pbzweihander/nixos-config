@@ -57,18 +57,29 @@ let
 
   # One Claude Code config directory per account: `claude` uses ~/.claude, and the
   # `sclaude` and `tclaude` fish functions set CLAUDE_CONFIG_DIR to ~/.sclaude and
-  # ~/.tclaude. All of them get the same rules, skills, and settings; their `projects`
-  # directories link to ~/.claude/projects, so transcripts and auto memory are shared.
+  # ~/.tclaude. All of them get the same rules and settings; their `projects` and
+  # `skills` directories link to ~/.claude, so transcripts, auto memory, and skills
+  # (including ones written at runtime) are shared. claude.ai-synced skills live in
+  # per-account buckets (skills/synced/<org>_<account>), so the accounts coexist there.
   configDirs = [
     ".claude"
     ".sclaude"
     ".tclaude"
   ];
   extraConfigDirs = lib.remove ".claude" configDirs;
+  sharedDirs = [
+    "projects"
+    "skills"
+  ];
+  # Linked into every config directory.
   sharedFiles = {
     # User-level rules rather than CLAUDE.md, which stays editable (/memory).
     "rules/claude-wiki.md" = ./rules/claude-wiki.md;
     "rules/nix.md" = ./rules/nix.md;
+  };
+  # Linked into ~/.claude/skills only; the other accounts reach it through their
+  # `skills` link.
+  skillFiles = {
     "skills/claude-wiki" = ./skills/claude-wiki;
     "skills/codex-implement" = ./skills/codex-implement;
     # A plugin folder under skills/ loads as a mod (function hooks) in every session.
@@ -175,14 +186,46 @@ in
           lib.mapAttrs' (path: source: lib.nameValuePair "${dir}/${path}" { inherit source; }) sharedFiles
         ) configDirs
       )
+      // lib.mapAttrs' (path: source: lib.nameValuePair ".claude/${path}" { inherit source; }) skillFiles
       // lib.listToAttrs (
-        map (
+        lib.concatMap (
           dir:
-          lib.nameValuePair "${dir}/projects" {
-            source = config.lib.file.mkOutOfStoreSymlink "${homeDir}/.claude/projects";
-          }
+          map (
+            sub:
+            lib.nameValuePair "${dir}/${sub}" {
+              source = config.lib.file.mkOutOfStoreSymlink "${homeDir}/.claude/${sub}";
+            }
+          ) sharedDirs
         ) extraConfigDirs
       );
+
+    # Before `skills` became a link, each extra config directory had its own skills
+    # directory holding Nix-managed links and that account's claude.ai-synced bucket.
+    # Move the account's own content into ~/.claude/skills and drop the old
+    # directory, so the link can take its place. Anything that would collide stays,
+    # and checkLinkTargets then moves the directory aside with the backup extension.
+    activation.claudeCodeSharedSkills = lib.hm.dag.entryBefore [ "checkLinkTargets" ] ''
+      shared=${lib.escapeShellArg "${homeDir}/.claude/skills"}
+      for skills in ${lib.escapeShellArgs (map (dir: "${homeDir}/${dir}/skills") extraConfigDirs)}; do
+      [ -d "$skills" ] && [ ! -L "$skills" ] || continue
+      run mkdir -p "$shared/synced"
+      if [ -d "$skills/synced" ]; then
+        for entry in "$skills/synced"/* "$skills/synced"/.bucket-*; do
+          [ -e "$entry" ] || continue
+          [ -e "$shared/synced/''${entry##*/}" ] || run mv "$entry" "$shared/synced/"
+        done
+        run rmdir --ignore-fail-on-non-empty "$skills/synced"
+      fi
+      for entry in "$skills"/* "$skills"/.[!.]*; do
+        [ -e "$entry" ] || [ -L "$entry" ] || continue
+        case "$(readlink "$entry")" in
+          /nix/store/*) run rm "$entry" ;;
+          *) [ -e "$shared/''${entry##*/}" ] || run mv "$entry" "$shared/" ;;
+        esac
+      done
+      run rmdir --ignore-fail-on-non-empty "$skills"
+      done
+    '';
 
     # Same approach as programs.zed-editor's mutableUserSettings, except that arrays
     # (permission rules, hooks) are unioned instead of replaced, so entries added at
