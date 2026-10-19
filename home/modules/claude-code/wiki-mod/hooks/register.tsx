@@ -118,7 +118,7 @@ async function armReview($: EngineInterface, id: string, action: WikiReviewActio
   await quiet(() => update($, review, value => {
     const item = value.items.find(item => item.id === id)
     if (!item || value.selectedId !== id || value.operation || value.listLoading || value.listError ||
-        value.diffLoading || (action === 'land' && item.kind !== 'branch')) return value
+        value.diffLoading) return value
     return {
       ...value, actionToken: value.actionToken + 1, message: '',
       confirmation: { id, action, revision: JSON.stringify(item), token: value.actionToken + 1 },
@@ -136,7 +136,7 @@ async function confirmReview($: EngineInterface, bin: string, curatorBin: string
       if (!value || value.operation || value.listLoading || value.listError || value.selectedId !== expected.id ||
           JSON.stringify(value.confirmation) !== JSON.stringify(expected)) return
       const item = value.items.find(item => item.id === expected.id)
-      if (!item || JSON.stringify(item) !== expected.revision || (expected.action === 'land' && item.kind !== 'branch')) return
+      if (!item || JSON.stringify(item) !== expected.revision) return
       target = expected.action === 'land' ? item.branch ?? item.id : item.id
       const claimed = await $.state.set(reviewRef, {
         ...value, confirmation: null, operation: expected, message: `${expected.action === 'land' ? 'Landing' : 'Discarding'} ${item.id}…`,
@@ -469,7 +469,7 @@ export const register: Register = (on, options) => {
           )}
           {view.message && <Text color={outcomeColor(view.message)} bold wrap="wrap">{view.message}</Text>}
           <Box key="review-actions" flexDirection="row" flexWrap="wrap" gap={1}>
-            {selected && canAct && selected.kind === 'branch' && <Button key="land" label="Land" variant="primary" hotkey="l" onPress={() => armReview($, selected.id, 'land')} />}
+            {selected && canAct && <Button key="land" label="Land" variant="primary" hotkey="l" onPress={() => armReview($, selected.id, 'land')} />}
             {selected && canAct && <Button key="discard" label="Discard" hotkey="d" onPress={() => armReview($, selected.id, 'discard')} />}
             <Button key="refresh-review" label="Refresh" hotkey="r" onPress={() => refresh($, bin, curatorBin)} />
             <Button key="close-review" label="Close" role="dismiss" onPress={() => closeReview($)} />

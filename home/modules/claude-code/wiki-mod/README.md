@@ -38,7 +38,14 @@ when either pane opens or a curator action finishes. `wiki N↑` counts the CLI'
 counts augmented subagent prompts, and `curator MM/DD N✓N✗` shows the timestamp's
 month/day and the merged/rejected task counts. These counts come from one
 `- merged:` or `- rejected:` line per task in `latest.md`; indented detail lines
-do not count. `review N` reports pending items from `wiki-curator review --json`.
+do not count. `review N` reports pending branches from `wiki-curator review --json`:
+Codex rejections that adjudication did not land (including adjudication errors and
+failed revisions), plus deferred commits. Other gate or Claude failures retain no
+candidate and do not increase `review N`; their `latest.md` entries name the failing
+gate, give its reason, list up to 20 missing preservation tokens as JSON with a count
+of the rest, and print every recall problem. Full details remain in the run JSON.
+Diff artifacts are no longer written or listed, and old files are ignored. The mod
+accepts only `kind: "branch"`; legacy `kind: "diff"` items are invalid.
 Zero subagents, zero pending items, and an absent curator summary are omitted.
 Failed refreshes preserve previously fetched data. The summary path is derived
 from `$.env.get('HOME')`.
@@ -63,8 +70,8 @@ values live in declared session state, and late search/preview responses cannot
 replace newer selections.
 
 Open `/wiki-review`, or press **Review curator** (`r`) in `/wiki`, to browse
-rejected and deferred curator items. Its header shows rejected/error and
-deferred/warning badges and the last curator summary. Each row has a plain
+retained Codex rejections and deferred curator branches. Its header shows
+rejected/error and deferred/warning badges and the last curator summary. Each row has a plain
 numbered button (`1`–`9` for the first nine), an outcome badge, an accent-colored
 type, a summary fitted to the available width, and a dim page count. Selecting
 an entry runs `wiki-curator show <id>`. Its outcome-colored detail card groups
@@ -82,9 +89,9 @@ affecting colored hunks in other files. The total preview budget remains about
 60 KB of UTF-8 text; omitted files/hunks are reported. Large commit messages and
 stat tables do not consume the hunk budget.
 
-**Land** (`l`, primary) is available only for branch items and invokes
-`wiki-curator land <branch> --json`. **Discard** (`d`) invokes `wiki-curator discard <id> --json` for
-either item kind. Neither first press executes a command: it reveals a separate
+**Land** (`l`, primary) invokes `wiki-curator land <branch> --json`.
+**Discard** (`d`) invokes `wiki-curator discard <branch> --json`.
+Neither first press executes a command: it reveals a separate
 warning-colored confirmation box naming the item, a primary **Confirm** (`y`)
 button, and **Cancel** (`n`). Land also explains that it cherry-picks onto main.
 Only the confirm press starts the action. Confirmation is bound to the item and its metadata,

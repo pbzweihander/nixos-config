@@ -1,11 +1,12 @@
 import json
 import subprocess
+import time
 import unittest
 
-from test_curator import A, B, REF, NEW, OLD, RepoTest, justification, page
+from test_curator import A, B, DAY, REF, NEW, OLD, RepoTest, justification, page
 from wiki_curator.gitutil import changes, git, status
 from wiki_curator.recall import queries, recall
-from wiki_curator.runner import new_broken_links
+from wiki_curator.runner import new_broken_links, read_state
 
 
 QUERY = "Why does the probe take time?"
@@ -162,6 +163,13 @@ class RecallTests(RepoTest):
         self.assertEqual(result["outcome"], "rejected", result)
         self.assertFalse(result["gates"]["recall"]["accept"])
         self.assertEqual(result["gates"]["recall"]["probes"][0]["parent_rank"], 1)
+        self.assert_not_retained(result)
+        self.assertAlmostEqual(read_state(self.cache)["cooldowns"][A] - time.time(), 14 * DAY, delta=10)
+        latest = (self.cache / "latest.md").read_text()
+        self.assertIn("gate: recall", latest)
+        self.assertTrue(result["gates"]["recall"]["problems"])
+        for problem in result["gates"]["recall"]["problems"]:
+            self.assertIn(problem, latest)
         self.assertFalse(self.calls("codex"))
         self.assertEqual(git(self.wiki, "rev-parse", "HEAD").strip(), parent)
         (self.cache / "state.json").unlink()

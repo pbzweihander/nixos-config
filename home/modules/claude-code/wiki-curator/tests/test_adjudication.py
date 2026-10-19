@@ -29,6 +29,10 @@ class AdjudicationTests(RepoTest):
 
     def assert_rejected(self, result):
         self.assertEqual(result["outcome"], "rejected", result)
+        self.assertTrue(result["branch"].startswith("curator/rejected/"))
+        self.assertFalse(result["gates"]["codex"]["accept"])
+        self.assertNotIn("diff", result)
+        self.assertEqual(list((self.cache / "runs").glob("*.diff")), [])
         self.assertEqual(git(self.wiki, "rev-parse", result["branch"]).strip(), result["commit"])
         self.assertEqual((self.wiki / A).read_text(), page(OLD))
         self.assertIn(A, read_state(self.cache)["cooldowns"])
@@ -64,6 +68,8 @@ class AdjudicationTests(RepoTest):
         self.assertEqual(stage["verdict"], "uphold")
         self.assertEqual(stage["requested_verdict"], "override")
         self.assertFalse(stage["frontmatter_only"])
+        latest = (self.cache / "latest.md").read_text()
+        self.assertLess(latest.index(PROBLEM), latest.index(REASON))
         output = subprocess.run([sys.executable, "-m", "wiki_curator", "review"],
                                 capture_output=True, text=True, check=True).stdout
         self.assertLess(output.index(PROBLEM), output.index(REASON))
@@ -154,6 +160,20 @@ class AdjudicationTests(RepoTest):
                     self.assertFalse(self.adjudicators())
                 else:
                     self.assertFalse(result["gates"]["adjudicate"]["accept"])
+
+    def test_adjudicator_failure_uses_stdout_when_stderr_is_empty(self):
+        cases = [("Reached max turns\nPlease retry", "", "Reached max turns Please retry"),
+                 ("output", "  stderr failure\n", "stderr failure"),
+                 ("omitted prefix" + "x" * 600 + "\nFailed", " \n", "x" * 492 + " Failed")]
+        for stdout, stderr, detail in cases:
+            with self.subTest(stderr=stderr, detail=detail):
+                (self.cache / "state.json").unlink(missing_ok=True)
+                self.prepare()
+                self.fixture.update(adjudicate_exit=1, adjudicate=stdout, adjudicate_stderr=stderr)
+                result = self.result()
+                self.assert_rejected(result)
+                self.assertEqual(result["gates"]["adjudicate"]["error"], "Claude adjudicator exited 1: " + detail)
+                self.assertIn(detail, (self.cache / "latest.md").read_text())
 
     def test_style_notes_can_accept_without_adjudication(self):
         self.prepare()

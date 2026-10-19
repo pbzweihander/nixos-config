@@ -5,15 +5,15 @@ import fcntl
 import json
 import subprocess
 import sys
-import time
 
 from .gitutil import changes, git, safe_page
 from .preservation import strict_json
-from .runner import DIFF_LIMIT, DIFF_TRUNCATED, artifact_key, land, read_state, review_details, write_json
-from .selection import DAY
+from .runner import artifact_key, land, read_state, review_details, write_json
 
 
 PREFIXES = ("curator/rejected/", "curator/deferred/")
+DIFF_LIMIT = 1024 * 1024
+DIFF_TRUNCATED = b"\n[wiki-curator: diff truncated at 1 MiB]\n"
 
 
 class RunInProgress(Exception):
@@ -45,16 +45,6 @@ def branch_commit(wiki, branch):
     return git(wiki, "show-ref", "--verify", "--hash", ref).strip()
 
 
-def diff_path(cache, identity):
-    if not identity.startswith("diff:"):
-        raise ValueError("expected a diff:<timestamp>-<task> id")
-    artifact_key(identity[5:])
-    path = cache / "runs" / f"{identity[5:]}.diff"
-    if path.is_symlink() or not path.is_file():
-        raise ValueError(f"diff artifact does not exist or is not a regular file: {identity}")
-    return path
-
-
 def task_report(cache, timestamp, number):
     if timestamp is None:
         return {}
@@ -68,9 +58,8 @@ def task_report(cache, timestamp, number):
     return {}
 
 
-def item(cache, identity, *, commit=None, diff=None):
-    branch = identity if diff is None else None
-    key = branch.split("/", 2)[2] if branch else identity[5:]
+def item(cache, branch, *, commit=None):
+    key = branch.split("/", 2)[2]
     try:
         timestamp, number, _ = artifact_key(key)
     except ValueError:
@@ -87,10 +76,9 @@ def item(cache, identity, *, commit=None, diff=None):
     gates = task.get("gates")
     adjudication = gates.get("adjudicate") if isinstance(gates, dict) else None
     return {
-        "id": identity, "kind": "branch" if branch else "diff", "branch": branch,
-        "diff": str(diff.resolve()) if diff else None, "run": timestamp, "task": number,
+        "id": branch, "kind": "branch", "branch": branch, "run": timestamp, "task": number,
         "type": string(task.get("type")), "pages": strings(task.get("pages")),
-        "outcome": branch.split("/")[1] if branch else "rejected",
+        "outcome": branch.split("/")[1],
         "reason": string(task.get("reason")), "codex_problems": strings(task.get("codex_problems")),
         "adjudicate": adjudication if isinstance(adjudication, dict) else None,
         "summary": string(explanation.get("summary")) if isinstance(explanation, dict) else None,
@@ -98,8 +86,7 @@ def item(cache, identity, *, commit=None, diff=None):
     }
 
 
-def review_items(wiki, cache, days=30):
-    dismissed = set(read_state(cache)["dismissed_diffs"])
+def review_items(wiki, cache):
     entries = []
     refs = git(wiki, "for-each-ref", "--format=%(refname)\t%(objectname)\t%(committerdate:unix)",
                *(f"refs/heads/{prefix}" for prefix in PREFIXES))
@@ -112,28 +99,14 @@ def review_items(wiki, cache, days=30):
         except ValueError:
             created = int(committed)
         entries.append((created, entry["task"] or 0, entry))
-    cutoff = time.time() - days * DAY
-    for path in (cache / "runs").glob("*.diff"):
-        identity = f"diff:{path.stem}"
-        try:
-            _, number, created = artifact_key(path.stem)
-        except ValueError:
-            continue
-        if created < cutoff or identity in dismissed or path.is_symlink() or not path.is_file():
-            continue
-        entries.append((created, number, item(cache, identity, diff=path)))
     entries.sort(key=lambda entry: (entry[0], entry[1], entry[2]["id"]), reverse=True)
     return [entry for _, _, entry in entries]
 
 
-def show(wiki, cache, identity):
-    if identity.startswith("diff:"):
-        with diff_path(cache, identity).open("rb") as stream:
-            content = stream.read(DIFF_LIMIT + 1)
-    else:
-        commit = branch_commit(wiki, identity)
-        content = git(wiki, "show", "-M", "--stat", "-p", "--no-ext-diff", "--no-textconv",
-                      "--no-color", commit, "--", text=False)
+def show(wiki, branch):
+    commit = branch_commit(wiki, branch)
+    content = git(wiki, "show", "-M", "--stat", "-p", "--no-ext-diff", "--no-textconv",
+                  "--no-color", commit, "--", text=False)
     if len(content) > DIFF_LIMIT:
         content = content[:DIFF_LIMIT - len(DIFF_TRUNCATED)] + DIFF_TRUNCATED
     return content
@@ -168,16 +141,9 @@ def land_branch(wiki, cache, branch):
     return result
 
 
-def discard(wiki, cache, identity):
-    if identity.startswith("diff:"):
-        diff_path(cache, identity)
-        state = read_state(cache)
-        if identity not in state["dismissed_diffs"]:
-            state["dismissed_diffs"].append(identity)
-            write_json(cache / "state.json", state)
-    else:
-        branch_commit(wiki, identity)
-        git(wiki, "branch", "-D", "--", identity)
+def discard(wiki, branch):
+    branch_commit(wiki, branch)
+    git(wiki, "branch", "-D", "--", branch)
     return {"outcome": "discarded"}
 
 
@@ -194,7 +160,7 @@ def execute(args, cache):
     as_json = getattr(args, "json", False)
     try:
         if args.command == "review":
-            items = review_items(wiki, cache, args.days)
+            items = review_items(wiki, cache)
             if as_json:
                 print(json.dumps({"items": items}, ensure_ascii=False))
             else:
@@ -207,11 +173,11 @@ def execute(args, cache):
                         print(line)
             return 0
         if args.command == "show":
-            sys.stdout.buffer.write(show(wiki, cache, args.id))
+            sys.stdout.buffer.write(show(wiki, args.id))
             return 0
         with run_lock(cache):
             result = (land_branch(wiki, cache, args.id) if args.command == "land"
-                      else discard(wiki, cache, args.id))
+                      else discard(wiki, args.id))
         print_result(result, as_json)
         return 3 if result["outcome"] == "deferred" else 0
     except RunInProgress as error:

@@ -23,6 +23,7 @@ FILENAME = re.compile(
 UPPER_SNAKE = re.compile(r"(?<!\w)[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+(?!\w)")
 SNAKE = re.compile(r"(?<!\w)[a-z][a-z0-9]*(?:_[a-z][a-z0-9]*)+(?!\w)")
 ERROR_CODE = re.compile(r"(?<!\w)(?:E[0-9]{2,4}|HTTP[0-9]{3})(?!\w)")
+LIST_MARKER = re.compile(r"^[ \t]*(?:>[ \t]*)?[0-9]+[.)](?=\s)")
 
 
 def strict_json(text):
@@ -57,7 +58,17 @@ def tokens(text):
     # Link targets are compared as normalized links below; numbers in a renamed slug
     # (a dated knowledge page moved to history) are not facts. Display text still counts.
     facts = LINK_SPAN.sub(lambda m: f" {m[1] or ''} ", text)
-    result = set(NUMBER.findall(facts))
+    result, fence = set(), ""
+    for line, fact_line in zip(text.splitlines(keepends=True), facts.splitlines(keepends=True)):
+        marker = re.match(r"^[ \t]*(?:>[ \t]*)?(`{3,}|~{3,})(.*)$", line)
+        if marker:
+            if not fence:
+                fence = marker[1]
+            elif marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip():
+                fence = ""
+        # List-shaped text inside code fences still contains facts.
+        listing = None if fence or marker else LIST_MARKER.match(line)
+        result.update(NUMBER.findall(fact_line[listing.end():] if listing else fact_line))
     for pattern in (PATH, FILENAME, UPPER_SNAKE, ERROR_CODE):
         result.update(m.group().rstrip(".,;:!?)]}>") for m in pattern.finditer(facts))
     # Require a word component: a_b (or a_b_c) in prose is usually notation.

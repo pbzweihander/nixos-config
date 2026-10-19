@@ -521,9 +521,10 @@ it never deletes or compacts pages and does not affect search ranking.
 ## Curator
 
 A daily job on rossmann consolidates a few lint findings. It lands commits titled
-`curator: ...` after a deterministic preservation check and a Codex review. Rejected
-attempts with a commit are kept on branches `curator/rejected/*`. Sessions do not
-need to do anything about them.
+`curator: ...` after a deterministic preservation check and a Codex review. Only
+attempts that Codex rejected (and adjudication did not land) are kept on branches
+`curator/rejected/*`; deterministic gate failures are only reported in
+`~/.cache/wiki-curator/latest.md`. Sessions do not need to do anything about them.
 When deterministic gates pass but Codex rejects, a tool-free Claude adjudicator may
 override frontmatter-only changes or propose one small revision that must pass every
 gate and Codex again (`WIKI_CURATOR_ADJUDICATE=0` disables this).

@@ -126,12 +126,12 @@ export function parseReview(value: unknown): WikiReviewItem[] {
     const id = identifier(row.id)
     if (seen.has(id)) throw new Error('Duplicate review identifier')
     seen.add(id)
-    if (row.kind !== 'branch' && row.kind !== 'diff') throw new Error('Invalid review kind')
+    if (row.kind !== 'branch') throw new Error('Invalid review kind')
     if (row.outcome !== 'rejected' && row.outcome !== 'deferred') throw new Error('Invalid review outcome')
     return {
       id, kind: row.kind, outcome: row.outcome,
       branch: row.branch == null ? null : identifier(row.branch),
-      diff: nullableString(row.diff), commit: nullableString(row.commit), run: nullableString(row.run),
+      commit: nullableString(row.commit), run: nullableString(row.run),
       type: nullableString(row.type) ?? 'unknown',
       pages: row.pages == null ? [] : array(row.pages).map(string),
       summary: nullableString(row.summary) ?? '', reason: nullableString(row.reason) ?? '',

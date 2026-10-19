@@ -32,9 +32,8 @@ export type WikiPane = {
 
 export type WikiReviewItem = {
   id: string
-  kind: 'branch' | 'diff'
+  kind: 'branch'
   branch: string | null
-  diff: string | null
   commit: string | null
   run: string | null
   type: string

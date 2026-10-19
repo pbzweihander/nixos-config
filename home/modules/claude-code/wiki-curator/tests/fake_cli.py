@@ -61,6 +61,7 @@ elif name == "claude":
         time.sleep(fixture.get("adjudicate_sleep", 0))
         edits(Path.cwd(), fixture.get("adjudicate_writes", {}))
         print(fixture.get("adjudicate", '{"verdict": "uphold", "reason": "검토 필요", "edits": []}'))
+        print(fixture.get("adjudicate_stderr", ""), file=sys.stderr)
         sys.exit(fixture.get("adjudicate_exit", 0))
     if fixture.get("wait_for"):
         while not Path(fixture["wait_for"]).exists():
@@ -73,6 +74,8 @@ elif name == "claude":
         path.write_text(json.dumps(fixture["justification"]))
         if fixture.get("stage_justification"):
             git(Path.cwd(), "add", ".curator")
+    print(fixture.get("claude_stdout", ""))
+    print(fixture.get("claude_stderr", ""), file=sys.stderr)
     sys.exit(fixture.get("claude_exit", 0))
 elif name == "codex":
     count = sum(json.loads(line)["name"] == "codex"

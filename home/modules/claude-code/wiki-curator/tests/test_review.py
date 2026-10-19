@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 from test_curator import A, B, DAY, NEW, OLD, REF, RepoTest, page
 from wiki_curator.gitutil import git, status
-from wiki_curator.review import land_branch
-from wiki_curator.runner import DIFF_LIMIT, DIFF_TRUNCATED, read_state, write_json
+from wiki_curator.review import DIFF_LIMIT, DIFF_TRUNCATED, land_branch
+from wiki_curator.runner import read_state, write_json
 
 
 class ReviewTests(RepoTest):
@@ -55,7 +55,7 @@ class ReviewTests(RepoTest):
             git(self.wiki, "worktree", "remove", "--force", str(worktree))
         return branch, commit
 
-    def test_review_joins_reports_lists_all_branches_and_recent_undismissed_diffs(self):
+    def test_review_joins_reports_lists_all_branches_and_ignores_legacy_diffs(self):
         self.fixture["review"] = '{"accept": false, "problems": ["Lost qualification", "Check the number"]}'
         result = self.result()
         branch = result["branch"]
@@ -63,36 +63,29 @@ class ReviewTests(RepoTest):
         self.report(deferred.rsplit("/", 1)[1].rsplit("-", 1)[0],
                     {"type": "snapshots", "pages": [B], "reason": "main index has staged changes"})
         missing, missing_commit = self.candidate(timestamp=self.timestamp(1))
-        diff_timestamp = self.timestamp()
-        diff_id, diff_path = self.diff(diff_timestamp, number=2)
-        self.report(diff_timestamp, {}, {"type": "duplicates", "pages": [A, B], "outcome": "rejected",
-                                        "reason": "scope", "justification": {"summary": "candidate summary"}})
-        old_id, _ = self.diff(self.timestamp(31))
+        self.diff()
+        self.diff(self.timestamp(31))
         dismissed_id, _ = self.diff()
         state = read_state(self.cache)
         state["dismissed_diffs"] = [dismissed_id]
         write_json(self.cache / "state.json", state)
         items = json.loads(self.cli("review", "--json"))["items"]
-        self.assertEqual([i["id"] for i in items], [diff_id, branch, missing, deferred])
-        self.assertEqual(set(items[0]), {"id", "kind", "branch", "diff", "run", "task", "type", "pages",
+        self.assertEqual([i["id"] for i in items], [branch, missing, deferred])
+        self.assertEqual(set(items[0]), {"id", "kind", "branch", "run", "task", "type", "pages",
                                        "outcome", "reason", "codex_problems", "adjudicate", "summary", "commit"})
-        self.assertEqual(items[0], {"id": diff_id, "kind": "diff", "branch": None, "diff": str(diff_path),
-                                   "run": diff_timestamp, "task": 2, "type": "duplicates", "pages": [A, B],
-                                   "outcome": "rejected", "reason": "scope", "codex_problems": [],
-                                   "summary": "candidate summary", "commit": None, "adjudicate": None})
-        self.assertEqual(items[1]["codex_problems"], ["Lost qualification", "Check the number"])
-        self.assertEqual(items[1]["commit"], result["commit"])
-        self.assertEqual(items[1]["summary"], result["justification"]["summary"])
-        self.assertEqual(items[2]["commit"], missing_commit)
-        for key in ("type", "reason", "summary", "diff"):
-            self.assertIsNone(items[2][key])
-        self.assertEqual(items[2]["pages"], [])
-        self.assertEqual(items[3]["outcome"], "deferred")
-        self.assertIn(old_id, [i["id"] for i in json.loads(self.cli("review", "--days", "60", "--json"))["items"]])
-        self.assertEqual(len(json.loads(self.cli("review", "--days", "0", "--json"))["items"]), 3)
+        self.assertTrue(all(i["kind"] == "branch" and "diff" not in i for i in items))
+        self.assertEqual(items[0]["codex_problems"], ["Lost qualification", "Check the number"])
+        self.assertEqual(items[0]["commit"], result["commit"])
+        self.assertEqual(items[0]["summary"], result["justification"]["summary"])
+        self.assertEqual(items[1]["commit"], missing_commit)
+        for key in ("type", "reason", "summary"):
+            self.assertIsNone(items[1][key])
+        self.assertEqual(items[1]["pages"], [])
+        self.assertEqual(items[2]["outcome"], "deferred")
         text = self.cli("review")
         self.assertIn("  Lost qualification\n  Check the number\n", text)
-        self.assertEqual(len([line for line in text.splitlines() if not line.startswith("  ")]), 4)
+        self.assertEqual(len([line for line in text.splitlines() if not line.startswith("  ")]), 3)
+        self.assertEqual(len(list((self.cache / "runs").glob("*.diff"))), 3)
 
     def test_review_missing_corrupt_and_malformed_reports(self):
         branch, _ = self.candidate()
@@ -121,19 +114,12 @@ class ReviewTests(RepoTest):
         self.assertEqual(json.loads(self.cli("review", "--json")), {"items": []})
         self.assertFalse(self.cache.exists())
 
-    def test_show_branch_patch_stat_and_both_byte_caps(self):
+    def test_show_branch_patch_stat_and_byte_cap(self):
         branch, commit = self.candidate()
         shown = self.cli("show", branch)
         self.assertIn(commit, shown)
         self.assertIn("1 file changed", shown)
         self.assertIn("+Measured", shown)
-        identity, _ = self.diff(content=b"patch with non-UTF8: \xff\n")
-        self.assertEqual(self.cli("show", identity, binary=True), b"patch with non-UTF8: \xff\n")
-        for size in (DIFF_LIMIT, DIFF_LIMIT + 1):
-            identity, _ = self.diff(content=b"x" * size)
-            content = self.cli("show", identity, binary=True)
-            self.assertEqual(len(content), DIFF_LIMIT)
-            self.assertEqual(content.endswith(DIFF_TRUNCATED), size > DIFF_LIMIT)
         large, _ = self.candidate(edits={A: page("가" * DIFF_LIMIT)})
         content = self.cli("show", large, binary=True)
         self.assertEqual(len(content), DIFF_LIMIT)
@@ -258,19 +244,16 @@ class ReviewTests(RepoTest):
         self.cli("land", branch + "^", code=2)
         self.assertEqual((self.wiki / A).read_text(), page(OLD))
 
-    def test_discard_branch_and_diff_preserves_files_and_cooldowns(self):
+    def test_discard_branch_preserves_files_and_cooldowns(self):
         branch, _ = self.candidate(outcome="deferred")
-        identity, path = self.diff()
+        _, path = self.diff()
         write_json(self.cache / "state.json", {"cooldowns": {A: time.time() + DAY}})
-        before = read_state(self.cache)["cooldowns"]
+        before = (self.cache / "state.json").read_bytes()
         self.assertEqual(json.loads(self.cli("discard", branch, "--json")), {"outcome": "discarded"})
-        for _ in range(2):
-            self.assertEqual(json.loads(self.cli("discard", identity, "--json")), {"outcome": "discarded"})
-        self.assertEqual(read_state(self.cache)["dismissed_diffs"], [identity])
-        self.assertEqual(read_state(self.cache)["cooldowns"], before)
+        self.assertEqual((self.cache / "state.json").read_bytes(), before)
         self.assertEqual(path.read_bytes(), b"rejected patch\n")
+        self.assertEqual((self.wiki / A).read_text(), page(OLD))
         self.assertEqual(json.loads(self.cli("review", "--json")), {"items": []})
-        self.assertEqual(self.cli("show", identity), "rejected patch\n")
 
     def test_land_refuses_checked_out_candidate_before_mutating_main(self):
         branch, _ = self.candidate()
@@ -291,42 +274,25 @@ class ReviewTests(RepoTest):
             self.assertIn("symbolic ref", response["reason"])
         self.assertEqual(git(self.wiki, "rev-parse", branch).strip(), commit)
 
-    def test_invalid_ids_and_symlink_diffs_are_refused(self):
+    def test_invalid_ids_and_legacy_diff_ids_are_refused(self):
         identity, path = self.diff()
-        outside = self.root / "outside.diff"
-        path.replace(outside)
-        path.symlink_to(outside)
         invalid = ["main", "refs/heads/main", "curator/rejected/no-such-branch", "curator/other/id",
                    "diff:../../outside", "diff:20261301T000000.000000Z-1", "diff:20260101T000000.000000Z-0", identity]
-        for command in ("show", "discard"):
+        for command in ("show", "land", "discard"):
             for value in invalid:
                 with self.subTest(command=command, value=value):
                     self.cli(command, value, code=2)
-        self.assertEqual(outside.read_bytes(), b"rejected patch\n")
+        self.assertEqual(path.read_bytes(), b"rejected patch\n")
         self.assertFalse((self.cache / "state.json").exists())
-
-    def test_dismissed_diffs_strict_validation(self):
-        identity, _ = self.diff()
-        invalid = [None, {}, "bad", [None], [1], [True], [[]], [identity, identity], [identity[5:]],
-                   ["diff:../../outside"], ["diff:20260230T120000.000000Z-1"],
-                   ["diff:20260101T000000.000000Z-01"], [identity + "\n"]]
-        for value in invalid:
-            with self.subTest(value=value):
-                write_json(self.cache / "state.json", {"cooldowns": {}, "dismissed_diffs": value})
-                with self.assertRaises(ValueError):
-                    read_state(self.cache)
-        write_json(self.cache / "state.json", {"cooldowns": {}, "dismissed_diffs": [identity]})
-        self.assertEqual(read_state(self.cache)["dismissed_diffs"], [identity])
 
     def test_mutations_refuse_run_lock_but_readers_do_not_lock(self):
         branch, _ = self.candidate()
-        identity, path = self.diff()
+        self.cache.mkdir(parents=True)
         with (self.cache / "run.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            for args in (("land", branch), ("discard", branch), ("discard", identity)):
+            for args in (("land", branch), ("discard", branch)):
                 response = json.loads(self.cli(*args, "--json", code=3))
                 self.assertEqual(response, {"outcome": "deferred", "reason": "curator run in progress"})
-            self.assertEqual(len(json.loads(self.cli("review", "--json"))["items"]), 2)
+            self.assertEqual(len(json.loads(self.cli("review", "--json"))["items"]), 1)
             self.assertIn("+Measured", self.cli("show", branch))
-            self.assertEqual(self.cli("show", identity), path.read_text())
         self.assertFalse((self.cache / "state.json").exists())

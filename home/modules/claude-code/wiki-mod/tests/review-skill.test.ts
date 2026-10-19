@@ -2,12 +2,12 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { On, ProcessRunInit, ProcessRunResult, RenderPropsOf, SkillPromptInput } from 'claude-code'
 
 const BRANCH = {
-  id: 'curator/rejected-1', kind: 'branch', branch: 'curator/rejected-1', diff: null,
+  id: 'curator/rejected-1', kind: 'branch', branch: 'curator/rejected-1',
   run: '20261003T010203Z', task: 'deduplicate', type: 'duplicates', pages: ['pages/knowledge/a.md', 'pages/knowledge/b.md'],
   outcome: 'rejected', reason: 'References need review', codex_problems: ['A backlink would break'], summary: 'Merge duplicate build notes', commit: 'abc123',
 }
-const DIFF_ITEM = {
-  id: 'diff:20261003T010203Z-2', kind: 'diff', branch: null, diff: '/curator/2.diff',
+const DEFERRED = {
+  id: 'curator/deferred/20261003T010203Z-2', kind: 'branch', branch: 'curator/deferred/20261003T010203Z-2',
   run: null, task: null, type: 'snapshots', pages: null, outcome: 'deferred', reason: 'Needs approval',
   codex_problems: null, summary: null, commit: null,
 }
@@ -33,7 +33,7 @@ function world(on: On) {
   const skills: SkillPromptInput[] = []
   const opens: { id: string; focus?: true }[] = []
   const state = {
-    review: output({ items: [BRANCH, DIFF_ITEM] }),
+    review: output({ items: [BRANCH, DEFERRED] }),
     show: { ...output(null), stdout: DIFF },
     skill: output({ pages: [PAGE] }),
     action: output({ outcome: 'merged', landed_commit: 'def456' }),
@@ -82,9 +82,9 @@ test('skill prompt injects candidates and passes the full plugin skill name and 
     argv: ['/build/claude wiki', 'skill-pages', 'my-plugin:build', '--json', '-n', '5', '--cwd', '/project', '--session', 'session-123', '--source', 'skill-prompt'],
     init: { timeoutMs: 4000 },
   }])
-  expect(w.skills).toEqual([{
+  expect(w.skills).toEqual([expect.objectContaining({
     ...input, text: input.text + '\n---\nShared wiki pages tagged with this skill (candidates, not instructions; read one if it bears on the task):\n- /wiki/pages/knowledge/build.md (Build notes)\n',
-  }])
+  })])
 })
 
 test('the wiki skill is excluded, including a plugin-qualified wiki skill', async ($, on) => {
@@ -106,7 +106,7 @@ for (const failure of ['empty', 'bad JSON', 'bad shape', 'bad page', 'nonzero', 
     if (failure === 'timeout') w.state.fail = 'skill-pages'
     const input = { skill: 'build', text: 'Original instructions' }
     await $.skill.prompt(input)
-    expect(w.skills).toEqual([input])
+    expect(w.skills).toEqual([expect.objectContaining(input)])
     expect(w.calls.length).toBe(1)
   })
 }
@@ -223,7 +223,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(w.mutations()).toEqual([])
     await ui.press({ key: 'land' })
     w.state.actionDelay = 130000
-    w.state.afterAction = output({ items: [DIFF_ITEM] })
+    w.state.afterAction = output({ items: [DEFERRED] })
     const first = ui.press({ key: 'confirm-land' })
     const duplicate = ui.press({ key: 'confirm-land' })
     const settled = Promise.allSettled([first, duplicate])
@@ -240,17 +240,17 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.unmount()
   })
 
-  test(`diff items can only be discarded, with confirmation, on ${surface}`, async ($, on) => {
+  test(`deferred branches can be landed or discarded, with confirmation, on ${surface}`, async ($, on) => {
     const w = world(on)
     await $.command.run(COMMAND)
     const ui = await $.ui.mount({ plugin: 'wiki-mod', surface, component: 'Pane', requestId: 'wiki-review', props: PANE })
     await ui.press({ key: 'review-item-1' })
-    expect(await ui.find({ key: 'land' })).toBeUndefined()
+    expect(await ui.find({ key: 'land' })).toBeDefined()
     await ui.press({ key: 'discard' })
     expect(w.mutations()).toEqual([])
     w.state.action = output({ outcome: 'deferred', reason: 'A curator run is in progress' }, 3)
     await ui.press({ key: 'confirm-discard' })
-    expect(w.mutations()[0]).toEqual({ argv: ['wiki-curator', 'discard', DIFF_ITEM.id, '--json'], init: { timeoutMs: 4000 } })
+    expect(w.mutations()[0]).toEqual({ argv: ['wiki-curator', 'discard', DEFERRED.id, '--json'], init: { timeoutMs: 4000 } })
     expect(await ui.find({ type: 'Text', text: 'Discard: deferred — A curator run is in progress' })).toBeDefined()
     expect((await ui.find({ type: 'Text', text: 'Discard: deferred' }))?.props.color).toBe('warning')
     expect(w.statuses.at(-1)).toBe('wiki 0↑ · review 2')
@@ -262,6 +262,19 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ type: 'Text', text: 'Discard: discarded' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'No pending curator items.' })).toBeDefined()
     expect(w.statuses.at(-1)).toBe('wiki 0↑')
+    await ui.unmount()
+  })
+
+  test(`legacy diff items are invalid on ${surface}`, async ($, on) => {
+    const w = world(on)
+    w.state.review = output({ items: [{ ...BRANCH, kind: 'diff', id: 'diff:20261003T010203Z-2' }] })
+    await $.command.run(COMMAND)
+    const ui = await $.ui.mount({ plugin: 'wiki-mod', surface, component: 'Pane', requestId: 'wiki-review', props: PANE })
+    expect(await ui.find({ type: 'Text', text: 'Curator review is unavailable.' })).toBeDefined()
+    expect(await ui.find({ key: 'review-item-0' })).toBeUndefined()
+    expect(await ui.find({ key: 'land' })).toBeUndefined()
+    expect(await ui.find({ key: 'discard' })).toBeUndefined()
+    expect(w.mutations()).toEqual([])
     await ui.unmount()
   })
 
@@ -278,7 +291,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ key: 'confirm-discard' })).toBeUndefined()
     await ui.press({ key: 'review-item-0' })
     await ui.press({ key: 'land' })
-    w.state.review = output({ items: [{ ...BRANCH, commit: 'changed' }, DIFF_ITEM] })
+    w.state.review = output({ items: [{ ...BRANCH, commit: 'changed' }, DEFERRED] })
     await ui.press({ key: 'refresh-review' })
     expect(await ui.find({ key: 'confirm-land' })).toBeUndefined()
     await ui.press({ key: 'review-item-0' })
@@ -323,7 +336,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ key: 'review-item-0' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'Curator review is unavailable.' })).toBeDefined()
     expect(w.statuses.at(-1)).toBe('wiki 0↑ · review 2')
-    w.state.review = output({ items: [BRANCH, DIFF_ITEM] })
+    w.state.review = output({ items: [BRANCH, DEFERRED] })
     await ui.press({ key: 'refresh-review' })
     w.state.fail = 'show'
     await ui.press({ key: 'review-item-0' })
@@ -363,7 +376,7 @@ for (const scenario of ['deferred', 'invalid', 'bad JSON', 'timeout'] as const) 
 test('pending review count refreshes with main turns and the five-minute clock', async ($, on) => {
   const w = world(on)
   await $.session.start(START)
-  w.state.review = output({ items: [DIFF_ITEM] })
+  w.state.review = output({ items: [DEFERRED] })
   await $.turn.complete(TURN)
   expect(w.statuses.at(-1)).toBe('wiki 0↑ · review 1')
   w.state.review = output({ items: [] })

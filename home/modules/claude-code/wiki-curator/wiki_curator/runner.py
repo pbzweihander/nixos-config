@@ -27,8 +27,6 @@ from .selection import DAY, blocked, pair_key, select_tasks
 CLAUDE_TIMEOUT = 20 * 60
 CODEX_TIMEOUT = 15 * 60
 LOCK_TIMEOUT = 120
-DIFF_LIMIT = 1024 * 1024
-DIFF_TRUNCATED = b"\n[wiki-curator: diff truncated at 1 MiB]\n"
 ALLOWED_TOOLS = [
     "Read", "Edit", "Write", "Glob", "Grep", "Bash(claude-wiki check:*)",
     "Bash(claude-wiki tags)", "Bash(claude-wiki links:*)", "Bash(claude-wiki search:*)",
@@ -113,32 +111,8 @@ def read_state(cache):
                 or paths[0] >= paths[1] or isinstance(until, bool)
                 or not isinstance(until, (int, float)) or not math.isfinite(until)):
             raise ValueError("invalid not_duplicates entry in state.json")
-    dismissed = state.setdefault("dismissed_diffs", [])
-    if not isinstance(dismissed, list):
-        raise ValueError("invalid dismissed_diffs in state.json")
-    seen = set()
-    for item in dismissed:
-        if not isinstance(item, str) or not item.startswith("diff:") or item in seen:
-            raise ValueError("invalid dismissed_diffs entry in state.json")
-        artifact_key(item[5:])
-        seen.add(item)
+    state.pop("dismissed_diffs", None)
     return state
-
-
-def save_rejection_diff(worktree, parent, destination):
-    """Keep page edits before cleanup; only the disposable worktree index is used."""
-    untracked = git(worktree, "ls-files", "--others", "-z", "--", "pages/").split("\0")
-    for path in filter(None, untracked):
-        # Include ignored new pages too: scope checks can reject those very edits.
-        git(worktree, "add", "--intent-to-add", "--force", "--", path)
-    diff = git(worktree, "diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-color",
-               "--src-prefix=a/", "--dst-prefix=b/", parent, "--", "pages/", text=False)
-    if not diff:
-        return None
-    if len(diff) > DIFF_LIMIT:
-        diff = diff[:DIFF_LIMIT - len(DIFF_TRUNCATED)] + DIFF_TRUNCATED
-    atomic_write(destination, diff)
-    return str(destination)
 
 
 @contextmanager
@@ -315,7 +289,8 @@ def perform_task(wiki, worktree, timestamp, task, state, result):
         reject("claude", str(error))
         return
     if process.returncode:
-        reject("claude", f"Claude exited {process.returncode}: {process.stderr.strip()}")
+        detail = process.stderr.strip() or " ".join(process.stdout[-500:].strip().splitlines())
+        reject("claude", f"Claude exited {process.returncode}: {detail}")
         return
     gates["claude"] = {"accept": True}
     if git(worktree, "rev-parse", "HEAD").strip() != parent:
@@ -483,7 +458,8 @@ def perform_task(wiki, worktree, timestamp, task, state, result):
                               timeout=CLAUDE_TIMEOUT, check=False)
             adjudicated.update(exit_code=process.returncode, stdout=process.stdout, stderr=process.stderr)
             if process.returncode:
-                raise ValueError(f"Claude adjudicator exited {process.returncode}: {process.stderr.strip()}")
+                detail = process.stderr.strip() or " ".join(process.stdout[-500:].strip().splitlines())
+                raise ValueError(f"Claude adjudicator exited {process.returncode}: {detail}")
             adjudicated.update(parse_adjudication(process.stdout))
             if not unchanged(commit, after):
                 raise ValueError("worktree changed during tool-free adjudication")
@@ -548,12 +524,22 @@ def summary(report):
     if not report["tasks"]:
         lines.append("No eligible tasks.")
     for result in report["tasks"]:
-        evidence = f"; diff: {result['diff']}" if result.get("diff") else ""
         outcome = result["outcome"]
         adjudication = result.get("gates", {}).get("adjudicate")
         if outcome == "merged" and adjudication and adjudication.get("accept"):
             outcome += f" (adjudicated: {adjudication['verdict']})"
-        lines.append(f"- {outcome}: {result['type']} ({', '.join(result['pages'])}){evidence}")
+        lines.append(f"- {outcome}: {result['type']} ({', '.join(result['pages'])})")
+        if outcome in ("rejected", "error"):
+            for name, gate in result.get("gates", {}).items():
+                if gate.get("accept") is not False:
+                    continue
+                lines.append(f"  gate: {name}")
+                if name == "preservation" and gate.get("missing_tokens"):
+                    missing = gate["missing_tokens"]
+                    rest = f" (+{len(missing) - 20} more)" if len(missing) > 20 else ""
+                    lines.append("  missing: " + json.dumps(missing[:20], ensure_ascii=False) + rest)
+                if name == "recall":
+                    lines.extend("  " + " ".join(problem.splitlines()) for problem in gate.get("problems", []))
         lines.extend(review_details(result.get("codex_problems", []), adjudication))
         for key in ("reason", "branch", "commit", "landed_commit"):
             if result.get(key):
@@ -616,15 +602,12 @@ def run(wiki, cache, max_tasks=5, only=None):
                         state["cooldowns"][path] = max(state["cooldowns"].get(path, 0), time.time() + days * DAY)
                     # Persist before branch creation so a git failure cannot bypass cooldown.
                     write_json(cache / "state.json", state)
-                    if result.get("commit"):
+                    codex = result["gates"].get("codex", {})
+                    if result.get("commit") and (result["outcome"] == "deferred" or codex.get("accept") is False):
                         label = "deferred" if result["outcome"] == "deferred" else "rejected"
                         branch = f"curator/{label}/{timestamp}-{number}"
                         git(wiki, "branch", branch, result["commit"])
                         result["branch"] = branch
-                    elif result.get("parent_commit") and result["outcome"] != "deferred":
-                        diff = save_rejection_diff(worktree, result["parent_commit"], runs / f"{timestamp}-{number}.diff")
-                        if diff:
-                            result["diff"] = diff
                 write_json(runs / f"{timestamp}.json", report)
                 if report.get("error"):
                     break

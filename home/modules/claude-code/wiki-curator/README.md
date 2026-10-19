@@ -84,7 +84,9 @@ Three more gates apply to the resulting candidate commit, in this order:
   These patterns apply in prose, inline code and fenced code; trailing punctuation
   is stripped. Link targets remain subject to redirect normalization rather than
   identifier matching. Fenced code contents are included;
-  frontmatter is excluded. Links are normalized using Git's `-M` rename detection
+  frontmatter is excluded. Ordered-list marker numbers (`1. ` or `2) ` at line
+  start, with optional indentation or blockquote `>`) are ignored outside code
+  fences; other numbers on the line still count. Links are normalized using Git's `-M` rename detection
   and the planned redirects. Only exact tokens explicitly listed in `dropped` are
   exempted. This checks token presence, not meaning or how often a fact occurs.
 - **Recall:** probe every parent-frontmatter query of modified, deleted or renamed
@@ -146,16 +148,14 @@ are aborted and deferred. The curator never resets, stashes, checks out, cleans,
 or stages files in the main checkout. Git hooks and commit signing are disabled
 for curator Git commands.
 
-Rejected candidates with a commit are retained as
-`curator/rejected/<UTC timestamp>-<task number>`. When page edits are rejected before
-a commit (including scope/validation errors or Claude failure), their patch is saved
-as `runs/<UTC timestamp>-<task number>.diff` in the curator cache before worktree
-cleanup. The task result's `diff` field and its summary line give the path. The patch
-compares the worktree to the task's parent, includes tracked edits/deletions and new
-files (including binary files), and includes only `pages/`. Its size is capped at
-1 MiB including a truncation marker; a truncated patch is for inspection, not replay.
-Empty page diffs do not create an artifact. Capture uses only the disposable
-worktree's index; the main checkout and its index remain untouched.
+Rejected candidates are retained as `curator/rejected/<UTC timestamp>-<task number>`
+only when they have a commit and a recorded Codex rejection that adjudication did
+not land, including adjudication errors and failed revisions. Claude failures,
+deterministic gate failures (scope, justification, check, broken links, tags,
+preservation and recall), and interruptions or unexpected errors before Codex
+create no branch or diff artifact. No `runs/*.diff` files are written; existing
+files are ignored. Inspect the run report for these failures before the pages
+become eligible again after their cooldown.
 
 Rejected/error tasks cool down all their target pages for fourteen days; deferred
 tasks for one day. Deferred commits are
@@ -190,11 +190,18 @@ wiki-curator.service`, under `[Service]` using `Environment=NAME=value`.
 
 `run.lock` excludes concurrent runs; another invocation exits successfully right
 away. `runs/<UTC timestamp>.json` records tasks, outcomes, gate results, Codex
-problems, candidate/landed SHAs and retained branches. `latest.md` is the human
-summary; `state.json` stores Unix-time deadlines in `cooldowns` (per page) and
+problems, candidate/landed SHAs and retained branches. `latest.md` names each
+failing gate (`gate: preservation`, for example), gives its reason, lists missing
+preservation tokens as a JSON list (`missing: [...]`, first 20 plus a count of the
+rest), and prints every recall problem. The JSON keeps full gate details. Claude
+editor and adjudicator failures use the last 500 stdout characters, stripped and
+with newlines collapsed, when stderr is empty.
+
+`state.json` stores Unix-time deadlines in `cooldowns` (per page) and
 `not_duplicates` (90-day suppression, keyed by two sorted page paths joined with
 `|`, for example `pages/knowledge/a.md|pages/knowledge/b.md`). Old state files without
-`not_duplicates` load with an empty map. Both maps are validated strictly; invalid
+`not_duplicates` load with an empty map. A legacy `dismissed_diffs` key is ignored
+and dropped on the next state write. Both maps are validated strictly; invalid
 paths, unsorted/repeated pairs, nonnumeric or nonfinite deadlines fail the run.
 Reports and state are checkpointed between tasks. A corrupt state file fails the
 run rather than bypassing suppression. Normal completion, exceptions and handled
@@ -207,33 +214,31 @@ List and inspect candidates without taking `run.lock` or changing the checkout:
 
 ```sh
 wiki-curator review
-wiki-curator review --json --days 30
+wiki-curator review --json
 wiki-curator show 'curator/rejected/<timestamp>-<n>'
-wiki-curator show 'diff:<timestamp>-<n>'
 wiki-curator land 'curator/rejected/<timestamp>-<n>' --json
 wiki-curator discard 'curator/deferred/<timestamp>-<n>' --json
-wiki-curator discard 'diff:<timestamp>-<n>' --json
 ```
 
 All four commands accept `--wiki` and use the same wiki/cache environment settings
-as `run`. `review` lists every rejected and deferred branch, plus undismissed diff
-artifacts whose run timestamp is within the last `--days` days (default 30), newest
-first. The age limit applies only to diffs. Text output gives one line per item,
+as `run`. `review` lists every retained rejected and deferred branch, newest first.
+Diff artifacts and their former `--days` filter are no longer supported.
+Text output gives one line per item,
 with Codex problems and any adjudication details indented below it. Reports are joined by timestamp and task
 number; missing, unreadable or corrupt report fields become nulls or empty lists.
 Branches with nonstandard names within the curator prefixes remain visible, with
 null run/task fields and their commit date used for ordering.
 
 For a mod pane, `review --json` returns `{"items": [...]}`. Each item has `id`,
-`kind` (`branch` or `diff`), `branch`, `diff` (an absolute path), `run` (UTC timestamp),
+`kind` (`branch`), `branch`, `run` (UTC timestamp),
 `task` (one-based number), `type`, `pages`, `outcome` (`rejected` or `deferred`),
 `reason`, `codex_problems`, `adjudicate` (the adjudication gate or null), `summary`
 (from the justification), and `commit`. Fields
 that do not apply are null; page/problem lists default to empty. IDs are exact branch
-names or `diff:<timestamp>-<n>`, not arbitrary paths or Git revision expressions.
-`show` prints `git show -M --stat -p` for a branch's current commit, or the diff file's
-bytes. Output is capped at 1 MiB including `[wiki-curator: diff truncated at 1 MiB]`
-when truncated. Dismissed diffs can still be shown by ID.
+names, not arbitrary paths or Git revision expressions. There is no `diff` field
+or `diff:<timestamp>-<n>` item; `show`, `land` and `discard` refuse those legacy IDs.
+`show` prints `git show -M --stat -p` for a branch's current commit. Output is capped
+at 1 MiB including `[wiki-curator: diff truncated at 1 MiB]` when truncated.
 
 `land` accepts only `curator/rejected/*` and `curator/deferred/*` branches with
 exactly one unmerged commit whose sole parent is an ancestor of `main`. Human
@@ -251,13 +256,9 @@ the branch and state, prints `{"outcome":"deferred","reason":"..."}`, and exits
 **3**. Invalid IDs and refused branches print `{"outcome":"refused","reason":"..."}`
 and exit **2**. Without `--json`, results are plain text.
 
-`discard` deletes a curator branch with `git branch -D`, or adds a diff ID to
-`state.json`'s `dismissed_diffs` list so it disappears from `review`. Diff files,
-reports and cooldowns remain intact. Successful discard returns
-`{"outcome":"discarded"}` with `--json`, exit **0**; invalid input exits **2**.
-`dismissed_diffs` defaults to an empty list in older state files. Its entries must
-be unique, valid diff IDs with real UTC dates and positive task numbers; malformed
-state is refused before mutation.
+`discard` deletes a curator branch with `git branch -D`. Reports and cooldowns
+remain intact. Successful discard returns `{"outcome":"discarded"}` with `--json`,
+exit **0**; invalid input exits **2**.
 
 Both `land` and `discard` take `run.lock` without waiting. While a run or another
 mutation holds it, they exit **3** with reason `curator run in progress`. The

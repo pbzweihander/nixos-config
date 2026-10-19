@@ -17,7 +17,7 @@ sys.path.insert(0, str(PACKAGE))
 
 from wiki_curator.gitutil import changes, git, status
 from wiki_curator.preservation import preserved, tokens
-from wiki_curator.runner import DIFF_LIMIT, DIFF_TRUNCATED, read_state, run, save_rejection_diff
+from wiki_curator.runner import Interrupted, read_state, run, summary
 from wiki_curator.selection import tags, DAY, select_tasks
 
 
@@ -111,6 +111,12 @@ class RepoTest(unittest.TestCase):
         self.assertFalse((self.cache / "worktree").exists())
         self.assertEqual(git(self.wiki, "worktree", "list", "--porcelain").count("worktree "), 1)
         return code, report
+
+    def assert_not_retained(self, result):
+        self.assertNotIn("branch", result)
+        self.assertNotIn("diff", result)
+        self.assertEqual(git(self.wiki, "for-each-ref", "refs/heads/curator/"), "")
+        self.assertEqual(list((self.cache / "runs").glob("*.diff")), [])
 
     def result(self, **kwargs):
         code, report = self.execute(**kwargs)
@@ -304,14 +310,23 @@ class SelectionTests(RepoTest):
 
 class StateTests(RepoTest):
     def test_not_duplicates_defaults_for_missing_and_legacy_state(self):
-        self.assertEqual(read_state(self.cache), {"cooldowns": {}, "not_duplicates": {}, "dismissed_diffs": []})
+        self.assertEqual(read_state(self.cache), {"cooldowns": {}, "not_duplicates": {}})
         self.cache.mkdir(parents=True)
         cooldowns = {A: time.time() + DAY}
         (self.cache / "state.json").write_text(json.dumps({"cooldowns": cooldowns}))
-        self.assertEqual(read_state(self.cache), {"cooldowns": cooldowns, "not_duplicates": {}, "dismissed_diffs": []})
-        state = {"cooldowns": cooldowns, "not_duplicates": {f"{A}|{B}": time.time() + 90 * DAY}, "dismissed_diffs": []}
+        self.assertEqual(read_state(self.cache), {"cooldowns": cooldowns, "not_duplicates": {}})
+        state = {"cooldowns": cooldowns, "not_duplicates": {f"{A}|{B}": time.time() + 90 * DAY}}
         (self.cache / "state.json").write_text(json.dumps(state))
         self.assertEqual(read_state(self.cache), state)
+
+    def test_legacy_dismissed_diffs_is_ignored_and_dropped_on_write(self):
+        self.cache.mkdir(parents=True)
+        for legacy in (["diff:20260101T000000Z-1"], None, "invalid", ["bad", "bad"]):
+            with self.subTest(legacy=legacy):
+                (self.cache / "state.json").write_text(json.dumps({"cooldowns": {}, "dismissed_diffs": legacy}))
+                self.assertEqual(read_state(self.cache), {"cooldowns": {}, "not_duplicates": {}})
+        self.execute(max_tasks=0)
+        self.assertNotIn("dismissed_diffs", json.loads((self.cache / "state.json").read_text()))
 
     def test_invalid_not_duplicates_fails_closed(self):
         self.cache.mkdir(parents=True)
@@ -338,6 +353,23 @@ class PreservationTests(RepoTest):
         self.write(A, page(new))
         commit = self.commit()
         return preserved(self.wiki, parent, commit, explanation or justification(dropped=[]))
+
+    def test_ordered_list_markers_are_not_facts(self):
+        old = "1. Release v1.2\n  2) Needs 3 GiB\n > 5. Mid-line 5 remains\n>6) Last item\n"
+        new = "- Release v1.2\n  - Needs 3 GiB\n > - Mid-line 5 remains\n>- Last item\n"
+        self.assertEqual(tokens(page(old)), {"v1.2", "3", "5"})
+        self.assertEqual(self.check_change(old, new), [])
+        self.assertEqual(self.check_change(old, old.replace("1. Release", "9. Release").replace("2) Needs", "10) Needs")), [])
+        self.assertEqual(tokens("7.without space\n8)without space\ninline 10. number\n9."), {"7", "8", "9", "10"})
+        self.assertEqual(tokens("11.\n12)\n"), set())
+        self.assertEqual(tokens("[[knowledge/a|7. fact]]\n[[knowledge/a]] 8. fact\n"),
+                         {"[[knowledge/a]]", "7", "8"})
+
+    def test_list_shaped_code_keeps_numbers(self):
+        for fence in ("```", "~~~~"):
+            with self.subTest(fence=fence):
+                text = f"1. List\n{fence}text\n2. Code\n  3) Code\n{fence}\n4. List\n"
+                self.assertEqual(tokens(text), {"2", "3"})
 
     def test_number_and_code_loss_including_fences(self):
         old = "`probe --fast` needs 45s, 0.3%, 2.1.x and v1.6.0.\n```sh\necho `uname` 123ms\n```\n"
@@ -428,6 +460,29 @@ class PreservationTests(RepoTest):
             preserved(self.wiki, parent, commit, justification(redirects={A: B, B: A}))
 
 
+class SummaryTests(unittest.TestCase):
+    def test_missing_tokens_are_json_encoded_and_capped_at_twenty(self):
+        missing = ['`quoted "token"`', "줄\n바꿈", *[str(n) for n in range(23)]]
+        result = {"outcome": "rejected", "type": "broken-links", "pages": [A],
+                  "reason": "preservation check failed",
+                  "gates": {"preservation": {"accept": False, "missing_tokens": missing}}}
+        report = {"timestamp": "now", "wiki": "/wiki", "tasks": [result]}
+        text = summary(report)
+        self.assertIn("gate: preservation", text)
+        self.assertIn("missing: " + json.dumps(missing[:20], ensure_ascii=False) + " (+5 more)\n", text)
+        self.assertNotIn('"22"', text)
+        self.assertEqual(result["gates"]["preservation"]["missing_tokens"], missing)
+
+    def test_recall_prints_each_problem(self):
+        problems = ["First query lost its page", "Second query fell below the top three"]
+        result = {"outcome": "rejected", "type": "missing-queries", "pages": [A],
+                  "reason": "recall check failed", "gates": {"recall": {"accept": False, "problems": problems}}}
+        text = summary({"timestamp": "now", "wiki": "/wiki", "tasks": [result]})
+        self.assertIn("gate: recall", text)
+        for problem in problems:
+            self.assertIn("  " + problem + "\n", text)
+
+
 class RunTests(RepoTest):
     def duplicate_fixture(self):
         self.write(A, page("Measured `probe --fast` takes 45s.\n"))
@@ -489,10 +544,10 @@ class RunTests(RepoTest):
                     self.assertNotIn("reason", result)
                 self.assertIn(f"{A}|{B}", read_state(self.cache)["not_duplicates"])
 
-    def test_rejected_scope_diff_includes_edits_deletions_and_new_binary_pages(self):
+    def test_scope_rejection_keeps_no_candidate_and_preserves_main(self):
         self.fixture["writes"].update({B: page("A new page: 안녕하세요.\n"),
                                        "pages/knowledge/binary.md": "binary\x00payload",
-                                       "outside.txt": "outside edits are not archived"})
+                                       "outside.txt": "outside edits"})
         self.fixture["deletes"] = [REF]
         self.write("notes.txt", "unrelated staged work\n")
         git(self.wiki, "add", "notes.txt")
@@ -500,74 +555,48 @@ class RunTests(RepoTest):
         before_head = git(self.wiki, "rev-parse", "HEAD")
         before_index = git(self.wiki, "diff", "--cached", "--binary")
         before_status = status(self.wiki)
-        code, report = self.execute()
-        self.assertEqual(code, 0, report)
-        result = report["tasks"][0]
+        result = self.result()
         self.assertEqual(result["outcome"], "rejected", result)
         self.assertNotIn("commit", result)
-        path = Path(result["diff"])
-        self.assertEqual(path, self.cache / "runs" / f"{report['timestamp']}-1.diff")
-        diff = path.read_text()
-        self.assertIn("+Measured `probe --fast` takes 45s. [[knowledge/reference]]", diff)
-        self.assertIn("new file mode", diff)
-        self.assertIn("+A new page: 안녕하세요.", diff)
-        self.assertIn(f"a/{REF}", diff)
-        self.assertIn("-Reference for the probe.", diff)
-        self.assertIn("GIT binary patch", diff)
-        self.assertNotIn("outside.txt", diff)
-        self.assertNotIn(".curator", diff)
-        self.assertNotIn("notes.txt", diff)
-        git(self.wiki, "apply", "--check", str(path))
+        self.assert_not_retained(result)
         self.assertEqual(git(self.wiki, "rev-parse", "HEAD"), before_head)
         self.assertEqual(git(self.wiki, "diff", "--cached", "--binary"), before_index)
         self.assertEqual(status(self.wiki), before_status)
         self.assertEqual((self.wiki / "notes.txt").read_text(), "unrelated unstaged work\n")
-        self.assertIn(str(path), next(line for line in (self.cache / "latest.md").read_text().splitlines()
-                                      if line.startswith("- rejected:")))
+        latest = (self.cache / "latest.md").read_text()
+        self.assertIn("gate: scope", latest)
+        self.assertIn(result["reason"], latest)
 
-    def test_diff_saved_for_check_and_claude_failure_with_page_changes(self):
-        for failure in ({"check_exit": 2}, {"claude_exit": 1}):
-            with self.subTest(failure=failure):
-                self.fixture = {"lint": self.fixture["lint"], "writes": {A: page(NEW)},
-                                "justification": justification(), **failure}
+    def test_claude_failure_uses_stdout_when_stderr_is_empty(self):
+        cases = [("Reached max turns\nPlease retry", "", "Reached max turns Please retry"),
+                 ("output", "  stderr failure\n", "stderr failure"),
+                 ("omitted prefix" + "x" * 600 + "\nFailed", " \n", "x" * 492 + " Failed")]
+        for stdout, stderr, detail in cases:
+            with self.subTest(stderr=stderr, detail=detail):
                 (self.cache / "state.json").unlink(missing_ok=True)
+                self.fixture.update(claude_exit=1, claude_stdout=stdout, claude_stderr=stderr)
                 result = self.result()
                 self.assertEqual(result["outcome"], "rejected")
-                self.assertNotIn("commit", result)
-                self.assertIn("+Measured", Path(result["diff"]).read_text())
+                self.assertEqual(result["reason"], "Claude exited 1: " + detail)
+                self.assert_not_retained(result)
                 self.assertFalse(self.calls("codex"))
-        (self.cache / "state.json").unlink()
-        self.fixture["writes"] = {}
-        result = self.result()
-        self.assertEqual(result["outcome"], "rejected")
-        self.assertNotIn("diff", result)
+                latest = (self.cache / "latest.md").read_text()
+                self.assertIn("gate: claude", latest)
+                self.assertIn(result["reason"], latest)
 
-    def test_rejection_diff_is_capped_in_bytes_with_a_marker(self):
-        self.fixture["writes"][A] = page("가" * DIFF_LIMIT)
-        self.fixture["claude_exit"] = 1
-        result = self.result()
-        diff = Path(result["diff"]).read_bytes()
-        self.assertEqual(len(diff), DIFF_LIMIT)
-        self.assertTrue(diff.startswith(b"diff --git "))
-        self.assertTrue(diff.endswith(DIFF_TRUNCATED))
-
-    def test_rejection_diff_preserves_non_utf8_text_and_ignored_new_files(self):
-        parent = git(self.wiki, "rev-parse", "HEAD").strip()
-        worktree = self.root / "evidence-worktree"
-        git(self.wiki, "worktree", "add", "--detach", str(worktree), parent)
-        try:
-            (worktree / A).write_bytes(b"non-UTF8 text: \xff\n")
-            (worktree / ".gitignore").write_text("pages/knowledge/new.md\n")
-            (worktree / "pages/knowledge/new.md").write_text("Ignored new page\n")
-            destination = self.root / "evidence.diff"
-            self.assertEqual(save_rejection_diff(worktree, parent, destination), str(destination))
-            diff = destination.read_bytes()
-            self.assertIn(b"+non-UTF8 text: \xff", diff)
-            self.assertIn(b"+Ignored new page", diff)
-            self.assertNotIn(b".gitignore", diff)
-            git(self.wiki, "apply", "--check", str(destination))
-        finally:
-            git(self.wiki, "worktree", "remove", "--force", str(worktree))
+    def test_interruption_and_unexpected_exception_before_codex_keep_no_candidate(self):
+        for error in (Interrupted("interrupted"), TypeError("unexpected")):
+            with self.subTest(error=error):
+                (self.cache / "state.json").unlink(missing_ok=True)
+                with patch("wiki_curator.runner.recall", side_effect=error):
+                    code, report = self.execute()
+                self.assertEqual(code, int(isinstance(error, Interrupted)))
+                result = report["tasks"][0]
+                self.assertIn("commit", result)
+                self.assertEqual(result["outcome"], "rejected" if isinstance(error, Interrupted) else "error")
+                self.assert_not_retained(result)
+                self.assertFalse(self.calls("codex"))
+                self.assertAlmostEqual(read_state(self.cache)["cooldowns"][A] - time.time(), 14 * DAY, delta=10)
 
     def test_merge_preserves_facts_and_updates_backlinks(self):
         self.duplicate_fixture()
@@ -696,9 +725,10 @@ class RunTests(RepoTest):
         self.assertEqual(result["outcome"], "rejected")
         self.assertEqual(result["gates"]["preservation"]["missing_tokens"], ["45s"])
         self.assertFalse(self.calls("codex"))
-        self.assertTrue(result["branch"].startswith("curator/rejected/"))
-        self.assertNotIn("diff", result)
-        self.assertEqual(git(self.wiki, "rev-parse", result["branch"]).strip(), result["commit"])
+        self.assert_not_retained(result)
+        latest = (self.cache / "latest.md").read_text()
+        self.assertIn("gate: preservation", latest)
+        self.assertIn('missing: ["45s"]', latest)
         cooldown = json.loads((self.cache / "state.json").read_text())["cooldowns"][A]
         self.assertAlmostEqual(cooldown - time.time(), 14 * DAY, delta=10)
         self.assertEqual((self.wiki / A).read_text(), page(OLD))
@@ -729,6 +759,10 @@ class RunTests(RepoTest):
         result = self.result()
         self.assertEqual(result["outcome"], "deferred", result)
         self.assertIn("cherry-pick failed", result["reason"])
+        self.assertTrue(result["branch"].startswith("curator/deferred/"))
+        self.assertEqual(git(self.wiki, "rev-parse", result["branch"]).strip(), result["commit"])
+        self.assertNotIn("diff", result)
+        self.assertEqual(list((self.cache / "runs").glob("*.diff")), [])
         self.assertEqual(git(self.wiki, "log", "-1", "--format=%s").strip(), "concurrent session")
         self.assertEqual((self.wiki / A).read_text(), page("Another session replaced this entire line.\n"))
         self.assertEqual((self.wiki / "notes.txt").read_text(), "unfinished\n")
@@ -770,6 +804,8 @@ class RunTests(RepoTest):
                 self.assertEqual(result["outcome"], "rejected", result)
                 self.assertFalse(self.calls("codex"))
                 self.assertNotIn("commit", result)
+                self.assert_not_retained(result)
+                self.assertAlmostEqual(read_state(self.cache)["cooldowns"][A] - time.time(), 14 * DAY, delta=10)
 
     def test_missing_justification_and_noop(self):
         self.fixture.pop("justification")
