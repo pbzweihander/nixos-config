@@ -1,7 +1,7 @@
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     env,
-    io::{Read, Write},
+    io::{self, Read, Write},
     os::unix::net::UnixStream,
     path::{Path, PathBuf},
     sync::mpsc,
@@ -16,6 +16,22 @@ const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 pub struct Hit {
     pub path: String,
     pub section: Option<(String, i64, i64)>,
+}
+
+pub enum DenseStatus {
+    Disabled,
+    Ok,
+    Unavailable(String),
+}
+
+impl DenseStatus {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Ok => "ok",
+            Self::Unavailable(_) => "unavailable",
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -62,6 +78,7 @@ enum Request {
 struct Response<T> {
     ok: bool,
     results: Option<Vec<T>>,
+    error: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -99,30 +116,48 @@ fn socket_path() -> Option<PathBuf> {
     }
 }
 
-fn remaining(deadline: Instant) -> Option<Duration> {
+fn timeout_reason(timeout: Duration) -> String {
+    format!("timed out after {} ms", timeout.as_millis())
+}
+
+fn io_reason(error: io::Error, timeout: Duration) -> String {
+    match error.kind() {
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => timeout_reason(timeout),
+        _ => format!("socket I/O error: {error}"),
+    }
+}
+
+fn remaining(deadline: Instant, timeout: Duration) -> Result<Duration, String> {
     deadline
         .checked_duration_since(Instant::now())
         .filter(|left| !left.is_zero())
+        .ok_or_else(|| timeout_reason(timeout))
 }
 
 fn exchange<T: DeserializeOwned>(
     path: &Path,
     request: Request,
     deadline: Instant,
-) -> Option<Vec<T>> {
-    let mut bytes = serde_json::to_vec(&request).ok()?;
+    timeout: Duration,
+) -> Result<Vec<T>, String> {
+    let mut bytes = serde_json::to_vec(&request).map_err(|_| "invalid request")?;
     bytes.push(b'\n');
     if bytes.len() > MAX_MESSAGE_BYTES {
-        return None;
+        return Err("oversized request".into());
     }
-    remaining(deadline)?;
-    let mut stream = UnixStream::connect(path).ok()?;
+    remaining(deadline, timeout)?;
+    let mut stream =
+        UnixStream::connect(path).map_err(|_| format!("cannot connect to {}", path.display()))?;
     let mut pending = bytes.as_slice();
     while !pending.is_empty() {
-        stream.set_write_timeout(Some(remaining(deadline)?)).ok()?;
-        let written = stream.write(pending).ok()?;
+        stream
+            .set_write_timeout(Some(remaining(deadline, timeout)?))
+            .map_err(|error| io_reason(error, timeout))?;
+        let written = stream
+            .write(pending)
+            .map_err(|error| io_reason(error, timeout))?;
         if written == 0 {
-            return None;
+            return Err("socket closed while writing request".into());
         }
         pending = &pending[written..];
     }
@@ -131,20 +166,40 @@ fn exchange<T: DeserializeOwned>(
     let mut buffer = [0; 4096];
     loop {
         // A peer trickling bytes must not restart the deadline with each read.
-        stream.set_read_timeout(Some(remaining(deadline)?)).ok()?;
-        let read = stream.read(&mut buffer).ok()?;
+        stream
+            .set_read_timeout(Some(remaining(deadline, timeout)?))
+            .map_err(|error| io_reason(error, timeout))?;
+        let read = stream
+            .read(&mut buffer)
+            .map_err(|error| io_reason(error, timeout))?;
         if read == 0 {
-            return None;
+            return Err("invalid response (incomplete line)".into());
         }
         let newline = buffer[..read].iter().position(|&byte| byte == b'\n');
         bytes.extend_from_slice(&buffer[..newline.unwrap_or(read)]);
         // Bound memory even if a broken peer never terminates its response line.
         if bytes.len() > MAX_MESSAGE_BYTES {
-            return None;
+            return Err("oversized response".into());
         }
         if newline.is_some() {
-            let response: Response<T> = serde_json::from_slice(&bytes).ok()?;
-            return if response.ok { response.results } else { None };
+            let response: Response<T> =
+                serde_json::from_slice(&bytes).map_err(|_| "invalid response")?;
+            return if response.ok {
+                response.results.ok_or_else(|| "invalid response".into())
+            } else {
+                let reason = response.error.as_ref().and_then(|error| error.as_str());
+                Err(reason.map_or_else(
+                    || "daemon error".into(),
+                    |reason| {
+                        let reason: String = reason
+                            .chars()
+                            .take(200)
+                            .map(|c| if c.is_control() { ' ' } else { c })
+                            .collect();
+                        format!("daemon error: {reason}")
+                    },
+                ))
+            };
         }
     }
 }
@@ -153,30 +208,41 @@ fn exchange_at<T: DeserializeOwned + Send + 'static>(
     path: PathBuf,
     request: Request,
     timeout: Duration,
-) -> Option<Vec<T>> {
-    let deadline = Instant::now().checked_add(timeout)?;
-    remaining(deadline)?;
+) -> Result<Vec<T>, String> {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or("invalid timeout")?;
+    remaining(deadline, timeout)?;
     let (send, receive) = mpsc::channel();
     // UnixStream has no connect timeout. Keep the whole exchange off the caller
     // so even a full listen backlog cannot hold the hook beyond its deadline.
-    if thread::Builder::new()
+    thread::Builder::new()
         .spawn(move || {
-            let _ = send.send(exchange(&path, request, deadline));
+            let _ = send.send(exchange(&path, request, deadline, timeout));
         })
-        .is_err()
-    {
-        return None;
-    }
+        .map_err(|_| "could not start request worker")?;
     receive
         .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-        .ok()
-        .flatten()
+        .map_err(|error| match error {
+            mpsc::RecvTimeoutError::Timeout => timeout_reason(timeout),
+            mpsc::RecvTimeoutError::Disconnected => "request worker stopped".into(),
+        })?
+}
+
+fn request_at_with_status(
+    path: PathBuf,
+    request: Request,
+    timeout: Duration,
+) -> Result<Vec<Hit>, String> {
+    exchange_at::<WireHit>(path, request, timeout)?
+        .into_iter()
+        .map(WireHit::into_hit)
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| "invalid response".into())
 }
 
 fn request_at(path: PathBuf, request: Request, timeout: Duration) -> Vec<Hit> {
-    exchange_at::<WireHit>(path, request, timeout)
-        .and_then(|rows| rows.into_iter().map(WireHit::into_hit).collect())
-        .unwrap_or_default()
+    request_at_with_status(path, request, timeout).unwrap_or_default()
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -197,7 +263,7 @@ fn batch<T: DeserializeOwned + Send + 'static>(request: Request) -> Option<Vec<T
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(5000);
-    exchange_at(socket_path()?, request, Duration::from_millis(timeout))
+    exchange_at(socket_path()?, request, Duration::from_millis(timeout)).ok()
 }
 
 pub fn similar(text: &str, exclude: &str, min: f64) -> Vec<Similar> {
@@ -217,15 +283,19 @@ pub fn pairs(min: f64) -> Option<Vec<Pair>> {
     })
 }
 
-fn request(request: Request) -> Vec<Hit> {
-    let Some(path) = socket_path() else {
-        return vec![];
-    };
+fn request_timeout() -> Duration {
     let timeout = env::var("CLAUDE_WIKI_SEMANTIC_TIMEOUT_MS")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(DEFAULT_TIMEOUT_MS);
-    request_at(path, request, Duration::from_millis(timeout))
+    Duration::from_millis(timeout)
+}
+
+fn request(request: Request) -> Vec<Hit> {
+    let Some(path) = socket_path() else {
+        return vec![];
+    };
+    request_at(path, request, request_timeout())
 }
 
 pub fn related(prompt: &str) -> Vec<Hit> {
@@ -249,14 +319,24 @@ pub fn related_with_timeout(prompt: &str, timeout: Duration) -> Vec<Hit> {
     )
 }
 
-pub fn dense(query: &str, n: i64) -> Vec<Hit> {
+pub fn dense_with_status(query: &str, n: i64) -> (Vec<Hit>, DenseStatus) {
     if n == 0 {
-        return vec![];
+        return (vec![], DenseStatus::Disabled);
     }
-    request(Request::Dense {
-        query: query.to_owned(),
-        n: n.clamp(1, 100),
-    })
+    let Some(path) = socket_path() else {
+        return (vec![], DenseStatus::Disabled);
+    };
+    match request_at_with_status(
+        path,
+        Request::Dense {
+            query: query.to_owned(),
+            n: n.clamp(1, 100),
+        },
+        request_timeout(),
+    ) {
+        Ok(hits) => (hits, DenseStatus::Ok),
+        Err(reason) => (vec![], DenseStatus::Unavailable(reason)),
+    }
 }
 
 #[cfg(test)]

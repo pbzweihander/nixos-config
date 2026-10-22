@@ -1,4 +1,5 @@
 use crate::index::{Row, COLUMNS, JOIN};
+use crate::semantic::DenseStatus;
 use anyhow::{bail, Result};
 use chrono::{Local, TimeZone};
 use clap::Args;
@@ -274,9 +275,9 @@ pub fn ranked(
     n: i64,
     filters: &Filters,
     no_semantic: bool,
-) -> Result<Vec<SearchHit>> {
+) -> Result<(Vec<SearchHit>, DenseStatus)> {
     if n == 0 {
-        return Ok(vec![]);
+        return Ok((vec![], DenseStatus::Disabled));
     }
     // Preserve large and unlimited SQLite limits when dense is unavailable.
     let mut rows = bm25(
@@ -285,15 +286,15 @@ pub fn ranked(
         if n < 0 { n } else { n.max(CANDIDATES) },
         filters,
     )?;
-    let dense = if no_semantic {
-        vec![]
+    let (dense, status) = if no_semantic {
+        (vec![], DenseStatus::Disabled)
     } else {
-        crate::semantic::dense(terms, CANDIDATES)
+        crate::semantic::dense_with_status(terms, CANDIDATES)
     };
     if !dense.is_empty() {
         rows.truncate(CANDIDATES as usize);
     }
-    fuse(db, rows, dense, filters)
+    Ok((fuse(db, rows, dense, filters)?, status))
 }
 
 pub fn search(
@@ -309,7 +310,12 @@ pub fn search(
     if query.is_empty() {
         bail!("no search terms");
     }
-    let mut rows = ranked(db, &query, &terms.join(" "), n, filters, no_semantic)?;
+    let (mut rows, dense) = ranked(db, &query, &terms.join(" "), n, filters, no_semantic)?;
+    if !json {
+        if let DenseStatus::Unavailable(reason) = &dense {
+            eprintln!("note: dense retrieval unavailable ({reason}); results are BM25 only");
+        }
+    }
     if n >= 0 {
         rows.truncate(n as usize);
     }
@@ -347,7 +353,11 @@ pub fn search(
         }
     }
     if json {
-        writeln!(out, "{}", json!({"hits": hits}))?;
+        let mut report = json!({"hits": hits, "dense": dense.name()});
+        if let DenseStatus::Unavailable(reason) = dense {
+            report["dense_error"] = reason.into();
+        }
+        writeln!(out, "{report}")?;
     }
     Ok(())
 }

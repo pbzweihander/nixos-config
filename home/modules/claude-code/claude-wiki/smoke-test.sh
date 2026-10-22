@@ -50,9 +50,10 @@ out=$(printf 'free text' | "$wiki" related --json --cwd /)
 out=$("$wiki" injections --session missing --json)
 [ "$out" = '{"pages":[]}' ] || fail "injections without usage database" injections "$out"
 out=$("$wiki" search semanticnomatch --json)
-[ "$out" = '{"hits":[]}' ] || fail "JSON search without daemon" search "$out"
-out=$("$wiki" search semanticnomatch 2>&1)
-[ "$out" = 'no pages match "semanticnomatch"* (0 pages in the wiki)' ] || fail "no daemon adds no search output" search "$out"
+[ "$out" = "{\"dense\":\"unavailable\",\"dense_error\":\"cannot connect to $CLAUDE_WIKI_SOCKET\",\"hits\":[]}" ] || fail "JSON search without daemon" search "$out"
+out=$("$wiki" search semanticnomatch 2>"$HOME/search.stderr")
+[ "$out" = 'no pages match "semanticnomatch"* (0 pages in the wiki)' ] || fail "no daemon preserves search stdout" search "$out"
+check "no daemon reports unavailable" "note: dense retrieval unavailable (cannot connect to $CLAUDE_WIKI_SOCKET); results are BM25 only" cat "$HOME/search.stderr"
 
 cat >"$P/knowledge/nix-sandbox.md" <<'EOF'
 ---
@@ -383,7 +384,7 @@ expect_code 0 "$wiki" check --probe knowledge/probe
 check "probe counts successful questions" 'probe: 1 pages probed, 1 queries, 0 failures' echo "$out"
 sed -i 's/queries: .*/queries: [unfindableprobequestion]/' "$P/knowledge/probe.md"
 expect_code 1 "$wiki" check --probe "$P/knowledge/probe.md"
-check "probe failure reports ranks" 'warning: pages/knowledge/probe.md: query "unfindableprobequestion" does not find this page (fused: absent, bm25: not in top 40, dense: unavailable or empty)' echo "$out"
+check "probe failure reports ranks" "warning: pages/knowledge/probe.md: query \"unfindableprobequestion\" does not find this page (fused: absent, bm25: not in top 40, dense: unavailable (cannot connect to $CLAUDE_WIKI_SOCKET))" echo "$out"
 check "probe counts failures" 'probe: 1 pages probed, 1 queries, 1 failures' echo "$out"
 expect_code 0 "$wiki" check knowledge/probe
 expect_code 0 "$wiki" check knowledge/secret

@@ -85,6 +85,10 @@ impl Wiki {
     }
 
     fn respond_output(&self, args: &[&str], input: &str, reply: Value) -> (Output, Value) {
+        self.respond_bytes(args, input, format!("{reply}\n").into_bytes())
+    }
+
+    fn respond_bytes(&self, args: &[&str], input: &str, reply: Vec<u8>) -> (Output, Value) {
         let listener = self.listener();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
@@ -93,7 +97,8 @@ impl Wiki {
                 .unwrap();
             let mut request = String::new();
             BufReader::new(&mut stream).read_line(&mut request).unwrap();
-            writeln!(stream, "{reply}").unwrap();
+            // Oversized replies can be rejected before the peer finishes writing.
+            let _ = stream.write_all(&reply);
             serde_json::from_str(&request).unwrap()
         });
         let output = run_output(self.command(args), input);
@@ -136,6 +141,26 @@ fn assert_no_connection(listener: &UnixListener) {
         listener.accept().unwrap_err().kind(),
         std::io::ErrorKind::WouldBlock
     );
+}
+
+fn assert_dense_unavailable(output: Output, expected: &str, json: bool, reason: &str) {
+    assert!(output.status.success(), "{output:?}");
+    if json {
+        assert!(output.stderr.is_empty(), "{output:?}");
+        let mut expected: Value = serde_json::from_str(expected).unwrap();
+        expected["dense"] = "unavailable".into();
+        expected["dense_error"] = reason.into();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+            expected
+        );
+    } else {
+        assert_eq!(output.stdout, expected.as_bytes());
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap(),
+            format!("note: dense retrieval unavailable ({reason}); results are BM25 only\n")
+        );
+    }
 }
 
 #[test]
@@ -269,6 +294,8 @@ fn json_search_fuses_keyword_and_dense_results() {
     );
     assert_eq!(request, json!({"op":"dense","query":"foo","n":40}));
     let report: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(report["dense"], "ok");
+    assert!(report.get("dense_error").is_none());
     let hits = report["hits"].as_array().unwrap();
     assert_eq!(hits.len(), 3);
     assert_eq!(
@@ -376,7 +403,7 @@ fn probe_uses_dense_ranks_even_when_keywords_match() {
             vec![],
             "3",
             true,
-            "dense: unavailable or empty",
+            "dense: no results",
         ),
         ("foo", vec![], "1", false, ""),
     ] {
@@ -456,6 +483,43 @@ fn probe_accepts_fused_bm25_or_dense_independently() {
 }
 
 #[test]
+fn probe_reports_disabled_and_unavailable_dense_requests() {
+    for state in ["disabled", "down", "error"] {
+        let wiki = Wiki::new();
+        fs::write(
+            wiki.0.join("wiki/pages/knowledge/foo.md"),
+            "---\ntitle: foo\ncreated: 2026-09-29\nqueries: [unmatchedmeaning]\n---\nRecovery details.\n",
+        )
+        .unwrap();
+        let args = ["check", "--probe", "knowledge/foo"];
+        let (output, diagnostic) = match state {
+            "disabled" => {
+                let mut command = wiki.command(&args);
+                command.env("CLAUDE_WIKI_SOCKET", "");
+                (run_output(command, ""), "disabled".to_owned())
+            }
+            "down" => (
+                run_output(wiki.command(&args), ""),
+                format!(
+                    "unavailable (cannot connect to {})",
+                    wiki.0.join("embed.sock").display()
+                ),
+            ),
+            _ => (
+                wiki.respond_output(&args, "", json!({"ok": false, "error": "warming up"}))
+                    .0,
+                "unavailable (daemon error: warming up)".to_owned(),
+            ),
+        };
+        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap(),
+            format!("warning: pages/knowledge/foo.md: query \"unmatchedmeaning\" does not find this page (fused: absent, bm25: not in top 40, dense: {diagnostic})\nprobe: 1 pages probed, 1 queries, 1 failures\n")
+        );
+    }
+}
+
+#[test]
 fn search_uses_forty_candidates_and_preserves_large_bm25_fallbacks() {
     let wiki = Wiki::new();
     for i in 0..60 {
@@ -512,7 +576,10 @@ fn probe_bm25_matches_search_ranks_and_never_indexes_questions() {
         )
         .unwrap();
     }
-    let output = run(wiki.command(&["search", "ranktoken", "-n", "12"]), "");
+    let output = run(
+        wiki.command(&["search", "ranktoken", "-n", "12", "--no-semantic"]),
+        "",
+    );
     let paths: Vec<_> = output
         .lines()
         .filter(|line| line.starts_with('/'))
@@ -569,20 +636,35 @@ fn probe_bm25_matches_search_ranks_and_never_indexes_questions() {
 fn opt_out_empty_or_unset_socket_skip_daemon() {
     let wiki = Wiki::new();
     let listener = wiki.listener();
-    for query in ["cache", "unmatchedmeaning"] {
-        let expected = run(wiki.command(&["search", query, "--no-semantic"]), "");
-        for empty in [false, true] {
-            let mut command = wiki.command(&["search", query]);
-            if empty {
-                command.env("CLAUDE_WIKI_SOCKET", "");
-            } else {
-                command
-                    .env_remove("CLAUDE_WIKI_SOCKET")
-                    .env_remove("XDG_RUNTIME_DIR");
+    for json in [false, true] {
+        for query in ["cache", "unmatchedmeaning"] {
+            let mut args = vec!["search", query];
+            if json {
+                args.push("--json");
             }
-            assert_eq!(run(command, ""), expected);
+            let mut command = wiki.command(&args);
+            command.arg("--no-semantic");
+            let expected = run(command, "");
+            if json {
+                let report: Value = serde_json::from_str(&expected).unwrap();
+                assert_eq!(report["dense"], "disabled");
+                assert!(report.get("dense_error").is_none());
+            }
+            for disabled in ["empty socket", "unset runtime", "empty runtime"] {
+                let mut command = wiki.command(&args);
+                match disabled {
+                    "empty socket" => command.env("CLAUDE_WIKI_SOCKET", ""),
+                    "unset runtime" => command
+                        .env_remove("CLAUDE_WIKI_SOCKET")
+                        .env_remove("XDG_RUNTIME_DIR"),
+                    _ => command
+                        .env_remove("CLAUDE_WIKI_SOCKET")
+                        .env("XDG_RUNTIME_DIR", ""),
+                };
+                assert_eq!(run(command, ""), expected);
+            }
+            assert_no_connection(&listener);
         }
-        assert_no_connection(&listener);
     }
 }
 
@@ -628,11 +710,24 @@ fn daemon_down_error_and_timeout_preserve_bm25_output() {
             let mut command = wiki.command(&args);
             command.arg("--no-semantic");
             let expected = run(command, "");
-            assert_eq!(run(wiki.command(&args), ""), expected);
+            let connection_error =
+                format!("cannot connect to {}", wiki.0.join("embed.sock").display());
+            assert_dense_unavailable(
+                run_output(wiki.command(&args), ""),
+                &expected,
+                json,
+                &connection_error,
+            );
             let (output, request) =
-                wiki.respond(&args, "", json!({"ok":false,"error":"unknown operation"}));
+                wiki.respond_output(&args, "", json!({"ok":false,"error":"unknown operation"}));
             assert_eq!(request["op"], "dense");
-            assert_eq!(output, expected);
+            assert_dense_unavailable(output, &expected, json, "daemon error: unknown operation");
+            assert_dense_unavailable(
+                run_output(wiki.command(&args), ""),
+                &expected,
+                json,
+                &connection_error,
+            );
             fs::remove_file(wiki.0.join("embed.sock")).unwrap();
             let listener = wiki.listener();
             let (release, wait) = mpsc::channel();
@@ -649,13 +744,88 @@ fn daemon_down_error_and_timeout_preserve_bm25_output() {
             let mut command = wiki.command(&args);
             command.env("CLAUDE_WIKI_SEMANTIC_TIMEOUT_MS", "50");
             let start = Instant::now();
-            let output = run(command, "");
+            let output = run_output(command, "");
             let elapsed = start.elapsed();
             let _ = release.send(());
             server.join().unwrap();
-            assert_eq!(output, expected);
+            assert_dense_unavailable(output, &expected, json, "timed out after 50 ms");
             assert!(elapsed < Duration::from_secs(1));
         }
+    }
+}
+
+#[test]
+fn empty_dense_answer_is_ok_and_preserves_bm25_output() {
+    for json in [false, true] {
+        for query in ["cache", "unmatchedmeaning"] {
+            let wiki = Wiki::new();
+            let mut args = vec!["search", query];
+            if json {
+                args.push("--json");
+            }
+            let mut command = wiki.command(&args);
+            command.arg("--no-semantic");
+            let expected = run(command, "");
+            let (output, _) = wiki.respond(&args, "", json!({"ok":true,"results":[]}));
+            if json {
+                let mut expected: Value = serde_json::from_str(&expected).unwrap();
+                expected["dense"] = "ok".into();
+                assert_eq!(serde_json::from_str::<Value>(&output).unwrap(), expected);
+            } else {
+                assert_eq!(output, expected);
+            }
+        }
+    }
+}
+
+#[test]
+fn invalid_or_oversized_dense_responses_report_unavailable() {
+    for json in [false, true] {
+        for (reply, reason) in [
+            (b"not json\n".to_vec(), "invalid response"),
+            (b"{\"ok\":true,\"results\":\"bad type\"}\n".to_vec(), "invalid response"),
+            (b"{\"ok\":true}\n".to_vec(), "invalid response"),
+            (b"{\"ok\":true,\"results\":[{\"path\":\"knowledge/foo\",\"score\":1,\"heading\":\"incomplete\"}]}\n".to_vec(), "invalid response"),
+            (b"{\"ok\":true,\"results\":[]}".to_vec(), "invalid response (incomplete line)"),
+            (vec![b'x'; 1024 * 1024 + 1], "oversized response"),
+            (b"{\"ok\":false}\n".to_vec(), "daemon error"),
+        ] {
+            let wiki = Wiki::new();
+            let mut args = vec!["search", "cache"];
+            if json {
+                args.push("--json");
+            }
+            let mut command = wiki.command(&args);
+            command.arg("--no-semantic");
+            let expected = run(command, "");
+            let (output, _) = wiki.respond_bytes(&args, "", reply);
+            assert_dense_unavailable(output, &expected, json, reason);
+        }
+    }
+}
+
+#[test]
+fn daemon_error_is_bounded_and_stays_on_one_line() {
+    for json in [false, true] {
+        let wiki = Wiki::new();
+        let mut args = vec!["search", "cache"];
+        if json {
+            args.push("--json");
+        }
+        let mut command = wiki.command(&args);
+        command.arg("--no-semantic");
+        let expected = run(command, "");
+        let (output, _) = wiki.respond_output(
+            &args,
+            "",
+            json!({"ok":false,"error":format!("warming\nup\r\t{}", "캐".repeat(250))}),
+        );
+        assert_dense_unavailable(
+            output,
+            &expected,
+            json,
+            &format!("daemon error: warming up  {}", "캐".repeat(188)),
+        );
     }
 }
 

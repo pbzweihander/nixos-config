@@ -85,8 +85,10 @@ claude-wiki tags                                                                
   and history scores multiplied by 0.9. Dense retrieval uses each page's best
   chunk, without reranking or a threshold. Filters apply to both lists; dense-only
   hits are marked `(meaning)`. `--no-semantic`, a disabled or unavailable socket,
-  timeout, or error uses BM25 alone, still down-weighting history. With no keyword
-  matches, available dense results are shown.
+  timeout, or error uses BM25 alone, still down-weighting history; unavailable
+  dense retrieval adds a note with the reason on stderr in text mode, while
+  disabled retrieval stays silent. With no keyword matches, available dense
+  results are shown.
 - Quote a multi-word argument to also match it as an exact phrase; pages containing
   the phrase rank higher: `claude-wiki search "readonly database" nix sandbox`.
 - Translate the user's words into English keywords before searching. Exact error
@@ -118,7 +120,9 @@ or null. Both `--session` and `--source` enable logging of the selected pages;
 sources must match `[a-z][a-z-]{0,30}`. An unavailable daemon returns empty pages
 successfully, while the overview is still resolved.
 
-`search --json` returns `{ "hits": [...] }` with absolute `path`, relative `rel`,
+`search --json` returns `{ "hits": [...], "dense": "ok" | "disabled" | "unavailable" }`,
+adding `dense_error` with the reason only when unavailable, with no stderr note.
+Hits have absolute `path`, relative `rel`,
 `title`, `type`, `status`, `project`, `tags` (array), `updated` (YYYY-MM-DD), `stale`,
 `backlinks`, `snippet`, `section`, `semantic` (true for dense-only hits), and `via`
 (`bm25`, `dense`, or `both`). Blocked titles become `[BLOCKED: <category>]`, with

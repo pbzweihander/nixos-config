@@ -170,7 +170,7 @@ impl Probe {
         self.pages += 1;
         for query in &page.queries {
             self.queries += 1;
-            let hits = search::ranked(
+            let (hits, dense_status) = search::ranked(
                 db,
                 &search::fts_query(std::slice::from_ref(query)),
                 query,
@@ -195,14 +195,18 @@ impl Probe {
             };
             let fused = rank(fused_rank, "absent");
             let bm25 = rank(bm25_rank, "not in top 40");
-            let dense = rank(
-                dense_rank,
-                if hits.iter().any(|hit| hit.dense_rank.is_some()) {
-                    "not in top 40"
-                } else {
-                    "unavailable or empty"
-                },
-            );
+            let dense = match dense_status {
+                semantic::DenseStatus::Disabled => "disabled".into(),
+                semantic::DenseStatus::Unavailable(reason) => format!("unavailable ({reason})"),
+                semantic::DenseStatus::Ok => rank(
+                    dense_rank,
+                    if hits.iter().any(|hit| hit.dense_rank.is_some()) {
+                        "not in top 40"
+                    } else {
+                        "no results"
+                    },
+                ),
+            };
             // Debug string quoting keeps multiline questions on one warning line.
             eprintln!("warning: {rel}: query {:?} does not find this page (fused: {fused}, bm25: {bm25}, dense: {dense})", scan::redact(query));
         }
