@@ -1,4 +1,5 @@
 {
+  config,
   inputs,
   pkgs,
   ...
@@ -56,6 +57,10 @@ in
   # reaches ~59 C, stalling the CPU at 400 MHz and starving the iGPU.
   # Capping the MSR PL1 at 20 W keeps SEN2 below the cut (measured over 9 min).
   # Do not enable thermald: on this DYTC platform it pins PL1 at 10 W.
+  # EPP "performance" (what power-profiles-daemon sets for its performance
+  # profile) burns ~20 W at near idle, the whole PL1 budget; "balance_performance"
+  # measured 12-17 W. The balanced profile is no alternative: DYTC then drops
+  # the MMIO PL1 to 10 W.
   # The sleep targets are reached only after resume, so ordering after them
   # reapplies the limits on wake.
   systemd.services.rapl-power-limits =
@@ -77,6 +82,16 @@ in
         echo 27983872 > $d/constraint_0_time_window_us
         echo 20000000 > $d/constraint_0_power_limit_uw
         echo 35000000 > $d/constraint_1_power_limit_uw
+        for f in /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference; do
+          echo balance_performance > $f
+        done
       '';
     };
+
+  # Keep power-profiles-daemon (and KDE through it) switching the platform
+  # profile, but stop it from overwriting the EPP set above.
+  systemd.services.power-profiles-daemon.serviceConfig.ExecStart = [
+    ""
+    "${config.services.power-profiles-daemon.package}/libexec/power-profiles-daemon --block-driver=intel_pstate"
+  ];
 }
