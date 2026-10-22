@@ -56,19 +56,27 @@ in
   # reaches ~59 C, stalling the CPU at 400 MHz and starving the iGPU.
   # Capping the MSR PL1 at 20 W keeps SEN2 below the cut (measured over 9 min).
   # Do not enable thermald: on this DYTC platform it pins PL1 at 10 W.
-  systemd.services.rapl-power-limits = {
-    description = "Cap package power so the EC does not cut PL1 to 12 W";
-    wantedBy = [
-      "multi-user.target"
-      "post-resume.target"
-    ];
-    after = [ "post-resume.target" ];
-    serviceConfig.Type = "oneshot";
-    script = ''
-      d=/sys/class/powercap/intel-rapl:0
-      echo 27983872 > $d/constraint_0_time_window_us
-      echo 20000000 > $d/constraint_0_power_limit_uw
-      echo 35000000 > $d/constraint_1_power_limit_uw
-    '';
-  };
+  # The sleep targets are reached only after resume, so ordering after them
+  # reapplies the limits on wake.
+  systemd.services.rapl-power-limits =
+    let
+      sleepTargets = [
+        "suspend.target"
+        "hibernate.target"
+        "hybrid-sleep.target"
+        "suspend-then-hibernate.target"
+      ];
+    in
+    {
+      description = "Cap package power so the EC does not cut PL1 to 12 W";
+      wantedBy = [ "multi-user.target" ] ++ sleepTargets;
+      after = sleepTargets;
+      serviceConfig.Type = "oneshot";
+      script = ''
+        d=/sys/class/powercap/intel-rapl:0
+        echo 27983872 > $d/constraint_0_time_window_us
+        echo 20000000 > $d/constraint_0_power_limit_uw
+        echo 35000000 > $d/constraint_1_power_limit_uw
+      '';
+    };
 }
