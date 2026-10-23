@@ -11,6 +11,14 @@ let
     src = ./claude-wiki;
     cargoLock.lockFile = ./claude-wiki/Cargo.lock;
     nativeBuildInputs = [ pkgs.makeWrapper ];
+    nativeCheckInputs = [
+      pkgs.clippy
+      pkgs.rustfmt
+    ];
+    preCheck = ''
+      cargo fmt --check
+      cargo clippy --offline --all-targets -- -D warnings
+    '';
     postInstall = ''
       wrapProgram $out/bin/claude-wiki \
         --suffix PATH : ${lib.makeBinPath [ pkgs.git ]} \

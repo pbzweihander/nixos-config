@@ -4,7 +4,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use clap::Args as ClapArgs;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashSet, VecDeque},
     fs::{self, File},
@@ -498,13 +498,14 @@ pub fn scanned(db: &Connection) -> Result<bool> {
     )?)
 }
 
-#[derive(Debug, Default, Serialize)]
+// Serialized fields stay in sorted key order to match the former JSON maps.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct PageUsage {
-    pub reads: i64,
-    pub read_sessions: i64,
-    pub last_read: Option<i64>,
-    pub injected_unread: i64,
     pub importance: f64,
+    pub injected_unread: i64,
+    pub last_read: Option<i64>,
+    pub read_sessions: i64,
+    pub reads: i64,
 }
 
 pub fn per_page(db: &Connection, now: i64) -> Result<BTreeMap<String, PageUsage>> {
@@ -569,7 +570,46 @@ pub fn older_than(created: &str, mtime: i64, now: i64, days: i64) -> bool {
     age_seconds(created, mtime, now) > days * 86400
 }
 
-fn aggregate(db: &Connection, index: &Connection, since: i64, now: i64) -> Result<Value> {
+#[derive(Serialize)]
+struct Report {
+    coverage: Coverage,
+    injected_without_read: Vec<UnreadInjection>,
+    since: Option<i64>,
+    sources: BTreeMap<String, SourceStats>,
+    types: BTreeMap<&'static str, TypeStats>,
+}
+
+#[derive(Serialize)]
+struct Coverage {
+    from: Option<i64>,
+    sessions: i64,
+    to: Option<i64>,
+    transcripts: i64,
+}
+
+#[derive(Serialize)]
+struct UnreadInjection {
+    count: i64,
+    path: String,
+    title: String,
+}
+
+#[derive(Debug, PartialEq, Serialize)]
+struct SourceStats {
+    injections: usize,
+    rate: f64,
+    read_later: usize,
+}
+
+#[derive(Serialize)]
+struct TypeStats {
+    cross_session_read: usize,
+    ever_read: usize,
+    older_than_14d_unread: usize,
+    pages: usize,
+}
+
+fn aggregate(db: &Connection, index: &Connection, since: i64, now: i64) -> Result<Report> {
     let mut sources = BTreeMap::new();
     let mut ignored = BTreeMap::<String, i64>::new();
     let mut source_names = db
@@ -582,7 +622,18 @@ fn aggregate(db: &Connection, index: &Connection, since: i64, now: i64) -> Resul
             .query_map(params![source, since], |r| Ok((r.get::<_, String>(1)?, r.get::<_, bool>(2)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let read = rows.iter().filter(|(_, read)| *read).count();
-        sources.insert(source, json!({"injections": rows.len(), "read_later": read, "rate": if rows.is_empty() { 0.0 } else { read as f64 / rows.len() as f64 }}));
+        sources.insert(
+            source,
+            SourceStats {
+                injections: rows.len(),
+                rate: if rows.is_empty() {
+                    0.0
+                } else {
+                    read as f64 / rows.len() as f64
+                },
+                read_later: read,
+            },
+        );
     }
     // Count distinct session/page suggestions across all sources for the top list.
     let rows = db.prepare("select path, count(*) from (select i.session_id, i.path, min(i.at) as first_at from injections i where i.at>=? group by i.session_id,i.path) i where not exists(select 1 from accesses a join tools t using(tool_use_id) where a.path=i.path and t.session_id=i.session_id and a.kind='read' and t.at>i.first_at) group by path")?
@@ -598,7 +649,18 @@ fn aggregate(db: &Connection, index: &Connection, since: i64, now: i64) -> Resul
         let rows = index.prepare("select fts.path, fts.title, fts.created, files.mtime_ns, files.blocked from fts join files on files.id=fts.rowid where fts.type=? order by fts.path")?
             .query_map([kind], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get::<_, String>(4)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        types.insert(kind, json!({"pages": rows.len(), "ever_read": rows.iter().filter(|r| read.contains(&r.0)).count(), "cross_session_read": rows.iter().filter(|r| cross.contains(&r.0)).count(), "older_than_14d_unread": rows.iter().filter(|r| !ever.contains(&r.0) && older_than(&r.2, r.3, now, 14)).count()}));
+        types.insert(
+            kind,
+            TypeStats {
+                cross_session_read: rows.iter().filter(|r| cross.contains(&r.0)).count(),
+                ever_read: rows.iter().filter(|r| read.contains(&r.0)).count(),
+                older_than_14d_unread: rows
+                    .iter()
+                    .filter(|r| !ever.contains(&r.0) && older_than(&r.2, r.3, now, 14))
+                    .count(),
+                pages: rows.len(),
+            },
+        );
         for (path, title, _, _, blocked) in rows {
             titles.insert(
                 path,
@@ -612,16 +674,33 @@ fn aggregate(db: &Connection, index: &Connection, since: i64, now: i64) -> Resul
     }
     let mut top: Vec<_> = ignored.into_iter().collect();
     top.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    let top: Vec<_> = top.into_iter().take(10).map(|(path, count)| json!({"title": titles.get(&path).unwrap_or(&path), "path": path, "count": count})).collect();
+    let top = top
+        .into_iter()
+        .take(10)
+        .map(|(path, count)| UnreadInjection {
+            count,
+            title: titles.get(&path).unwrap_or(&path).clone(),
+            path,
+        })
+        .collect();
     let (sessions, first, last): (i64, Option<i64>, Option<i64>) = db.query_row(
         "select count(*), min(max(first_at, ?)), max(last_at) from sessions where last_at >= ?",
         params![since, since],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
     let transcripts: i64 = db.query_row("select count(*) from transcripts", [], |r| r.get(0))?;
-    Ok(
-        json!({"sources": sources, "types": types, "injected_without_read": top, "coverage": {"transcripts": transcripts, "sessions": sessions, "from": first, "to": last}, "since": (since != i64::MIN).then_some(since)}),
-    )
+    Ok(Report {
+        coverage: Coverage {
+            from: first,
+            sessions,
+            to: last,
+            transcripts,
+        },
+        injected_without_read: top,
+        since: (since != i64::MIN).then_some(since),
+        sources,
+        types,
+    })
 }
 
 pub fn run(root: &Path, index: &Connection, args: &Args) -> Result<()> {
@@ -640,40 +719,37 @@ pub fn run(root: &Path, index: &Connection, args: &Args) -> Result<()> {
         println!("{}", serde_json::to_string(&report)?);
         return Ok(());
     }
-    for (source, row) in report["sources"].as_object().unwrap() {
+    for (source, row) in &report.sources {
         println!(
             "{source}: {} injections, {} read later ({:.1}%)",
-            row["injections"],
-            row["read_later"],
-            row["rate"].as_f64().unwrap() * 100.0
+            row.injections,
+            row.read_later,
+            row.rate * 100.0
         );
     }
-    for (kind, row) in report["types"].as_object().unwrap() {
+    for (kind, row) in &report.types {
         println!(
             "{kind}: {} pages, {} read, {} cross-session, {} older than 14d unread",
-            row["pages"], row["ever_read"], row["cross_session_read"], row["older_than_14d_unread"]
+            row.pages, row.ever_read, row.cross_session_read, row.older_than_14d_unread
         );
     }
-    for row in report["injected_without_read"].as_array().unwrap() {
+    for row in &report.injected_without_read {
         println!(
             "unread injections: {}: {} ({})",
-            row["count"],
-            row["title"].as_str().unwrap(),
-            row["path"].as_str().unwrap()
+            row.count, row.title, row.path
         );
     }
-    let span = &report["coverage"];
-    let time = |v: &Value| {
-        v.as_i64()
-            .and_then(|n| DateTime::from_timestamp(n, 0))
+    let span = &report.coverage;
+    let time = |v: Option<i64>| {
+        v.and_then(|n| DateTime::from_timestamp(n, 0))
             .map_or_else(|| "none".into(), |d| d.to_rfc3339())
     };
     println!(
         "scanned: {} transcripts, {} sessions; {} to {}",
-        span["transcripts"],
-        span["sessions"],
-        time(&span["from"]),
-        time(&span["to"])
+        span.transcripts,
+        span.sessions,
+        time(span.from),
+        time(span.to)
     );
     Ok(())
 }
@@ -681,6 +757,7 @@ pub fn run(root: &Path, index: &Connection, args: &Args) -> Result<()> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use serde_json::json;
     use std::{
         io::Write,
         sync::atomic::{AtomicU64, Ordering},
@@ -714,6 +791,75 @@ pub(crate) mod tests {
     }
     fn line(id: &str, name: &str, input: Value) -> Value {
         json!({"type": "assistant", "sessionId": "parent", "timestamp": "2026-09-01T01:00:00Z", "message": {"content": [{"type":"tool_use", "id":id, "name":name, "input":input}]}})
+    }
+
+    #[test]
+    fn report_json_preserves_key_order_and_nulls() -> Result<()> {
+        let mut report = Report {
+            coverage: Coverage {
+                from: Some(10),
+                sessions: 2,
+                to: Some(20),
+                transcripts: 3,
+            },
+            injected_without_read: vec![UnreadInjection {
+                count: 2,
+                path: "a".into(),
+                title: "A".into(),
+            }],
+            since: Some(10),
+            sources: BTreeMap::from([
+                (
+                    "remind".into(),
+                    SourceStats {
+                        injections: 2,
+                        rate: 0.5,
+                        read_later: 1,
+                    },
+                ),
+                (
+                    "context".into(),
+                    SourceStats {
+                        injections: 0,
+                        rate: 0.0,
+                        read_later: 0,
+                    },
+                ),
+            ]),
+            types: BTreeMap::from([(
+                "knowledge",
+                TypeStats {
+                    cross_session_read: 1,
+                    ever_read: 2,
+                    older_than_14d_unread: 3,
+                    pages: 5,
+                },
+            )]),
+        };
+        assert_eq!(
+            serde_json::to_string(&report)?,
+            concat!(
+                r#"{"coverage":{"from":10,"sessions":2,"to":20,"transcripts":3},"#,
+                r#""injected_without_read":[{"count":2,"path":"a","title":"A"}],"since":10,"#,
+                r#""sources":{"context":{"injections":0,"rate":0.0,"read_later":0},"remind":{"injections":2,"rate":0.5,"read_later":1}},"#,
+                r#""types":{"knowledge":{"cross_session_read":1,"ever_read":2,"older_than_14d_unread":3,"pages":5}}}"#,
+            )
+        );
+        report.coverage = Coverage {
+            from: None,
+            sessions: 0,
+            to: None,
+            transcripts: 0,
+        };
+        report.injected_without_read.clear();
+        report.since = None;
+        report.sources.clear();
+        report.types.clear();
+        assert_eq!(
+            serde_json::to_string(&report)?,
+            r#"{"coverage":{"from":null,"sessions":0,"to":null,"transcripts":0},"injected_without_read":[],"since":null,"sources":{},"types":{}}"#
+        );
+        Ok(())
     }
 
     #[test]
@@ -931,9 +1077,9 @@ pub(crate) mod tests {
             2
         );
         let report = aggregate(&db, &wiki.index, i64::MIN, 1800000000)?;
-        assert_eq!(report["types"]["knowledge"]["ever_read"], 1);
-        assert_eq!(report["types"]["knowledge"]["cross_session_read"], 1);
-        assert_eq!(report["sources"]["remind"]["read_later"], 0);
+        assert_eq!(report.types["knowledge"].ever_read, 1);
+        assert_eq!(report.types["knowledge"].cross_session_read, 1);
+        assert_eq!(report.sources["remind"].read_later, 0);
         let command = format!(
             "cd '{}' && cat pages/knowledge/target.md; sed -i 's/a/b/' pages/knowledge/target.md",
             wiki.root.display()
@@ -953,9 +1099,9 @@ pub(crate) mod tests {
             2
         );
         let report = aggregate(&db, &wiki.index, i64::MIN, 1800000000)?;
-        assert_eq!(report["types"]["knowledge"]["ever_read"], 2);
-        assert_eq!(report["types"]["knowledge"]["cross_session_read"], 1);
-        assert_eq!(report["sources"]["remind"]["read_later"], 1);
+        assert_eq!(report.types["knowledge"].ever_read, 2);
+        assert_eq!(report.types["knowledge"].cross_session_read, 1);
+        assert_eq!(report.sources["remind"].read_later, 1);
         Ok(())
     }
 
@@ -1132,7 +1278,7 @@ pub(crate) mod tests {
             insert into accesses values ('r','pages/knowledge/one.md','read');",
         )?;
         let report = aggregate(&db, &wiki.index, 10, 1800000000)?;
-        let sources = report["sources"].as_object().unwrap();
+        let sources = &report.sources;
         assert_eq!(
             sources.keys().map(String::as_str).collect::<Vec<_>>(),
             [
@@ -1147,21 +1293,33 @@ pub(crate) mod tests {
         );
         assert_eq!(
             sources["subagent"],
-            json!({"injections": 2, "read_later": 1, "rate": 0.5})
+            SourceStats {
+                injections: 2,
+                rate: 0.5,
+                read_later: 1
+            }
         );
         assert_eq!(
             sources["skill-prompt"],
-            json!({"injections": 1, "read_later": 1, "rate": 1.0})
+            SourceStats {
+                injections: 1,
+                rate: 1.0,
+                read_later: 1
+            }
         );
         assert_eq!(sources["custom-source"], sources["skill-prompt"]);
         for source in ["context", "recall-failure", "recall-skill", "remind"] {
             assert_eq!(
                 sources[source],
-                json!({"injections": 0, "read_later": 0, "rate": 0.0})
+                SourceStats {
+                    injections: 0,
+                    rate: 0.0,
+                    read_later: 0
+                }
             );
         }
         let recent = aggregate(&db, &wiki.index, 12, 1800000000)?;
-        assert_eq!(recent["sources"].as_object().unwrap().len(), 4);
+        assert_eq!(recent.sources.len(), 4);
         Ok(())
     }
 
@@ -1179,17 +1337,17 @@ pub(crate) mod tests {
             insert into tools values ('w','author',30), ('r','author',20), ('r2','reader',9), ('r3','other',25);
             insert into accesses values ('w','pages/knowledge/one.md','write'), ('r','pages/knowledge/one.md','read'), ('r2','pages/knowledge/two.md','read'), ('r3','pages/knowledge/two.md','read');")?;
         let report = aggregate(&db, &wiki.index, i64::MIN, 1800000000)?;
-        assert_eq!(report["sources"]["remind"]["injections"], 2);
-        assert_eq!(report["sources"]["remind"]["read_later"], 1);
-        assert_eq!(report["sources"]["remind"]["rate"], 0.5);
-        assert_eq!(report["types"]["knowledge"]["ever_read"], 2);
-        assert_eq!(report["types"]["knowledge"]["cross_session_read"], 1);
-        assert_eq!(report["types"]["knowledge"]["older_than_14d_unread"], 1);
-        assert_eq!(report["injected_without_read"].as_array().unwrap().len(), 2);
+        assert_eq!(report.sources["remind"].injections, 2);
+        assert_eq!(report.sources["remind"].read_later, 1);
+        assert_eq!(report.sources["remind"].rate, 0.5);
+        assert_eq!(report.types["knowledge"].ever_read, 2);
+        assert_eq!(report.types["knowledge"].cross_session_read, 1);
+        assert_eq!(report.types["knowledge"].older_than_14d_unread, 1);
+        assert_eq!(report.injected_without_read.len(), 2);
         let recent = aggregate(&db, &wiki.index, 21, 1800000000)?;
-        assert_eq!(recent["sources"]["remind"]["injections"], 0);
-        assert_eq!(recent["types"]["knowledge"]["ever_read"], 1);
-        assert_eq!(recent["types"]["knowledge"]["older_than_14d_unread"], 1);
+        assert_eq!(recent.sources["remind"].injections, 0);
+        assert_eq!(recent.types["knowledge"].ever_read, 1);
+        assert_eq!(recent.types["knowledge"].older_than_14d_unread, 1);
         Ok(())
     }
 }
