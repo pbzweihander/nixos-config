@@ -84,6 +84,7 @@ let
     # User-level rules rather than CLAUDE.md, which stays editable (/memory).
     "rules/claude-wiki.md" = ./rules/claude-wiki.md;
     "rules/nix.md" = ./rules/nix.md;
+    "rules/rust.md" = ./rules/rust.md;
   };
   # Linked into ~/.claude/skills only; the other accounts reach it through their
   # `skills` link.
