@@ -2,7 +2,7 @@ use crate::{expand_home, index, pages, sessions};
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, Utc};
 use clap::Args as ClapArgs;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use serde_json::Value;
 use std::{
@@ -265,10 +265,10 @@ fn bash_accesses(root: &Path, command: &str, cwd: &Path) -> Vec<(String, &'stati
         let reader = ["cat", "sed", "head", "tail", "less", "nl", "awk", "bat"].contains(&first);
         let editing = matches!(first, "sed" | "perl") && in_place(&args[1..]);
         for (path, kind) in redirects {
-            if kind == "write" || reader {
-                if let Some(path) = page_path(root, path, &cwd) {
-                    accesses.push((path, kind));
-                }
+            if (kind == "write" || reader)
+                && let Some(path) = page_path(root, path, &cwd)
+            {
+                accesses.push((path, kind));
             }
         }
         if first == "cd" {

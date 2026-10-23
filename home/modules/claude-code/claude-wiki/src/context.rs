@@ -1,10 +1,10 @@
 use crate::{
-    index::{Row, COLUMNS, JOIN},
+    index::{COLUMNS, JOIN, Row},
     pages, search,
 };
 use anyhow::Result;
 use clap::Args as ClapArgs;
-use rusqlite::{params_from_iter, types::Value, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params_from_iter, types::Value};
 use std::{collections::HashSet, env, path::Path, process::Command};
 
 #[derive(ClapArgs)]
@@ -183,7 +183,10 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
     let mut injected = vec![];
     let mut listed = std::collections::HashMap::new();
     let total: i64 = db.query_row("select count(*) from files", [], |r| r.get(0))?;
-    let mut pinned = format!("Shared wiki: {total} pages under {}/. Search it with `claude-wiki search <terms>` before non-trivial work; load the claude-wiki skill before writing to it.\n", root.display());
+    let mut pinned = format!(
+        "Shared wiki: {total} pages under {}/. Search it with `claude-wiki search <terms>` before non-trivial work; load the claude-wiki skill before writing to it.\n",
+        root.display()
+    );
     let project = current_project(Path::new("."));
     let overview = format!("pages/projects/{}.md", project.as_deref().unwrap_or("None"));
     let mut queries: Vec<(&str, String, String, Vec<Value>)> = vec![];
@@ -216,7 +219,9 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
                 }
             }
         } else {
-            pinned += &format!("No overview page for {project} yet; write {overview} once you have explored the project.\n");
+            pinned += &format!(
+                "No overview page for {project} yet; write {overview} once you have explored the project.\n"
+            );
         }
         queries.push((
             "follow-ups",
@@ -313,7 +318,10 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
     });
     let (text, used) = budgeted(&pinned, &mut sections, args.budget);
     if used > args.budget {
-        eprintln!("warning: context is {used} chars; protected header and overview exceed the {} char budget", args.budget);
+        eprintln!(
+            "warning: context is {used} chars; protected header and overview exceed the {} char budget",
+            args.budget
+        );
     }
     print!("{text}");
     if let Some(session) = session {

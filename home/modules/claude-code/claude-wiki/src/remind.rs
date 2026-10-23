@@ -1,7 +1,7 @@
 use crate::sessions::complete_lines;
 use anyhow::Result;
 use clap::Args as ClapArgs;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::Deserialize;
 use serde_json::Value;
 use std::{collections::HashSet, fs::File, io, path::Path};
@@ -63,7 +63,9 @@ fn update(db: &Connection, hook: Hook, interval: u64) -> Result<Option<String>> 
     }
     prompts = prompts.saturating_add(1);
     let message = if prompts as u64 >= interval {
-        let message = format!("claude-wiki: {prompts} prompts since this session last ran `claude-wiki sync`. If this session has produced something another session would need (a root cause and its fix, a tool or environment quirk, a decision and its reason, out-of-scope work for later), record it in the wiki now (load the claude-wiki skill); otherwise continue and do not reply to this note.");
+        let message = format!(
+            "claude-wiki: {prompts} prompts since this session last ran `claude-wiki sync`. If this session has produced something another session would need (a root cause and its fix, a tool or environment quirk, a decision and its reason, out-of-scope work for later), record it in the wiki now (load the claude-wiki skill); otherwise continue and do not reply to this note."
+        );
         prompts = 0;
         Some(message)
     } else {
@@ -130,7 +132,9 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
             })
             .collect::<Vec<_>>()
             .join("; ");
-        println!("claude-wiki: pages that may already cover this: {pages}. Read one if it bears on the request; otherwise ignore this note and do not reply to it.");
+        println!(
+            "claude-wiki: pages that may already cover this: {pages}. Read one if it bears on the request; otherwise ignore this note and do not reply to it."
+        );
         crate::usage::log(&root, session, "remind", &paths);
     }
     if let Some(message) = update(db, hook, args.interval)? {
@@ -206,15 +210,17 @@ mod tests {
         for i in 1..=16 {
             assert_eq!(update(&db, Hook::default(), 15)?.is_some(), i == 15);
         }
-        assert!(update(
-            &db,
-            Hook {
-                session_id: Some("other".into()),
-                ..Hook::default()
-            },
-            15
-        )?
-        .is_none());
+        assert!(
+            update(
+                &db,
+                Hook {
+                    session_id: Some("other".into()),
+                    ..Hook::default()
+                },
+                15
+            )?
+            .is_none()
+        );
         Ok(())
     }
 }

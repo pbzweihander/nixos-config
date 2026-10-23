@@ -1,5 +1,5 @@
 use crate::{index, sync};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use rusqlite::{Connection, OptionalExtension};
 use std::path::Path;
 

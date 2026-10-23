@@ -231,13 +231,13 @@ pub fn parse(text: &str, rel: &str) -> Page {
                 if let Some(title) = m[1]
                     .lines()
                     .find_map(|line| line.strip_prefix("title:").map(str::trim))
+                    && title.contains(": ")
+                    && !title.starts_with(['\'', '"', '|', '>'])
                 {
-                    if title.contains(": ") && !title.starts_with(['\'', '"', '|', '>']) {
-                        problem += &format!(
-                            "; quote the title: title: {}",
-                            serde_json::to_string(title).unwrap()
-                        );
-                    }
+                    problem += &format!(
+                        "; quote the title: title: {}",
+                        serde_json::to_string(title).unwrap()
+                    );
                 }
                 page.problems.push(problem);
             }

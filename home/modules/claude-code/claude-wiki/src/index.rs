@@ -1,6 +1,6 @@
 use crate::{pages, scan};
 use anyhow::Result;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::{collections::HashMap, fs, os::unix::fs::MetadataExt, path::Path, time::Duration};
 
 const SCHEMA_VERSION: i64 = 5;
@@ -219,12 +219,13 @@ mod tests {
             linked_from(&db, "pages/knowledge/target.md")?,
             ["pages/knowledge/other.md", "pages/knowledge/source.md"]
         );
-        assert!(db
-            .execute(
+        assert!(
+            db.execute(
                 "insert into links values (2, 'pages/knowledge/target.md')",
                 []
             )
-            .is_err());
+            .is_err()
+        );
         Ok(())
     }
 

@@ -1,8 +1,8 @@
 use crate::{env_path, home, index, scan, search};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Duration, NaiveDate, SecondsFormat, Utc};
 use clap::Args as ClapArgs;
-use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::Value as SqlValue};
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
@@ -599,9 +599,11 @@ mod tests {
             .filter_map(parse)
             .collect();
         assert_eq!(messages.len(), 4);
-        assert!(messages
-            .iter()
-            .any(|m| m.text.contains("orbital cache recovery")));
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.text.contains("orbital cache recovery"))
+        );
         assert!(messages.iter().all(|m| !m.text.contains("hiddenonly")));
         assert!(messages.iter().any(|m| m.text.contains("[REDACTED]")));
         assert_eq!(project("/repos/demo/.claude/worktrees/task"), "demo");

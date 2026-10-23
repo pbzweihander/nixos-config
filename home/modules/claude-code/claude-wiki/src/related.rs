@@ -1,6 +1,6 @@
 use crate::{
     context,
-    index::{Row, COLUMNS, JOIN},
+    index::{COLUMNS, JOIN, Row},
     pages, semantic, usage,
 };
 use anyhow::Result;
@@ -94,18 +94,18 @@ fn report(root: &Path, db: &Connection, args: &Args, hits: Vec<semantic::Hit>) -
     } else {
         None
     };
-    if let (Some(session), Some(source)) = (&args.session, &args.source) {
-        if !pages.is_empty() {
-            usage::log(
-                &root,
-                session,
-                source,
-                &pages
-                    .iter()
-                    .map(|page| page.rel.clone())
-                    .collect::<Vec<_>>(),
-            );
-        }
+    if let (Some(session), Some(source)) = (&args.session, &args.source)
+        && !pages.is_empty()
+    {
+        usage::log(
+            &root,
+            session,
+            source,
+            &pages
+                .iter()
+                .map(|page| page.rel.clone())
+                .collect::<Vec<_>>(),
+        );
     }
     Ok(Report { pages, overview })
 }
@@ -269,23 +269,29 @@ mod tests {
             "update files set blocked='secret' where path=?",
             [&overview],
         )?;
-        assert!(report(&wiki.root, &wiki.index, &args, vec![])?
-            .overview
-            .is_none());
+        assert!(
+            report(&wiki.root, &wiki.index, &args, vec![])?
+                .overview
+                .is_none()
+        );
         std::fs::remove_file(wiki.root.join(&overview))?;
         crate::index::refresh(&wiki.root, &mut wiki.index)?;
-        assert!(report(&wiki.root, &wiki.index, &args, vec![])?
-            .overview
-            .is_none());
+        assert!(
+            report(&wiki.root, &wiki.index, &args, vec![])?
+                .overview
+                .is_none()
+        );
         args.cwd = wiki.root.join("pages"); // Inside the same repository.
         assert_eq!(
             context::current_project(&args.cwd).as_deref(),
             Some(project.as_str())
         );
         args.cwd = wiki.root.join("absent");
-        assert!(report(&wiki.root, &wiki.index, &args, vec![])?
-            .overview
-            .is_none());
+        assert!(
+            report(&wiki.root, &wiki.index, &args, vec![])?
+                .overview
+                .is_none()
+        );
         Ok(())
     }
 

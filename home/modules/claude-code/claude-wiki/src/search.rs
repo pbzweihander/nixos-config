@@ -1,10 +1,10 @@
-use crate::index::{Row, COLUMNS, JOIN};
+use crate::index::{COLUMNS, JOIN, Row};
 use crate::semantic::DenseStatus;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use chrono::{Local, TimeZone};
 use clap::Args;
 use regex::Regex;
-use rusqlite::{params_from_iter, types::Value, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params_from_iter, types::Value};
 use serde_json::json;
 use std::{io::Write, path::Path, sync::LazyLock};
 
@@ -311,10 +311,8 @@ pub fn search(
         bail!("no search terms");
     }
     let (mut rows, dense) = ranked(db, &query, &terms.join(" "), n, filters, no_semantic)?;
-    if !json {
-        if let DenseStatus::Unavailable(reason) = &dense {
-            eprintln!("note: dense retrieval unavailable ({reason}); results are BM25 only");
-        }
+    if !json && let DenseStatus::Unavailable(reason) = &dense {
+        eprintln!("note: dense retrieval unavailable ({reason}); results are BM25 only");
     }
     if n >= 0 {
         rows.truncate(n as usize);

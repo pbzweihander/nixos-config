@@ -1,5 +1,5 @@
 use crate::{context, expand_home, git, index, pages, scan, search, semantic};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use regex::Regex;
 use rusqlite::Connection;
 use std::{
@@ -77,7 +77,9 @@ fn validate(root: &Path, rel: &str, text: &str, page: &pages::Page) -> i32 {
     let budget = context::overview_budget();
     let length = page.body.chars().count();
     if page.kind == "projects" && length > budget {
-        eprintln!("warning: {rel}: body is {length} chars; only the first {budget} are shown at session start");
+        eprintln!(
+            "warning: {rel}: body is {length} chars; only the first {budget} are shown at session start"
+        );
         code = code.max(1);
     }
     for finding in scan::scan(text) {
@@ -128,7 +130,10 @@ fn duplicate_note(root: &Path, db: &Connection, rel: &str, text: &str) -> Result
         }
     }
     if !candidates.is_empty() {
-        eprintln!("note: {rel}: similar existing pages: {}. If one covers the same topic, update it instead and delete this page.", candidates.join("; "));
+        eprintln!(
+            "note: {rel}: similar existing pages: {}. If one covers the same topic, update it instead and delete this page.",
+            candidates.join("; ")
+        );
     }
     Ok(())
 }
@@ -146,7 +151,9 @@ fn written_page(
     match git(root, &["show", &format!("HEAD:{rel}")]) {
         Ok(old) => {
             if let Some((before, after)) = shrink(&old, text) {
-                eprintln!("warning: {rel}: shrank from {before} to {after} chars; check that nothing was lost in a rewrite");
+                eprintln!(
+                    "warning: {rel}: shrank from {before} to {after} chars; check that nothing was lost in a rewrite"
+                );
                 return Ok(1);
             }
         }
@@ -208,7 +215,10 @@ impl Probe {
                 ),
             };
             // Debug string quoting keeps multiline questions on one warning line.
-            eprintln!("warning: {rel}: query {:?} does not find this page (fused: {fused}, bm25: {bm25}, dense: {dense})", scan::redact(query));
+            eprintln!(
+                "warning: {rel}: query {:?} does not find this page (fused: {fused}, bm25: {bm25}, dense: {dense})",
+                scan::redact(query)
+            );
         }
         Ok(())
     }
@@ -329,13 +339,17 @@ pub fn sync(root: &Path, db: &Connection, paths: &[String], message: Option<&str
         // Only when a page is written: a mention can be legitimate (a page citing a
         // skill as an example), and in `check` it would then warn forever.
         for name in untagged_skills(&page, &skills) {
-            eprintln!("warning: {rel}: mentions the {name} skill but is not tagged {name}; recall offers pages to a skill call by tag");
+            eprintln!(
+                "warning: {rel}: mentions the {name} skill but is not tagged {name}; recall offers pages to a skill call by tag"
+            );
             code = code.max(1);
         }
         if validation != 2 {
             code = code.max(written_page(root, db, rel, &text, &page)?);
             if page.kind == "knowledge" && page.queries.is_empty() {
-                eprintln!("warning: {rel}: no queries; add the questions a future session would ask to find this page");
+                eprintln!(
+                    "warning: {rel}: no queries; add the questions a future session would ask to find this page"
+                );
                 code = code.max(1);
             }
             probes.page(db, rel, &page, 3)?;

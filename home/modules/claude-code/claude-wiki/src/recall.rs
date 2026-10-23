@@ -1,9 +1,9 @@
 use anyhow::Result;
 use clap::Args as ClapArgs;
 use regex::Regex;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::HashSet,
     fs::File,
@@ -396,18 +396,18 @@ pub fn transcript_seen(
                         let Ok(value) = serde_json::from_slice::<Value>(line) else {
                             return Ok(());
                         };
-                        if value["type"] == "assistant" {
-                            if let Some(parts) = value["message"]["content"].as_array() {
-                                for part in parts.iter().filter(|p| p["type"] == "tool_use") {
-                                    // One pass over the input rather than one per page: a
-                                    // resumed session hands over its whole transcript at once.
-                                    // An absolute path contains its relative form.
-                                    let input = part["input"].to_string();
-                                    for m in PAGE_PATH.find_iter(&input) {
-                                        let rel = m.as_str();
-                                        if paths.contains(rel) && seen.insert(rel.to_owned()) {
-                                            added.push(rel.to_owned());
-                                        }
+                        if value["type"] == "assistant"
+                            && let Some(parts) = value["message"]["content"].as_array()
+                        {
+                            for part in parts.iter().filter(|p| p["type"] == "tool_use") {
+                                // One pass over the input rather than one per page: a
+                                // resumed session hands over its whole transcript at once.
+                                // An absolute path contains its relative form.
+                                let input = part["input"].to_string();
+                                for m in PAGE_PATH.find_iter(&input) {
+                                    let rel = m.as_str();
+                                    if paths.contains(rel) && seen.insert(rel.to_owned()) {
+                                        added.push(rel.to_owned());
                                     }
                                 }
                             }
@@ -501,9 +501,14 @@ fn decide(root: &Path, db: &Connection, hook: &Hook, args: &Args) -> Result<Opti
         .join("; ");
     let message = if mode == Some("skill") {
         let skill = hook.tool_input["skill"].as_str().unwrap_or_default();
-        format!("claude-wiki: wiki pages about the {skill} skill: {pages}. Read any that bears on this task; otherwise ignore this note and do not reply to it.")
+        format!(
+            "claude-wiki: wiki pages about the {skill} skill: {pages}. Read any that bears on this task; otherwise ignore this note and do not reply to it."
+        )
     } else {
-        format!("claude-wiki: pages that may explain this {} failure: {pages}. Read one if it is relevant to what you are about to do; otherwise ignore this note and do not reply to it.", hook.tool_name)
+        format!(
+            "claude-wiki: pages that may explain this {} failure: {pages}. Read one if it is relevant to what you are about to do; otherwise ignore this note and do not reply to it.",
+            hook.tool_name
+        )
     };
     mark_seen(db, hook.session_id.as_deref().unwrap_or_default(), &paths)?;
     crate::usage::log(
@@ -1129,11 +1134,13 @@ mod tests {
         let h = failure(json!(ERROR));
         let output = wiki.explain(&h)?;
         assert_eq!(output["mode"], "error");
-        assert!(output["windows"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|w| w["short"] == false));
+        assert!(
+            output["windows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|w| w["short"] == false)
+        );
         assert_eq!(
             output["selected"],
             json!(["pages/knowledge/new.md", "pages/knowledge/old.md"])
@@ -1148,11 +1155,13 @@ mod tests {
         let output = decide(&wiki.root, &wiki.db, &h, &opts)?.unwrap();
         assert_eq!(output["windows"][0]["df"], 4);
         assert_eq!(output["windows"][0]["kept"], false);
-        assert!(output["candidates"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|p| p["title"] == "history"));
+        assert!(
+            output["candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["title"] == "history")
+        );
         Ok(())
     }
 
@@ -1171,11 +1180,13 @@ mod tests {
         let output = wiki.explain(&failure(json!(ERROR)))?;
         assert!(output["selected"].as_array().unwrap().is_empty());
         assert!(output["candidates"].as_array().unwrap().is_empty());
-        assert!(output["windows"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|w| w["df"] == 4 && w["kept"] == false && w["reason"].is_string()));
+        assert!(
+            output["windows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|w| w["df"] == 4 && w["kept"] == false && w["reason"].is_string())
+        );
         Ok(())
     }
 
@@ -1295,11 +1306,13 @@ mod tests {
         ] {
             let output = wiki.explain(&h)?;
             assert!(!output["selected"].as_array().unwrap().is_empty());
-            assert!(output["candidates"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|c| c["seen"] == false));
+            assert!(
+                output["candidates"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|c| c["seen"] == false)
+            );
         }
         Ok(())
     }
@@ -1315,12 +1328,14 @@ mod tests {
             transcript_path: Some(path.to_string_lossy().into_owned()),
             ..Hook::default()
         };
-        assert!(transcript_seen(
-            &wiki.db,
-            h.session_id.as_deref().unwrap_or_default(),
-            h.transcript_path.as_deref()
-        )?
-        .is_empty());
+        assert!(
+            transcript_seen(
+                &wiki.db,
+                h.session_id.as_deref().unwrap_or_default(),
+                h.transcript_path.as_deref()
+            )?
+            .is_empty()
+        );
         let line = |role: &str, part: &str, input: Value| {
             json!({"type":role, "message":{"content":[{"type":part, "input":input}]}}).to_string()
         };

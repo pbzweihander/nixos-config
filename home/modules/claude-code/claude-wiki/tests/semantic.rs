@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     fs,
     io::{BufRead, BufReader, Write},
@@ -32,30 +32,34 @@ impl Wiki {
         }
         let wiki = Self(dir);
         run(wiki.command(&["list"]), "");
-        assert!(Command::new("git")
-            .arg("-C")
-            .arg(wiki.0.join("wiki"))
-            .args(["add", "pages"])
-            .status()
-            .unwrap()
-            .success());
-        assert!(Command::new("git")
-            .arg("-C")
-            .arg(wiki.0.join("wiki"))
-            .args([
-                "-c",
-                "user.name=test",
-                "-c",
-                "user.email=test@example.com",
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "-qm",
-                "fixture"
-            ])
-            .status()
-            .unwrap()
-            .success());
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(wiki.0.join("wiki"))
+                .args(["add", "pages"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(wiki.0.join("wiki"))
+                .args([
+                    "-c",
+                    "user.name=test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "-qm",
+                    "fixture"
+                ])
+                .status()
+                .unwrap()
+                .success()
+        );
         wiki
     }
 
@@ -167,9 +171,18 @@ fn assert_dense_unavailable(output: Output, expected: &str, json: bool, reason: 
 fn related_json_requests_ten_filters_and_logs_selected_pages() {
     let wiki = Wiki::new();
     for (path, text) in [
-        ("history/past", "---\ntitle: Past\ncreated: 2020-01-01\n---\npast"),
-        ("knowledge/blocked", "---\ntitle: Hidden\ncreated: 2020-01-01\n---\nghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
-        ("projects/wiki", "---\ntitle: Overview\ncreated: 2020-01-01\n---\noverview"),
+        (
+            "history/past",
+            "---\ntitle: Past\ncreated: 2020-01-01\n---\npast",
+        ),
+        (
+            "knowledge/blocked",
+            "---\ntitle: Hidden\ncreated: 2020-01-01\n---\nghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        ),
+        (
+            "projects/wiki",
+            "---\ntitle: Overview\ncreated: 2020-01-01\n---\noverview",
+        ),
     ] {
         fs::write(wiki.0.join(format!("wiki/pages/{path}.md")), text).unwrap();
     }
@@ -356,9 +369,10 @@ fn dense_only_rows_apply_each_filter_and_redact_blocked_pages() {
         let report: Value = serde_json::from_str(&output).unwrap();
         let hits = report["hits"].as_array().unwrap();
         assert_eq!(hits.len(), if flags.is_empty() { 4 } else { 2 }, "{output}");
-        assert!(hits
-            .iter()
-            .all(|hit| hit["via"] == "dense" && hit["semantic"] == true));
+        assert!(
+            hits.iter()
+                .all(|hit| hit["via"] == "dense" && hit["semantic"] == true)
+        );
         let matched = &hits[hits.len() - 2];
         assert_eq!(matched["rel"], "pages/followups/match.md");
         assert_eq!(
@@ -476,9 +490,11 @@ fn probe_accepts_fused_bm25_or_dense_independently() {
             wiki.respond_output(&["check", "--probe", "--probe-top", "1", target], "", reply);
         assert_eq!(request, json!({"op":"dense","query":"cache","n":40}));
         assert!(output.status.success(), "{method}: {output:?}");
-        assert!(String::from_utf8(output.stderr)
-            .unwrap()
-            .contains("1 queries, 0 failures"));
+        assert!(
+            String::from_utf8(output.stderr)
+                .unwrap()
+                .contains("1 queries, 0 failures")
+        );
     }
 }
 
@@ -514,7 +530,9 @@ fn probe_reports_disabled_and_unavailable_dense_requests() {
         assert_eq!(output.status.code(), Some(1));
         assert_eq!(
             String::from_utf8(output.stderr).unwrap(),
-            format!("warning: pages/knowledge/foo.md: query \"unmatchedmeaning\" does not find this page (fused: absent, bm25: not in top 40, dense: {diagnostic})\nprobe: 1 pages probed, 1 queries, 1 failures\n")
+            format!(
+                "warning: pages/knowledge/foo.md: query \"unmatchedmeaning\" does not find this page (fused: absent, bm25: not in top 40, dense: {diagnostic})\nprobe: 1 pages probed, 1 queries, 1 failures\n"
+            )
         );
     }
 }
@@ -603,9 +621,11 @@ fn probe_bm25_matches_search_ranks_and_never_indexes_questions() {
             "",
         );
         assert_eq!(output.status.code(), Some(i32::from(failure)), "{output:?}");
-        assert!(String::from_utf8(output.stderr)
-            .unwrap()
-            .contains(diagnostic));
+        assert!(
+            String::from_utf8(output.stderr)
+                .unwrap()
+                .contains(diagnostic)
+        );
         fs::write(path, original).unwrap();
     }
     let path = wiki.0.join("wiki/pages/knowledge/foo.md");
@@ -847,7 +867,13 @@ fn reminder_sends_raw_korean_and_keeps_nudge() {
         json!({"ok": true, "tier": "cpu", "results": [{"path": "knowledge/foo", "score": 1.0}]}),
     );
     assert_eq!(request, json!({"op": "related", "prompt": prompt, "n": 10}));
-    assert_eq!(output.lines().next().unwrap(), format!("claude-wiki: pages that may already cover this: {} (foo cache notes). Read one if it bears on the request; otherwise ignore this note and do not reply to it.", wiki.0.join("wiki/pages/knowledge/foo.md").display()));
+    assert_eq!(
+        output.lines().next().unwrap(),
+        format!(
+            "claude-wiki: pages that may already cover this: {} (foo cache notes). Read one if it bears on the request; otherwise ignore this note and do not reply to it.",
+            wiki.0.join("wiki/pages/knowledge/foo.md").display()
+        )
+    );
     assert!(output.contains("claude-wiki: 1 prompts since"));
     let recall = run(wiki.command(&["recall"]), &recall_hook);
     assert!(
@@ -1235,9 +1261,11 @@ fn new_page_duplicate_notes_and_lint_pairs_use_batch_protocol() {
         request,
         json!({"op":"similar", "text":text, "exclude":"pages/knowledge/new.md", "n":3, "min":0.85})
     );
-    assert!(String::from_utf8(output.stderr)
-        .unwrap()
-        .contains("(0.91, foo cache notes)"));
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("(0.91, foo cache notes)")
+    );
     fs::remove_file(wiki.0.join("embed.sock")).unwrap();
     fs::write(
         wiki.0.join("wiki/pages/followups/closed.md"),
@@ -1272,13 +1300,15 @@ fn shrink_warning_commits_and_reports_exit_one() {
     )
     .unwrap();
     let git = |args: &[&str]| {
-        assert!(Command::new("git")
-            .arg("-C")
-            .arg(wiki.0.join("wiki"))
-            .args(args)
-            .status()
-            .unwrap()
-            .success());
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(wiki.0.join("wiki"))
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
     };
     git(&["add", "pages/knowledge/foo.md"]);
     git(&[
@@ -1303,12 +1333,16 @@ fn shrink_warning_commits_and_reports_exit_one() {
         .env("GIT_COMMITTER_EMAIL", "test@example.com");
     let output = run_output(command, "");
     assert_eq!(output.status.code(), Some(1));
-    assert!(String::from_utf8(output.stderr)
-        .unwrap()
-        .contains("shrank from 5054 to 60 chars"));
-    assert!(String::from_utf8(output.stdout)
-        .unwrap()
-        .contains("committed:"));
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("shrank from 5054 to 60 chars")
+    );
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("committed:")
+    );
 }
 
 #[test]
@@ -1338,9 +1372,11 @@ fn context_waits_for_a_busy_lock_and_then_prints_its_summary() {
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success(), "{output:?}");
     assert!(output.stderr.is_empty(), "{output:?}");
-    assert!(String::from_utf8(output.stdout)
-        .unwrap()
-        .starts_with("Shared wiki:"));
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .starts_with("Shared wiki:")
+    );
 }
 
 #[test]
@@ -1425,13 +1461,15 @@ fn plain_check_uses_one_head_listing_and_no_per_page_git_show() {
             "check fixture",
         ],
     ] {
-        assert!(Command::new("git")
-            .arg("-C")
-            .arg(wiki.0.join("wiki"))
-            .args(args)
-            .status()
-            .unwrap()
-            .success());
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(wiki.0.join("wiki"))
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
     }
     let listener = wiki.listener();
     let trace = wiki.0.join("git-trace.jsonl");

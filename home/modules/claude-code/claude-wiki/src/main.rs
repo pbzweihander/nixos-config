@@ -15,7 +15,7 @@ mod sessions;
 mod sync;
 mod usage;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use std::{
     env, fs, io,
@@ -242,7 +242,7 @@ fn run_locked(root: &Path, command: &Commands) -> Result<i32> {
         Commands::Tags => search::tags(&db)?,
         Commands::Links { page } => links::show(root, &db, page)?,
         Commands::Sync { paths, message, .. } => {
-            return sync::sync(root, &db, paths, message.as_deref())
+            return sync::sync(root, &db, paths, message.as_deref());
         }
         Commands::Check {
             paths,

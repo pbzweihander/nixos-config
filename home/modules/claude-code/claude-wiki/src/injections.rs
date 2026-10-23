@@ -1,4 +1,4 @@
-use crate::index::{Row, COLUMNS, JOIN};
+use crate::index::{COLUMNS, JOIN, Row};
 use anyhow::Result;
 use clap::Args as ClapArgs;
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
