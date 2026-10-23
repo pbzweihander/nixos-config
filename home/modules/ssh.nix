@@ -2,6 +2,7 @@
   programs.ssh = {
     enable = true;
     enableDefaultConfig = false;
+    includes = [ "config.d/*" ];
     settings = {
       "*" = {
         ForwardAgent = false;
