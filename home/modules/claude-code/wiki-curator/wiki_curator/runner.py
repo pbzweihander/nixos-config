@@ -18,7 +18,7 @@ import time
 from .adjudication import apply_edits, frontmatter_only, parse_adjudication, singleton_tags
 from .gitutil import (changed_texts, changes, command, git, page_text,
                       regular_page, safe_page, status)
-from .preservation import LINK, load_justification, preserved, strict_json
+from .preservation import LINK, invented, load_justification, preserved, strict_json
 from .prompts import adjudicate_prompt, claude_prompt, review_prompt
 from .recall import recall
 from .selection import DAY, blocked, pair_key, select_tasks
@@ -265,7 +265,18 @@ def land(wiki, parent, commit, cooldowns):
         return {"outcome": "deferred", "reason": str(error)}
 
 
+def recall_socket():
+    if "CLAUDE_WIKI_SOCKET" in os.environ:
+        return os.environ["CLAUDE_WIKI_SOCKET"] or None
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    return str(Path(runtime) / "claude-wiki/embed.sock") if runtime else None
+
+
 def perform_task(wiki, worktree, timestamp, task, state, result):
+    socket_path = recall_socket()
+    invented_mode = os.environ.get("WIKI_CURATOR_INVENTED_GATE", "report")
+    if invented_mode not in ("report", "reject"):
+        raise ValueError("WIKI_CURATOR_INVENTED_GATE must be report or reject")
     env = {**os.environ, "CLAUDE_WIKI_DIR": str(worktree), "CLAUDE_WIKI_SOCKET": ""}
     parent = git(worktree, "rev-parse", "HEAD").strip()
     result["parent_commit"] = parent
@@ -396,7 +407,17 @@ def perform_task(wiki, worktree, timestamp, task, state, result):
             result.update(outcome="rejected", reason="preservation check failed")
             return
         try:
-            checks["recall"] = recall(worktree, parent, commit, justification, env)
+            additions = invented(worktree, parent, commit, justification)
+        except (ValueError, RuntimeError) as error:
+            fail("invented", str(error), mode=invented_mode)
+            return
+        checks["invented"] = {"accept": invented_mode == "report" or not additions,
+                              "mode": invented_mode, "invented_tokens": additions}
+        if not checks["invented"]["accept"]:
+            result.update(outcome="rejected", reason="invented-token check failed")
+            return
+        try:
+            checks["recall"] = recall(worktree, parent, commit, justification, env, socket_path)
             if (git(worktree, "rev-parse", "HEAD").strip() != commit or snapshot(worktree) != after
                     or any(not p.startswith(".curator/") for p in status(worktree))):
                 raise ValueError("recall validation changed candidate files")
@@ -540,6 +561,18 @@ def summary(report):
                     lines.append("  missing: " + json.dumps(missing[:20], ensure_ascii=False) + rest)
                 if name == "recall":
                     lines.extend("  " + " ".join(problem.splitlines()) for problem in gate.get("problems", []))
+        for prefix, checks in (("  ", result.get("gates", {})),
+                               ("  revised ", (adjudication or {}).get("gates", {}))):
+            additions = checks.get("invented", {}).get("invented_tokens", [])
+            if additions:
+                rest = f" (+{len(additions) - 20} more)" if len(additions) > 20 else ""
+                lines.append(prefix + "invented: " + json.dumps(additions[:20], ensure_ascii=False) + rest)
+            recall_check = checks.get("recall", {})
+            dense = recall_check.get("dense", "")
+            if dense.startswith("unavailable: "):
+                reason = " ".join(dense.removeprefix("unavailable: ").splitlines())
+                lines.append(prefix + f"dense: unavailable ({reason}); "
+                             f"{len(recall_check.get('ungated', []))} probes ungated")
         lines.extend(review_details(result.get("codex_problems", []), adjudication))
         for key in ("reason", "branch", "commit", "landed_commit"):
             if result.get(key):

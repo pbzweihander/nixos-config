@@ -51,7 +51,8 @@ latest `main` and cleans untracked files. Claude runs there with wiki hooks disa
 no session persistence, an explicit editing-tool allowlist, a 40-turn limit and a
 20-minute timeout. It receives a short copy of the wiki's writing rules and must
 write `.curator/justification.json` with a summary, explained dropped tokens, and
-redirects. The worktree's semantic daemon socket is disabled.
+redirects. The semantic daemon socket is disabled for worktree CLI commands;
+the recall gate separately requests dense ranks with page-text overrides.
 
 Before committing, the curator checks scope, redirects and required link updates,
 rejects new broken wiki links, and runs `claude-wiki check`. For each added or
@@ -71,7 +72,7 @@ wiki page at the original parent; new tags are forbidden. Failures list the drop
 tags per page. The parser accepts ordinary flow/block lists and fails closed on
 unsupported metadata syntax.
 
-Three more gates apply to the resulting candidate commit, in this order:
+Four more gates apply to the resulting candidate commit, in this order:
 
 - **Preservation:** compare the parent bodies of modified/deleted/renamed pages to
   the union of new bodies of changed pages. Inline code, numbers/versions/units,
@@ -89,19 +90,45 @@ Three more gates apply to the resulting candidate commit, in this order:
   fences; other numbers on the line still count. Links are normalized using Git's `-M` rename detection
   and the planned redirects. Only exact tokens explicitly listed in `dropped` are
   exempted. This checks token presence, not meaning or how often a fact occurs.
+  Error lines are also preservation tokens: fenced lines containing `error[E123]:`
+  (any digit count), a capitalized name ending in `Error:` or `Exception:`,
+  `panicked at`, leading `fatal:`, or `Traceback (most recent call last)`, and
+  unfenced lines that start with one of them (optionally after `thread 'name' `).
+  Prose that only mentions an error is not a token, so rewording it is not a loss;
+  its inline code spans still are. Matching is case-sensitive. Leading/trailing
+  whitespace, leading blockquote/list markers and surrounding backticks are
+  stripped, and the first 128 characters form the token.
+- **Invented tokens:** after preservation passes, compare new body tokens against
+  the union of old tokens using the same link normalization. A token is also
+  supported if its text, with surrounding backticks removed, occurs anywhere in
+  a changed page's old full text, including frontmatter. Wrapping an existing
+  identifier in backticks therefore does not invent it. Wiki-link tokens are
+  excluded because the broken-link gate covers them. `dropped` exceptions do not
+  excuse inventions. `WIKI_CURATOR_INVENTED_GATE=report` (the default) records
+  `invented_tokens` without rejecting; `reject` rejects nonempty lists with
+  `invented-token check failed`. Any other value makes the task an error.
 - **Recall:** probe every parent-frontmatter query of modified, deleted or renamed
   pages, plus queries of added pages. Expected pages follow Git's `-M` renames and
   justification redirects. Deleted pages with queries need a surviving target;
   moved or merged queries must appear there as exactly the same strings.
   Temporarily check out the parent, then restore the candidate in a `finally`
   block and rank both versions with `search --json --no-semantic -n 10`, splitting
-  queries into whitespace-separated arguments. A parent rank of 1–3 must remain
-  in the top 3. Existing failures are reported without rejecting the change;
-  added pages have no parent rank. The `recall` gate records every probe's page,
-  expected page, query and both ranks (null means absent from the top 10).
+  queries into whitespace-separated arguments. Send one `wiki-embed` `probe`
+  request with distinct queries, `n=10`, and a 120-second timeout. Its `parent`
+  and `commit` states override changed pages with their git-object texts and
+  remove paths absent in each state, including both ends of renames. Dense
+  ranking does not write to the worktree or live wiki. A probe in either method's
+  parent top 3 must remain in either method's commit top 3. Existing failures
+  do not reject; added pages have no parent rank. The gate records each probe's
+  page, expected page, query, BM25 `parent_rank`/`commit_rank` and dense
+  `parent_dense`/`commit_dense` (null means absent from the top 10).
+  Successful dense requests record `dense: "ok"`. With no configured socket,
+  connection errors, timeouts, daemon errors or malformed responses, the gate
+  remains BM25-only and records `dense: "unavailable: <reason>"` plus `ungated`,
+  the probes without a BM25 parent rank. Dense unavailability does not reject.
   The stdlib parser supports ordinary inline and block lists of plain,
   single-quoted or JSON-quoted strings; unsupported query syntax and search errors
-  reject the attempt. All searches use the isolated worktree and disabled daemon.
+  reject the attempt. CLI searches use the isolated worktree and disabled daemon.
 - **Codex:** a read-only review receives the task, justification, writing rules and
   full old/new page texts, together with all gate results including recall ranks.
   It checks every fact, distinct versions/dates/machines,
@@ -125,7 +152,7 @@ session persistence. Its final-line JSON contains `verdict`, a Korean `reason`, 
 - **revise:** validate at most ten nonoverlapping exact edits against the reviewed
   commit. Each nonempty `old` must occur exactly once, and each path must already
   be changed by that commit. Apply the edits in the worktree and rerun scope, broken
-  links, check, the tag gate when applicable, preservation, recall and Codex. The
+  links, check, the tag gate when applicable, preservation, invented tokens, recall and Codex. The
   replacement candidate has the original parent, so landing includes the complete
   change and retained branches remain compatible with manual `land`. Only a passing
   second review can land; there is never a second adjudication.
@@ -152,7 +179,7 @@ Rejected candidates are retained as `curator/rejected/<UTC timestamp>-<task numb
 only when they have a commit and a recorded Codex rejection that adjudication did
 not land, including adjudication errors and failed revisions. Claude failures,
 deterministic gate failures (scope, justification, check, broken links, tags,
-preservation and recall), and interruptions or unexpected errors before Codex
+preservation, invented tokens and recall), and interruptions or unexpected errors before Codex
 create no branch or diff artifact. No `runs/*.diff` files are written; existing
 files are ignored. Inspect the run report for these failures before the pages
 become eligible again after their cooldown.
@@ -181,6 +208,9 @@ The wiki defaults to `~/.local/share/claude-wiki`. Environment settings:
 | `WIKI_CURATOR_MAX_TASKS` | Default task limit (five); `--max-tasks` takes precedence. Zero selects no tasks. |
 | `WIKI_CURATOR_MODEL` | Optional Claude model, passed as `--model`. |
 | `WIKI_CURATOR_ADJUDICATE` | Set to `0` to disable adjudication of Codex rejections; enabled otherwise. |
+| `WIKI_CURATOR_INVENTED_GATE` | `report` (default) records invented tokens; `reject` rejects them. Other values are task errors. |
+| `CLAUDE_WIKI_SOCKET` | Dense recall socket; an explicitly empty value disables dense recall. CLI commands in the worktree always receive an empty value. |
+| `XDG_RUNTIME_DIR` | When `CLAUDE_WIKI_SOCKET` is unset, dense recall uses `$XDG_RUNTIME_DIR/claude-wiki/embed.sock`. Without either variable, dense recall is unavailable. |
 | `XDG_CACHE_HOME` | Cache root, default `~/.cache`. State is in its `wiki-curator/` directory. |
 
 The service PATH includes `~/.local/bin`, the home profile's `bin`, and
@@ -193,7 +223,10 @@ away. `runs/<UTC timestamp>.json` records tasks, outcomes, gate results, Codex
 problems, candidate/landed SHAs and retained branches. `latest.md` names each
 failing gate (`gate: preservation`, for example), gives its reason, lists missing
 preservation tokens as a JSON list (`missing: [...]`, first 20 plus a count of the
-rest), and prints every recall problem. The JSON keeps full gate details. Claude
+rest), and prints every recall problem, including both methods' before/after ranks.
+For every task, including merged ones, it lists nonempty invented tokens as
+`invented: [...]` (first 20 plus a count of the rest). Dense fallback appears as
+`dense: unavailable (<reason>); N probes ungated`. The JSON keeps full gate details. Claude
 editor and adjudicator failures use the last 500 stdout characters, stripped and
 with newlines collapsed, when stderr is empty.
 
@@ -277,7 +310,7 @@ apply. The justification also lives in the candidate's commit body and run JSON.
 
 ## Build and tests
 
-To replay the current preservation gate against historical `curator:` commits,
+To replay preservation and invented-token checks against historical `curator:` commits,
 run from this configuration repository with an explicit wiki repository path:
 
 ```sh
@@ -289,7 +322,9 @@ The helper reads history reachable from HEAD; add `--all` to include all refs,
 including retained rejected/deferred candidates. Each commit is compared with its
 first parent using the `Justification: {...}` line from its message body. It prints
 failing commit IDs, subjects and missing tokens (or malformed-justification errors),
-then a count; exit status is 1 when any fail, otherwise 0. It never checks out a
+and `invented: [...]` for every commit with new tokens, then counts of failures and
+commits with invented tokens. Exit status still depends only on missing tokens and
+errors: 1 when any fail, otherwise 0. It never checks out a
 revision, runs models, updates usage, or writes the repo/cache. This is an audit of
 token presence, not a replay of the semantic reviewer. Run it yourself on the wiki
 you want to inspect.

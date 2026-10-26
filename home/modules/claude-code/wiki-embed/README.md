@@ -28,6 +28,40 @@ against the other candidates -- a top-two gap, a margin, a z-score -- were
 measured and are both worse and more sensitive to a single outlier, so the raw
 score is the only test. Explicit `search` returns the top matches with no cutoff.
 
+### Dense probes with page overrides
+
+`dense` takes `query` and a required `n` (1–100), ranks pages by their best chunk's
+cosine, and uses neither a reranker nor a threshold on either tier. `probe` uses
+the same ranking to compare temporary versions of pages against the live snapshot:
+
+```json
+{"op":"probe","queries":["캐시 오류","cache failure"],"n":10,"states":{"parent":{"pages/knowledge/cache.md":"---\ntitle: Cache\n---\nOld body"},"commit":{"knowledge/cache":"---\ntitle: Cache\n---\nNew body","knowledge/obsolete":null}}}
+```
+
+`queries` contains 1–200 nonempty strings. `n` is required and must be 1–100.
+`states` contains 1–4 named mappings; names match `[a-z][a-z0-9_-]{0,31}`. Each
+mapping overrides at most 50 pages, keyed by page ID or relative markdown path
+(the same validation as `similar.exclude`). Aliases for the same page cannot
+appear twice in a state. A string supplies the full markdown text; `null` removes
+the page. Empty mappings and empty page texts are allowed. The whole request
+still fits within the 1 MiB line limit.
+
+For each state, all named pages are removed from the snapshot and supplied texts
+are chunked and embedded fresh in batches of eight, even if identical to indexed
+text or another state's text. Unnamed pages retain their snapshot vectors. This
+does not change the live index, cache or files. Every state and query uses one
+tier; a GPU error retries the entire request on CPU. The response contains up to
+`n` distinct page IDs per query, in query order:
+
+```json
+{"ok":true,"tier":"cpu","results":{"parent":[["knowledge/cache"],["knowledge/cache"]],"commit":[["knowledge/cache"],["knowledge/cache"]]}}
+```
+
+The curator gives these requests a 120-second timeout. Warmup and invalid-request
+errors use the usual `{"ok":false,"error":"..."}` envelope.
+
+### Page similarity
+
 `similar` chunks the supplied page text with the same title/tag prefix and
 180-word windows as indexing, encodes them as passages, and averages then
 L2-normalizes the chunk vectors. Each snapshot caches the same normalized mean

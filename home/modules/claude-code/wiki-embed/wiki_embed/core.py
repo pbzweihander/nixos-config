@@ -9,6 +9,8 @@ import time
 
 import numpy as np
 
+from .protocol import page_id
+
 # Both tiers run the same encoder so there is one vector file and nothing to
 # re-embed when the GPU is handed back to a game; only where the query is encoded
 # and whether the reranker runs change. A smaller CPU-only model was measured and
@@ -253,6 +255,24 @@ def retrieve(snapshot, model, tier, query, op, n, thresholds):
         if len(result) >= n:
             break
     return result
+
+
+def probe(snapshot, model, queries, n, states):
+    results = {}
+    for name, pages in states.items():
+        overrides = {page_id(page): text for page, text in pages.items()}
+        entries = [entry for entry in snapshot.entries if entry.page.page_id not in overrides]
+        for key, text in overrides.items():
+            if text is None:
+                continue
+            chunks = chunk_page(text, key)
+            vectors = np.concatenate([model.encode_passages([c.text for c in chunks[i:i + 8]])
+                                      for i in range(0, len(chunks), 8)])
+            entries.append(Entry(Page(f"pages/{key}.md", 0, len(text), ()), chunks, vectors))
+        state = Snapshot(sorted(entries, key=lambda entry: entry.page.path), snapshot.indexed_at)
+        results[name] = [[hit["path"] for hit in retrieve(state, model, "cpu", query, "dense", n,
+                                                       Thresholds())] for query in queries]
+    return results
 
 
 def page_vector(vectors):

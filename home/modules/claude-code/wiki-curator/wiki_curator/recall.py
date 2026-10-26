@@ -1,7 +1,8 @@
-"""Deterministic BM25 regression checks, using only the disposable worktree."""
+"""BM25 and dense regression checks against parent and candidate page texts."""
 
 import json
 import re
+import socket
 import textwrap
 
 from .gitutil import changed_texts, changes, command, git, page_text, safe_page
@@ -110,7 +111,45 @@ def queries(text):
     return string_list(text, "queries")
 
 
-def recall(worktree, parent, commit, justification, env):
+def dense_ranks(socket_path, queries, states):
+    if socket_path is None:
+        raise ValueError("no socket configured")
+    limit = 1024 * 1024
+    request = (json.dumps({"op": "probe", "queries": queries, "n": 10, "states": states},
+                          ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
+    if len(request) > limit:
+        raise ValueError("request exceeds 1 MiB")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.settimeout(120)
+        connection.connect(str(socket_path))
+        connection.sendall(request)
+        with connection.makefile("rb") as stream:
+            line = stream.readline(limit + 1)
+    if len(line) > limit or not line.endswith(b"\n"):
+        raise ValueError("invalid daemon response line")
+    response = strict_json(line.decode("utf-8"))
+    if not isinstance(response, dict) or type(response.get("ok")) is not bool:
+        raise ValueError("invalid daemon response")
+    if not response["ok"]:
+        error = response.get("error")
+        raise ValueError(error if isinstance(error, str) and error else "invalid daemon error")
+    results = response.get("results")
+    if (response.get("tier") not in ("cpu", "gpu") or not isinstance(results, dict)
+            or set(results) != set(states)):
+        raise ValueError("invalid daemon results")
+    for ranks in results.values():
+        if not isinstance(ranks, list) or len(ranks) != len(queries):
+            raise ValueError("invalid daemon query ranks")
+        for hits in ranks:
+            if (not isinstance(hits, list) or len(hits) > 10
+                    or any(not isinstance(p, str) or not re.fullmatch(
+                        r"(?:knowledge|followups|projects|history)/[a-z0-9._-]+", p) for p in hits)
+                    or len(set(hits)) != len(hits)):
+                raise ValueError("invalid daemon page ranks")
+    return results
+
+
+def recall(worktree, parent, commit, justification, env, socket_path=None):
     """Record 1-based ranks (None means absent from the first ten results)."""
     edits = changes(worktree, parent, commit)
     redirects = {old: new for flag, old, new in edits if flag.startswith("R")}
@@ -131,7 +170,8 @@ def recall(worktree, parent, commit, justification, env):
     current = set(filter(None, git(worktree, "ls-tree", "-r", "--name-only", "-z",
                                   commit, "--", "pages/").split("\0")))
     probes, problems = [], []
-    for change in changed_texts(worktree, parent, commit):
+    texts = changed_texts(worktree, parent, commit)
+    for change in texts:
         old, new = change["old_path"], change["new_path"]
         source = old or new
         if not safe_page(source, projects=True):
@@ -146,7 +186,8 @@ def recall(worktree, parent, commit, justification, env):
             raise ValueError(f"{source}: {error}") from error
         for query in source_queries:
             probes.append({"page": source, "expected_page": expected, "query": query,
-                           "parent_rank": None, "commit_rank": None})
+                           "parent_rank": None, "commit_rank": None,
+                           "parent_dense": None, "commit_dense": None})
             if expected is None:
                 problems.append(f"{source}: deleted page has queries but no surviving redirect target")
             elif old and old != expected and query not in moved_queries:
@@ -176,8 +217,40 @@ def recall(worktree, parent, commit, justification, env):
         finally:
             git(worktree, "checkout", "--detach", "--force", commit)
         rank_all("commit_rank", "expected_page")
+    dense = "ok"
+    try:
+        if socket_path is None:
+            raise ValueError("no socket configured")
+        if probes:
+            # Remove both ends of renames, including a destination already in the live index.
+            paths = {p[key] for p in texts for key in ("old_path", "new_path") if p[key]}
+            states = {name: dict.fromkeys(sorted(paths)) for name in ("parent", "commit")}
+            for change in texts:
+                if change["old_path"]:
+                    states["parent"][change["old_path"]] = change["old"]
+                if change["new_path"]:
+                    states["commit"][change["new_path"]] = change["new"]
+            distinct = list(dict.fromkeys(p["query"] for p in probes))
+            ranks = dense_ranks(socket_path, distinct, states)
+            positions = {query: i for i, query in enumerate(distinct)}
+            for probe in probes:
+                for state, path_key in (("parent", "page"), ("commit", "expected_page")):
+                    hits = ranks[state][positions[probe["query"]]]
+                    path = probe[path_key]
+                    page_id = path[6:-3] if path else None
+                    probe[state + "_dense"] = hits.index(page_id) + 1 if page_id in hits else None
+    except (OSError, ValueError, RecursionError) as error:
+        dense = f"unavailable: {error}"
+
     for probe in probes:
         before, after = probe["parent_rank"], probe["commit_rank"]
-        if before is not None and before <= 3 and (after is None or after > 3):
-            problems.append(f"{probe['page']}: query {probe['query']!r} fell out of the top 3")
-    return {"accept": not problems, "probes": probes, "problems": problems}
+        before_dense, after_dense = probe["parent_dense"], probe["commit_dense"]
+        found_before = any(rank is not None and rank <= 3 for rank in (before, before_dense))
+        found_after = any(rank is not None and rank <= 3 for rank in (after, after_dense))
+        if found_before and not found_after:
+            problems.append(f"{probe['page']}: query {probe['query']!r} fell out of the top 3 "
+                            f"(bm25 {before}→{after}, dense {before_dense}→{after_dense})")
+    result = {"accept": not problems, "probes": probes, "problems": problems, "dense": dense}
+    if dense != "ok":
+        result["ungated"] = [p for p in probes if p["parent_rank"] is None]
+    return result

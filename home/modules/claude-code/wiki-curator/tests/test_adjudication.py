@@ -86,7 +86,7 @@ class AdjudicationTests(RepoTest):
         stage = result["gates"]["adjudicate"]
         self.assertTrue(stage["accept"])
         self.assertTrue(stage["second_review"]["accept"])
-        self.assertEqual(set(stage["gates"]), {"scope", "broken-links", "check", "preservation", "recall", "codex"})
+        self.assertEqual(set(stage["gates"]), {"scope", "broken-links", "check", "preservation", "invented", "recall", "codex"})
         self.assertTrue(all(gate["accept"] for gate in stage["gates"].values()))
         self.assertEqual(git(self.wiki, "rev-parse", result["commit"] + "^").strip(), result["parent_commit"])
         self.assertNotEqual(stage["original_commit"], result["commit"])

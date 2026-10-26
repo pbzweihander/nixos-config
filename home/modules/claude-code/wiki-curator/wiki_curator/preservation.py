@@ -23,6 +23,11 @@ FILENAME = re.compile(
 UPPER_SNAKE = re.compile(r"(?<!\w)[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+(?!\w)")
 SNAKE = re.compile(r"(?<!\w)[a-z][a-z0-9]*(?:_[a-z][a-z0-9]*)+(?!\w)")
 ERROR_CODE = re.compile(r"(?<!\w)(?:E[0-9]{2,4}|HTTP[0-9]{3})(?!\w)")
+ERROR_LINE = re.compile(
+    r"error\[E\d+\]:|\b[A-Z][A-Za-z0-9]*(?:Error|Exception):|\bpanicked at\b|"
+    r"^\s*fatal:|Traceback \(most recent call last\)"
+)
+ERROR_LINE_START = re.compile(r"(?:thread (?:'[^'\n]*' )?)?(?:" + ERROR_LINE.pattern + ")")
 LIST_MARKER = re.compile(r"^[ \t]*(?:>[ \t]*)?[0-9]+[.)](?=\s)")
 
 
@@ -61,6 +66,14 @@ def tokens(text):
     result, fence = set(), ""
     for line, fact_line in zip(text.splitlines(keepends=True), facts.splitlines(keepends=True)):
         marker = re.match(r"^[ \t]*(?:>[ \t]*)?(`{3,}|~{3,})(.*)$", line)
+        # Whole lines only for pasted output: a fenced line, or one that is the error itself.
+        # Prose that mentions an error would turn every rewording into a lost fact;
+        # its inline code spans are kept below.
+        error_line = re.sub(r"^\s*(?:(?:>\s*|[-+*]\s+|\d+[.)]\s+))*", "", line)
+        error_line = error_line.strip().strip("`").strip()
+        if (ERROR_LINE.search(error_line) if fence and not marker
+                else ERROR_LINE_START.match(error_line)):
+            result.add(error_line[:128])
         if marker:
             if not fence:
                 fence = marker[1]
@@ -108,8 +121,7 @@ def load_justification(path):
     return validate_justification(strict_json(path.read_text()))
 
 
-def preserved(repo, parent, commit, justification):
-    """Return sorted missing tokens; raises on malformed/cyclic redirects."""
+def link_normalizer(repo, parent, commit, justification):
     validate_justification(justification)
     redirects = {
         old[6:-3]: new[6:-3]
@@ -135,8 +147,24 @@ def preserved(repo, parent, commit, justification):
 
     for target in redirects:
         normalize(f"[[{target}]]")
+    return normalize
+
+
+def preserved(repo, parent, commit, justification):
+    """Return sorted missing tokens; raises on malformed/cyclic redirects."""
+    normalize = link_normalizer(repo, parent, commit, justification)
     texts = changed_texts(repo, parent, commit)
     old = set().union(*(tokens(p["old"]) for p in texts))
     new = {normalize(t) for p in texts for t in tokens(p["new"])}
     dropped = {normalize(e["token"]) for e in justification["dropped"]}
     return sorted(t for t in old if normalize(t) not in new | dropped)
+
+
+def invented(repo, parent, commit, justification):
+    """Return new fact tokens unsupported by any changed page's original text."""
+    normalize = link_normalizer(repo, parent, commit, justification)
+    texts = changed_texts(repo, parent, commit)
+    old = {normalize(t) for p in texts for t in tokens(p["old"])}
+    new = {normalize(t) for p in texts for t in tokens(p["new"])}
+    return sorted(t for t in new - old if not LINK.fullmatch(t)
+                  and not any(t.strip("`") in p["old"] for p in texts))

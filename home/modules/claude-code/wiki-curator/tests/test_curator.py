@@ -16,7 +16,7 @@ PACKAGE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PACKAGE))
 
 from wiki_curator.gitutil import changes, git, status
-from wiki_curator.preservation import preserved, tokens
+from wiki_curator.preservation import invented, preserved, tokens
 from wiki_curator.runner import Interrupted, read_state, run, summary
 from wiki_curator.selection import tags, DAY, select_tasks
 
@@ -63,9 +63,11 @@ class RepoTest(unittest.TestCase):
             "GIT_COMMITTER_EMAIL": "curator@example.invalid", "PATH": f"{self.bin}:{os.environ['PATH']}",
             "CURATOR_FIXTURE": str(self.fixture_path), "CURATOR_CALLS": str(self.calls_path),
             "CURATOR_MAIN": str(self.wiki), "CLAUDE_WIKI_DIR": str(self.wiki),
+            "CLAUDE_WIKI_SOCKET": "",
             "PYTHONPATH": str(PACKAGE), "PYTHONDONTWRITEBYTECODE": "1",
         }
-        for key in ("WIKI_CURATOR_MODEL", "WIKI_CURATOR_MAX_TASKS", "WIKI_CURATOR_ADJUDICATE", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        for key in ("WIKI_CURATOR_MODEL", "WIKI_CURATOR_MAX_TASKS", "WIKI_CURATOR_ADJUDICATE",
+                    "WIKI_CURATOR_INVENTED_GATE", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
             self.env.pop(key, None)
         self.environment = patch.dict(os.environ, self.env, clear=True)
         self.environment.start()
@@ -459,8 +461,103 @@ class PreservationTests(RepoTest):
         with self.assertRaisesRegex(ValueError, "cyclic"):
             preserved(self.wiki, parent, commit, justification(redirects={A: B, B: A}))
 
+    def test_error_lines_strip_markers_and_backticks_inside_and_outside_fences(self):
+        errors = ["error[E0123]: type mismatch", "ValueError: invalid input",
+                  "RuntimeException: broken", "thread panicked at a failed assertion",
+                  "fatal: cannot open repository", "Traceback (most recent call last):"]
+        for error in errors:
+            for text in (error, f"> - `{error}`", f"  > 2. ``{error}``  ",
+                         f"```text\n{error}\n```", f"~~~\n{error}\n~~~"):
+                with self.subTest(text=text):
+                    self.assertIn(error, tokens(page(text)))
+            self.assertIn(error, self.check_change(error, "Problem resolved."))
+        long = "ValueError: " + "x" * 150
+        self.assertIn(long[:128], tokens(long))
+        self.assertNotIn(long, tokens(long))
+        for text in ("valueerror: invalid", "Fatal: invalid", "prefix fatal: invalid",
+                     "PANICKED AT a failure", "traceback (most recent call last)",
+                     "The build fails with ValueError: invalid input when cached"):
+            self.assertEqual(tokens(text), set())
+        self.assertIn("thread 'main' panicked at src/main.rs:3:5",
+                      tokens("thread 'main' panicked at src/main.rs:3:5"))
+        # A mention in prose keeps only its inline code span, so rewording is not a loss.
+        self.assertEqual(tokens("Fails with `ValueError: bad` when cached."), {"`ValueError: bad`"})
+
+    def test_invented_uses_old_full_text_and_ignores_links_and_dropped_exemptions(self):
+        self.write(A, page("Use CamelCase and snake_case.\n", extra="note: header_identifier\n"))
+        self.write(B, page("Another page knows CrossPage.\n"))
+        parent = self.commit()
+        self.write(A, page("Use `CamelCase`, `snake_case`, `CrossPage` and `header_identifier`.\n"
+                           "See /etc/invented and 99s. [[knowledge/new-link]]\n"))
+        self.write(B, page("Another page still knows CrossPage.\n"))
+        commit = self.commit()
+        self.assertEqual(invented(self.wiki, parent, commit, justification(dropped=[
+            {"token": "/etc/invented", "reason": "not an invention exemption"}])),
+                         ["/etc/invented", "99s"])
+        with self.assertRaisesRegex(ValueError, "cyclic"):
+            invented(self.wiki, parent, commit, justification(redirects={A: B, B: A}))
+
+    def test_invented_error_line_even_when_identifiers_are_unchanged(self):
+        self.write(A, page("ValueError: old failure\n"))
+        parent = self.commit()
+        self.write(A, page("ValueError: unexpected failure\n"))
+        commit = self.commit()
+        self.assertEqual(invented(self.wiki, parent, commit, justification()),
+                         ["ValueError: unexpected failure"])
+
+
+class InventedGateTests(RepoTest):
+    def test_default_report_merges_and_reports_invented_tokens(self):
+        self.fixture["writes"][A] = page(NEW + "Use /etc/invented for 99s.\n")
+        result = self.result()
+        self.assertEqual(result["outcome"], "merged", result)
+        self.assertEqual(result["gates"]["invented"],
+                         {"accept": True, "mode": "report", "invented_tokens": ["/etc/invented", "99s"]})
+        self.assertIn('invented: ["/etc/invented", "99s"]', (self.cache / "latest.md").read_text())
+        self.assertIn('"invented_tokens": [', self.calls("codex")[0]["prompt"])
+
+    def test_reject_mode_rejects_before_recall_and_codex(self):
+        self.fixture["writes"][A] = page(NEW + "Use /etc/invented.\n")
+        with patch.dict(os.environ, {"WIKI_CURATOR_INVENTED_GATE": "reject"}):
+            result = self.result()
+        self.assertEqual(result["outcome"], "rejected", result)
+        self.assertEqual(result["reason"], "invented-token check failed")
+        self.assertEqual(result["gates"]["invented"],
+                         {"accept": False, "mode": "reject", "invented_tokens": ["/etc/invented"]})
+        self.assertNotIn("recall", result["gates"])
+        self.assertFalse(self.calls("codex"))
+        self.assert_not_retained(result)
+        self.assertIn('invented: ["/etc/invented"]', (self.cache / "latest.md").read_text())
+
+    def test_reject_mode_accepts_no_inventions(self):
+        with patch.dict(os.environ, {"WIKI_CURATOR_INVENTED_GATE": "reject"}):
+            result = self.result()
+        self.assertEqual(result["outcome"], "merged", result)
+        self.assertEqual(result["gates"]["invented"],
+                         {"accept": True, "mode": "reject", "invented_tokens": []})
+
+    def test_invalid_mode_is_a_task_error(self):
+        with patch.dict(os.environ, {"WIKI_CURATOR_INVENTED_GATE": "invalid"}):
+            result = self.result()
+        self.assertEqual(result["outcome"], "error", result)
+        self.assertIn("WIKI_CURATOR_INVENTED_GATE", result["reason"])
+        self.assertFalse(self.calls("claude"))
+
 
 class SummaryTests(unittest.TestCase):
+    def test_dense_unavailable_and_invented_are_visible_on_merged_tasks(self):
+        additions = [f"token_{n}" for n in range(25)]
+        gates = {"invented": {"accept": True, "invented_tokens": additions},
+                 "recall": {"accept": True, "dense": "unavailable: warming up", "ungated": [{}, {}]}}
+        result = {"outcome": "merged", "type": "broken-links", "pages": [A], "gates": gates}
+        text = summary({"timestamp": "now", "wiki": "/wiki", "tasks": [result]})
+        self.assertIn("invented: " + json.dumps(additions[:20]) + " (+5 more)", text)
+        self.assertNotIn('"token_20"', text)
+        self.assertIn("dense: unavailable (warming up); 2 probes ungated", text)
+        gates["adjudicate"] = {"accept": True, "verdict": "revise", "gates": {"invented": gates["invented"]}}
+        text = summary({"timestamp": "now", "wiki": "/wiki", "tasks": [result]})
+        self.assertIn("revised invented: ", text)
+
     def test_missing_tokens_are_json_encoded_and_capped_at_twenty(self):
         missing = ['`quoted "token"`', "줄\n바꿈", *[str(n) for n in range(23)]]
         result = {"outcome": "rejected", "type": "broken-links", "pages": [A],

@@ -12,7 +12,7 @@ import threading
 import time
 
 from .core import (CPU_MODEL, Snapshot, Thresholds, cache_path, load_snapshot,
-                   read_catalog, refresh_snapshot, retrieve, save_snapshot, similar, pairs)
+                   read_catalog, refresh_snapshot, retrieve, save_snapshot, similar, pairs, probe)
 from .models import Models
 from .policy import TierPolicy, read_gpu
 from .protocol import MAX_LINE, decode_request, encode_message
@@ -342,7 +342,10 @@ class Daemon:
                 tier.users += 1
             try:
                 with self._activity(name == "gpu"):
-                    if request["op"] == "similar":
+                    if request["op"] == "probe":
+                        results = probe(snapshot, tier.model, request["queries"], request["n"],
+                                        request["states"])
+                    elif request["op"] == "similar":
                         results = similar(snapshot, tier.model, request["text"],
                                           request["exclude"], request["n"], request["min"])
                     elif request["op"] == "pairs":

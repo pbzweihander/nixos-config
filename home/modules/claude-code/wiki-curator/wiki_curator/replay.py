@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 
 from .gitutil import git
-from .preservation import preserved, strict_json, validate_justification
+from .preservation import invented, preserved, strict_json, validate_justification
 
 
 def commit_justification(message):
@@ -26,13 +26,14 @@ def replay(repo, *, all_refs=False):
         # --grep also searches bodies; only curator subjects identify candidates.
         if not subject.startswith("curator:"):
             continue
-        result = {"commit": commit, "subject": subject, "missing": [], "error": None}
+        result = {"commit": commit, "subject": subject, "missing": [], "invented": [], "error": None}
         try:
             parents = git(repo, "show", "-s", "--format=%P", commit).split()
             if not parents:
                 raise ValueError("curator commit has no parent")
             explanation = commit_justification(git(repo, "show", "-s", "--format=%b", commit))
             result["missing"] = preserved(repo, parents[0], commit, explanation)
+            result["invented"] = invented(repo, parents[0], commit, explanation)
         except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
             result["error"] = str(error)
         yield result
@@ -44,14 +45,19 @@ def main(argv=None):
     parser.add_argument("--all", action="store_true", dest="all_refs",
                         help="include all refs, including retained rejected/deferred candidates")
     args = parser.parse_args(argv)
-    checked = failed = 0
+    checked = failed = additions = 0
     for result in replay(args.repo.resolve(), all_refs=args.all_refs):
         checked += 1
         if result["missing"] or result["error"]:
             failed += 1
             reason = result["error"] or "missing tokens: " + json.dumps(result["missing"], ensure_ascii=False)
             print(f"{result['commit']} {result['subject']}: {reason}")
+        if result["invented"]:
+            additions += 1
+            print(f"{result['commit']} {result['subject']}: invented: "
+                  + json.dumps(result["invented"], ensure_ascii=False))
     print(f"Checked {checked} curator commits; {failed} failed.")
+    print(f"{additions} commits with invented tokens.")
     return int(failed > 0)
 
 

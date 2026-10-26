@@ -59,6 +59,19 @@ class ReplayTests(RepoTest):
         with self.assertRaisesRegex(ValueError, "duplicate JSON key"):
             commit_justification('Justification: {"summary": "a", "summary": "b"}')
 
+    def test_invented_tokens_are_reported_without_failing_replay(self):
+        original = (self.wiki / A).read_text()
+        self.write(A, original + "Use /etc/invented.\n")
+        commit = self.curator_commit()
+        results = list(replay(self.wiki))
+        self.assertEqual(results[0]["invented"], ["/etc/invented"])
+        self.assertEqual(results[0]["missing"], [])
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(main([str(self.wiki)]), 0)
+        self.assertIn(f'{commit} curator: log-growth: simplify: invented: ["/etc/invented"]', output.getvalue())
+        self.assertIn("Checked 1 curator commits; 0 failed.\n1 commits with invented tokens.", output.getvalue())
+
     def test_all_refs_includes_retained_candidates(self):
         parent = git(self.wiki, "rev-parse", "HEAD").strip()
         self.write(A, page("Retained candidate."))

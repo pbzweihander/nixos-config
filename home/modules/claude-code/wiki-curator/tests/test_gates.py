@@ -1,16 +1,68 @@
+from contextlib import contextmanager
 import json
+import os
+import socket
 import subprocess
+import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from test_curator import A, B, DAY, REF, NEW, OLD, RepoTest, justification, page
 from wiki_curator.gitutil import changes, git, status
-from wiki_curator.recall import queries, recall
-from wiki_curator.runner import new_broken_links, read_state
+from wiki_curator.recall import dense_ranks, queries, recall
+from wiki_curator.runner import new_broken_links, read_state, recall_socket
 
 
 QUERY = "Why does the probe take time?"
 EXTRA = "queries: " + json.dumps([QUERY]) + "\n"
+
+
+@contextmanager
+def fake_daemon(path, response):
+    requests, errors = [], []
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        listener.bind(str(path))
+        listener.listen(1)
+        listener.settimeout(5)
+
+        def serve():
+            try:
+                with listener.accept()[0] as connection:
+                    connection.settimeout(5)
+                    with connection.makefile("rb") as stream:
+                        requests.append(json.loads(stream.readline()))
+                    data = response if isinstance(response, bytes) else (json.dumps(response) + "\n").encode()
+                    connection.sendall(data)
+            except Exception as error:
+                errors.append(error)
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        try:
+            yield requests
+        finally:
+            thread.join(timeout=6)
+            path.unlink()
+        if errors:
+            raise errors[0]
+
+
+class SocketTests(unittest.TestCase):
+    def test_environment_resolution(self):
+        for env, expected in (({}, None), ({"XDG_RUNTIME_DIR": "/runtime"}, "/runtime/claude-wiki/embed.sock"),
+                              ({"XDG_RUNTIME_DIR": "/runtime", "CLAUDE_WIKI_SOCKET": ""}, None),
+                              ({"XDG_RUNTIME_DIR": "/runtime", "CLAUDE_WIKI_SOCKET": "/custom"}, "/custom")):
+            with self.subTest(env=env), patch.dict(os.environ, env, clear=True):
+                self.assertEqual(recall_socket(), expected)
+
+    def test_dense_timeout_is_120_seconds(self):
+        with patch("wiki_curator.recall.socket.socket") as factory:
+            connection = factory.return_value.__enter__.return_value
+            connection.connect.side_effect = socket.timeout("timed out")
+            with self.assertRaises(socket.timeout):
+                dense_ranks("/fake", [QUERY], {"parent": {}, "commit": {}})
+            connection.settimeout.assert_called_once_with(120)
 
 
 class QueryTests(unittest.TestCase):
@@ -46,11 +98,11 @@ class RecallTests(RepoTest):
         self.fixture["parent_commit"] = parent
         return parent
 
-    def gate(self, parent, commit, redirects=None):
+    def gate(self, parent, commit, redirects=None, socket_path=None):
         self.save_fixture()
         try:
             return recall(self.wiki, parent, commit, justification(redirects=redirects or {}),
-                          {**self.env, "CLAUDE_WIKI_SOCKET": ""})
+                          {**self.env, "CLAUDE_WIKI_SOCKET": ""}, socket_path)
         finally:
             self.assertEqual(git(self.wiki, "rev-parse", "HEAD").strip(), commit)
             self.assertEqual(status(self.wiki), {})
@@ -69,7 +121,10 @@ class RecallTests(RepoTest):
                 result = self.gate(parent, commit)
                 self.assertEqual(result["accept"], accept, result)
                 self.assertEqual(result["probes"], [{"page": A, "expected_page": A, "query": QUERY,
-                                                      "parent_rank": before, "commit_rank": after}])
+                                                      "parent_rank": before, "commit_rank": after,
+                                                      "parent_dense": None, "commit_dense": None}])
+                self.assertEqual(result["dense"], "unavailable: no socket configured")
+                self.assertEqual(result["ungated"], result["probes"] if before is None else [])
         for call in self.calls("claude-wiki"):
             self.assertEqual(call["args"], ["search", "--json", "--no-semantic", "-n", "10", "--", *QUERY.split()])
             self.assertEqual(call["wiki"], str(self.wiki))
@@ -84,7 +139,119 @@ class RecallTests(RepoTest):
         result = self.gate(parent, commit)
         self.assertTrue(result["accept"])
         self.assertEqual(result["probes"], [{"page": B, "expected_page": B, "query": QUERY,
-                                              "parent_rank": None, "commit_rank": 1}])
+                                              "parent_rank": None, "commit_rank": 1,
+                                              "parent_dense": None, "commit_dense": None}])
+
+    def test_korean_dense_regression_and_survival_with_one_request(self):
+        query = "검색 캐시 오류를 어떻게 해결하나요?"
+        old = page(OLD, extra="queries: " + json.dumps([query, QUERY, query]) + "\n")
+        self.write(A, old)
+        parent = self.commit()
+        self.fixture["parent_commit"] = parent
+        self.write(A, page(NEW))
+        commit = self.commit()
+        for after, accept in ((["knowledge/reference", "knowledge/b", "history/c", "knowledge/a"], False),
+                              (["knowledge/b", "knowledge/a"], True), ([], False)):
+            response = {"ok": True, "tier": "gpu", "results": {
+                "parent": [["knowledge/a"], []], "commit": [after, []]}}
+            with self.subTest(after=after), fake_daemon(self.root / "embed.sock", response) as requests:
+                result = self.gate(parent, commit, socket_path=self.root / "embed.sock")
+            self.assertEqual(result["accept"], accept, result)
+            self.assertEqual(result["dense"], "ok")
+            self.assertNotIn("ungated", result)
+            rank = after.index("knowledge/a") + 1 if "knowledge/a" in after else None
+            self.assertEqual(result["probes"][0]["parent_dense"], 1)
+            self.assertEqual(result["probes"][0]["commit_dense"], rank)
+            self.assertIsNone(result["probes"][0]["parent_rank"])
+            self.assertEqual(result["probes"][2], result["probes"][0])
+            if not accept:
+                self.assertIn(f"(bm25 None→None, dense 1→{rank})", result["problems"][0])
+            self.assertEqual(requests, [{"op": "probe", "queries": [query, QUERY], "n": 10,
+                                        "states": {"parent": {A: old}, "commit": {A: page(NEW)}}}])
+
+    def test_either_method_can_keep_a_probe_in_the_top_three(self):
+        parent = self.parent()
+        self.write(A, page(NEW))
+        commit = self.commit()
+        for bm_before, bm_after, dense_before, dense_after in (([A], [], [], ["knowledge/a"]),
+                                                              ([], [A], ["knowledge/a"], [])):
+            self.fixture["search"] = {"parent": {QUERY: bm_before}, "commit": {QUERY: bm_after}}
+            response = {"ok": True, "tier": "cpu", "results": {
+                "parent": [dense_before], "commit": [dense_after]}}
+            with fake_daemon(self.root / "embed.sock", response):
+                self.assertTrue(self.gate(parent, commit, socket_path=self.root / "embed.sock")["accept"])
+
+    def test_dense_overrides_renamed_added_and_deleted_pages(self):
+        parent = self.parent()
+        old, reference = (self.wiki / A).read_text(), (self.wiki / REF).read_text()
+        added = "pages/followups/added.md"
+        git(self.wiki, "mv", A, B)
+        git(self.wiki, "rm", REF)
+        self.write(added, page("Added page.", extra=EXTRA))
+        commit = self.commit()
+        response = {"ok": True, "tier": "cpu", "results": {
+            "parent": [["knowledge/a"]], "commit": [["knowledge/b", "followups/added"]]}}
+        with fake_daemon(self.root / "embed.sock", response) as requests:
+            result = self.gate(parent, commit, socket_path=self.root / "embed.sock")
+        self.assertTrue(result["accept"], result)
+        self.assertEqual(requests[0]["states"], {
+            "parent": {A: old, B: None, REF: reference, added: None},
+            "commit": {A: None, B: old, REF: None, added: page("Added page.", extra=EXTRA)}})
+        moved = next(p for p in result["probes"] if p["page"] == A)
+        self.assertEqual((moved["expected_page"], moved["parent_dense"], moved["commit_dense"]), (B, 1, 1))
+
+    def test_unavailable_or_malformed_dense_response_falls_back_without_partial_ranks(self):
+        parent = self.parent()
+        self.write(A, page(NEW))
+        commit = self.commit()
+        response = {"ok": True, "tier": "cpu", "results": {
+            "parent": [["knowledge/a"]], "commit": [[]]}}
+        invalid = [b"not json\n", b"{}", b"[]\n", b"\xff\n", b"{\"ok\":true,\"ok\":false}\n",
+                   b"[" * 2000 + b"]" * 2000 + b"\n",
+                   {"ok": False, "error": "models/index are warming up; retry shortly"},
+                   {"ok": 1}, {**response, "tier": "other"}, {**response, "results": []}]
+        for ranks in ([], [None], [[42]], [["pages/knowledge/a.md"]],
+                      [["knowledge/a", "knowledge/a"]], [[f"knowledge/p{i}" for i in range(11)]]):
+            invalid.append({**response, "results": {**response["results"], "commit": ranks}})
+        invalid.append({**response, "results": {"parent": [["knowledge/a"]]}})
+        for payload in invalid:
+            with self.subTest(payload=payload), fake_daemon(self.root / "embed.sock", payload):
+                result = self.gate(parent, commit, socket_path=self.root / "embed.sock")
+            self.assertTrue(result["accept"], result)
+            self.assertTrue(result["dense"].startswith("unavailable: "))
+            self.assertEqual(result["ungated"], result["probes"])
+            self.assertIsNone(result["probes"][0]["parent_dense"])
+        result = self.gate(parent, commit, socket_path=self.root / "missing.sock")
+        self.assertTrue(result["accept"], result)
+        self.assertTrue(result["dense"].startswith("unavailable: "))
+        with patch("wiki_curator.recall.dense_ranks", side_effect=socket.timeout("timed out")):
+            result = self.gate(parent, commit, socket_path=self.root / "embed.sock")
+        self.assertEqual(result["dense"], "unavailable: timed out")
+        self.fixture["search"] = {"parent": {QUERY: [A]}, "commit": {QUERY: []}}
+        result = self.gate(parent, commit, socket_path=self.root / "missing.sock")
+        self.assertFalse(result["accept"], result)
+        self.assertEqual(result["ungated"], [])
+
+    def test_runner_dense_uses_own_socket_while_cli_socket_stays_disabled(self):
+        query = "검색 캐시 오류"
+        self.write(A, page(OLD, extra="queries: " + json.dumps([query]) + "\n"))
+        parent = self.commit()
+        self.fixture["parent_commit"] = parent
+        path = self.root / "embed.sock"
+        for hits, outcome in (([], "rejected"), (["knowledge/a"], "merged")):
+            response = {"ok": True, "tier": "cpu", "results": {
+                "parent": [["knowledge/a"]], "commit": [hits]}}
+            with fake_daemon(path, response), patch.dict(os.environ, {"CLAUDE_WIKI_SOCKET": str(path)}):
+                result = self.result()
+            self.assertEqual(result["outcome"], outcome, result)
+            self.assertEqual(result["gates"]["recall"]["dense"], "ok")
+            if outcome == "rejected":
+                self.assertEqual(result["reason"], "recall check failed")
+                self.assertFalse(self.calls("codex"))
+                (self.cache / "state.json").unlink()
+        for call in self.calls("claude-wiki"):
+            if call["args"][0] == "search":
+                self.assertEqual(call["socket"], "")
 
     def test_git_rename_maps_queries_to_new_page(self):
         parent = self.parent()

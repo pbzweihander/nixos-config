@@ -16,7 +16,7 @@ import numpy as np
 
 from wiki_embed.core import (CPU_MODEL, GPU_MODEL, Chunk, Entry, Page, Section, Snapshot,
                              Thresholds, cache_path, chunk_page, load_snapshot, read_catalog,
-                             refresh_snapshot, retrieve, save_snapshot, section_for_line, similar, pairs)
+                             refresh_snapshot, retrieve, save_snapshot, section_for_line, similar, pairs, probe)
 from wiki_embed.daemon import Daemon, Server, Tier
 from wiki_embed.policy import Reading, TierPolicy, read_gpu
 from wiki_embed.protocol import MAX_LINE, decode_request, encode_message
@@ -241,6 +241,115 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual(results[0]["path"], "knowledge/p9")
         self.assertGreater(results[0]["score"], 1)
         self.assertEqual(len(retrieve(snapshot, model, "gpu", "q", "search", 50, Thresholds())), 10)
+
+
+class ProbeTests(unittest.TestCase):
+    def test_validation_bounds_names_pages_and_text(self):
+        request = {"op": "probe", "queries": ["한국어 질문", "q"], "n": 10,
+                   "states": {"parent": {"knowledge/a": "old"},
+                              "commit": {"pages/knowledge/a.md": None}}}
+        self.assertEqual(decode_request(encode_message(request)), request)
+        invalid = [{"queries": q} for q in (None, [], "q", [""], ["  "], [1], [None], ["q"] * 201)]
+        invalid += [{"n": n} for n in (None, True, 0, 101, 1.5, "1")]
+        invalid += [{"states": states} for states in (None, [], {}, {f"s{i}": {} for i in range(5)},
+                    {"a": []}, {"a": {f"knowledge/p{i}": None for i in range(51)}})]
+        invalid += [{"states": {name: {}}} for name in ("", "Parent", "0a", "a b", "a" * 33, "a\n")]
+        invalid += [{"states": {"parent": {path: "x"}}} for path in (
+            "../knowledge/a", "/pages/knowledge/a.md", "pages/knowledge/../a.md", "unknown/a", "knowledge/a/b")]
+        invalid += [{"states": {"parent": {"knowledge/a": text}}} for text in (1, False, [], {})]
+        invalid += [{"states": {"parent": {"knowledge/a": "x", "pages/knowledge/a.md": "y"}}}]
+        for override in invalid:
+            with self.subTest(override=override), self.assertRaises(ValueError):
+                decode_request(encode_message({**request, **override}))
+        for n in (1, 100):
+            valid = {**request, "n": n, "queries": ["q"] * 200,
+                     "states": {name: {f"knowledge/p{i}": "" for i in range(50)}
+                                for name in ("a", "b_2", "c-3", "d" * 32)}}
+            self.assertEqual(decode_request(encode_message(valid)), valid)
+        with self.assertRaisesRegex(ValueError, "1 MiB"):
+            decode_request(encode_message({**request, "states": {"a": {"knowledge/a": "x" * MAX_LINE}}}))
+
+    def test_overrides_deletions_additions_and_query_order_without_mutating_snapshot(self):
+        class Model(FakeModel):
+            def encode_passages(self, texts):
+                self.encoded.extend(texts)
+                return np.array([[1, 0] if "positive" in text else [0, 1] if "vertical" in text
+                                 else [-1, 0] for text in texts], dtype=np.float32)
+
+            def encode_query(self, query):
+                return np.array([1, 0] if query == "horizontal" else [0, 1], dtype=np.float32)
+
+        snapshot = example_snapshot((0.99, 0.8, -0.6))
+        before = snapshot.vectors.copy()
+        model = Model()
+        states = {"parent": {"knowledge/p0": "negative", "knowledge/p1": None, "knowledge/new": "vertical"},
+                  "commit": {"pages/knowledge/p0.md": "positive", "knowledge/p1": None, "knowledge/new": None}}
+        queries = ["horizontal", "vertical"]
+        expected = {"parent": [["knowledge/new", "knowledge/p2", "knowledge/p0"],
+                               ["knowledge/new", "knowledge/p0", "knowledge/p2"]],
+                    "commit": [["knowledge/p0", "knowledge/p2"], ["knowledge/p0", "knowledge/p2"]]}
+        self.assertEqual(probe(snapshot, model, queries, 100, states), expected)
+        self.assertEqual(probe(snapshot, model, queries, 1, states),
+                         {name: [row[:1] for row in rows] for name, rows in expected.items()})
+        np.testing.assert_array_equal(snapshot.vectors, before)
+        self.assertEqual(len(snapshot.entries), 3)
+        self.assertEqual(model.reranked, [])
+
+    def test_every_override_is_fresh_and_passages_are_batched_at_eight(self):
+        snapshot = example_snapshot((-0.9, 0.7))
+        text = "passage 0"
+        states = {"parent": {"knowledge/p0": text}, "commit": {"knowledge/p0": text}}
+        model = FakeModel()
+        self.assertEqual(probe(snapshot, model, ["q"], 10, states),
+                         {"parent": [["knowledge/p0", "knowledge/p1"]],
+                          "commit": [["knowledge/p0", "knowledge/p1"]]})
+        self.assertEqual(model.encoded, [c.text for c in chunk_page(text, "knowledge/p0")] * 2)
+        text = "word " * 1500
+        with patch.object(model, "encode_passages", wraps=model.encode_passages) as encode:
+            result = probe(Snapshot(), model, ["q"], 10, {"long": {"knowledge/a": text}})
+        self.assertEqual([len(call.args[0]) for call in encode.call_args_list], [8, 3])
+        self.assertEqual(result, {"long": [["knowledge/a"]]})
+        states = {"empty": {"knowledge/p0": None, "knowledge/p1": None}}
+        self.assertEqual(probe(snapshot, model, ["q", "q2"], 10, states), {"empty": [[], []]})
+        self.assertEqual(probe(snapshot, model, ["q"], 10, {"unchanged": {}}),
+                         {"unchanged": [["knowledge/p1", "knowledge/p0"]]})
+
+    def test_best_chunk_matches_dense_without_reranking_or_threshold(self):
+        model = FakeModel("gpu")
+        snapshot = example_snapshot((0.7, -0.8))
+        text = "word " * 200
+        vectors = np.array([[-1, 0], [1, 0]], dtype=np.float32)
+        entry = Entry(Page("pages/knowledge/new.md", 0, len(text), ()), chunk_page(text, "knowledge/new"), vectors)
+        with patch.object(model, "encode_passages", return_value=vectors):
+            result = probe(snapshot, model, ["q"], 10, {"new": {"knowledge/new": text}})
+        expected = retrieve(Snapshot([*snapshot.entries, entry]), model, "gpu", "q", "dense", 10, Thresholds(100, 100))
+        self.assertEqual(result["new"][0], [r["path"] for r in expected])
+        self.assertEqual(result["new"][0], ["knowledge/new", "knowledge/p0", "knowledge/p1"])
+        self.assertEqual(model.reranked, [])
+
+    def test_daemon_retries_all_states_on_cpu_after_late_gpu_failure(self):
+        daemon = Daemon(Path("/unused"))
+        snapshot = example_snapshot()
+        cpu, gpu = FakeModel(), FakeModel("gpu")
+        daemon.cpu, daemon.gpu = Tier("cpu", cpu, snapshot), Tier("gpu", gpu, snapshot)
+        request = {"op": "probe", "queries": ["q", "한국어"], "n": 10,
+                   "states": {"parent": {"knowledge/p0": "old"}, "commit": {"knowledge/p0": "new"}}}
+        with patch.object(gpu, "encode_passages", side_effect=[np.array([[-1, 0]], dtype=np.float32),
+                                                              RuntimeError("GPU failure")]), self.assertLogs("wiki-embed"):
+            response = daemon.handle(decode_request(encode_message(request)))
+        self.assertEqual(response, {"ok": True, "tier": "cpu", "results": {
+            "parent": [["knowledge/p0", "knowledge/p1"]] * 2,
+            "commit": [["knowledge/p0", "knowledge/p1"]] * 2}})
+        self.assertEqual(cpu.encoded, ["knowledge/p0. old", "knowledge/p0. new"])
+        self.assertIs(daemon.cpu.snapshot, snapshot)
+        self.assertEqual(daemon.cpu.users, 0)
+        self.assertIsNone(daemon.gpu)
+        daemon.gpu = Tier("gpu", FakeModel("gpu"), snapshot)
+        self.assertEqual(daemon.handle(request)["tier"], "gpu")
+        self.assertEqual(daemon.gpu.model.reranked, [])
+        self.assertEqual(daemon.gpu.users, 0)
+        with self.assertRaisesRegex(RuntimeError, "warming up"):
+            Daemon(Path("/unused")).handle(request)
 
 
 class PageSimilarityTests(unittest.TestCase):
