@@ -68,6 +68,7 @@ impl Wiki {
         command
             .args(args)
             .env("CLAUDE_WIKI_DIR", self.0.join("wiki"))
+            .env("CLAUDE_WIKI_SESSIONS_DIRS", self.0.join("transcripts"))
             .env("CLAUDE_WIKI_SKILL_DIRS", self.0.join("skills"))
             .env("CLAUDE_WIKI_SOCKET", self.0.join("embed.sock"))
             .env("CLAUDE_WIKI_SEMANTIC_TIMEOUT_MS", "1000")
@@ -308,6 +309,7 @@ fn json_search_fuses_keyword_and_dense_results() {
     assert_eq!(request, json!({"op":"dense","query":"foo","n":40}));
     let report: Value = serde_json::from_str(&output).unwrap();
     assert_eq!(report["dense"], "ok");
+    assert_eq!(report["lexical"], true);
     assert!(report.get("dense_error").is_none());
     let hits = report["hits"].as_array().unwrap();
     assert_eq!(hits.len(), 3);
@@ -691,7 +693,7 @@ fn opt_out_empty_or_unset_socket_skip_daemon() {
 #[test]
 fn dense_search_renders_pages_and_supplied_section() {
     let wiki = Wiki::new();
-    let (output, request) = wiki.respond(
+    let (output, request) = wiki.respond_output(
         &["search", "unmatchedmeaning", "anotherquery", "-n", "1"],
         "",
         json!({"ok": true, "tier": "gpu", "results": [
@@ -704,7 +706,13 @@ fn dense_search_renders_pages_and_supplied_section() {
         request,
         json!({"op": "dense", "query": "unmatchedmeaning anotherquery", "n": 40})
     );
-    let lines: Vec<_> = output.lines().collect();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "note: no keyword match; these results match by meaning only. If none fits, try claude-wiki sessions <terms>.\n"
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<_> = stdout.lines().collect();
     assert_eq!(
         lines[0],
         format!(

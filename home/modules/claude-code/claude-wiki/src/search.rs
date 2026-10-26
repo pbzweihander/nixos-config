@@ -310,12 +310,66 @@ pub fn search(
     if query.is_empty() {
         bail!("no search terms");
     }
-    let (mut rows, dense) = ranked(db, &query, &terms.join(" "), n, filters, no_semantic)?;
-    if !json && let DenseStatus::Unavailable(reason) = &dense {
-        eprintln!("note: dense retrieval unavailable ({reason}); results are BM25 only");
+    let (rows, dense) = ranked(db, &query, &terms.join(" "), n, filters, no_semantic)?;
+    render(
+        root,
+        db,
+        &query,
+        SearchOutput::new(rows, dense, n),
+        json,
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    )
+}
+
+struct SearchOutput {
+    rows: Vec<SearchHit>,
+    dense: DenseStatus,
+    lexical: bool,
+}
+
+impl SearchOutput {
+    fn new(mut rows: Vec<SearchHit>, dense: DenseStatus, n: i64) -> Self {
+        // Fusion keeps every BM25 candidate; check before limiting printed hits.
+        let lexical = rows.iter().any(|hit| hit.bm25_rank.is_some());
+        if n >= 0 {
+            rows.truncate(n as usize);
+        }
+        Self {
+            rows,
+            dense,
+            lexical,
+        }
     }
-    if n >= 0 {
-        rows.truncate(n as usize);
+}
+
+fn render(
+    root: &Path,
+    db: &Connection,
+    query: &str,
+    results: SearchOutput,
+    json: bool,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<()> {
+    let SearchOutput {
+        rows,
+        dense,
+        lexical,
+    } = results;
+    if !json {
+        if let DenseStatus::Unavailable(reason) = &dense {
+            writeln!(
+                err,
+                "note: dense retrieval unavailable ({reason}); results are BM25 only"
+            )?;
+        }
+        if !lexical && rows.iter().any(|hit| hit.dense_rank.is_some()) {
+            writeln!(
+                err,
+                "note: no keyword match; these results match by meaning only. If none fits, try claude-wiki sessions <terms>."
+            )?;
+        }
     }
     let json_root = if json {
         Some(root.canonicalize()?)
@@ -323,7 +377,6 @@ pub fn search(
         None
     };
     let mut hits = vec![];
-    let mut out = std::io::stdout().lock();
     if rows.is_empty() && !json {
         let total: i64 = db.query_row("select count(*) from files", [], |r| r.get(0))?;
         writeln!(out, "no pages match {query} ({total} pages in the wiki)")?;
@@ -333,7 +386,7 @@ pub fn search(
         let section = if !hit.row.blocked.is_empty() {
             None
         } else if hit.bm25_rank.is_some() {
-            best_section(db, &hit.row.path, &query)
+            best_section(db, &hit.row.path, query)
         } else {
             hit.section
         };
@@ -341,7 +394,7 @@ pub fn search(
             hits.push(json_hit(root, &hit.row, &hit.snippet, section, via));
         } else {
             show(
-                &mut out,
+                out,
                 root,
                 &hit.row,
                 Some(hit.snippet),
@@ -351,7 +404,7 @@ pub fn search(
         }
     }
     if json {
-        let mut report = json!({"hits": hits, "dense": dense.name()});
+        let mut report = json!({"hits": hits, "dense": dense.name(), "lexical": lexical});
         if let DenseStatus::Unavailable(reason) = dense {
             report["dense_error"] = reason.into();
         }
@@ -524,6 +577,143 @@ mod tests {
                 "knowledge/dense-z"
             ]
         );
+    }
+
+    #[test]
+    fn json_lexical_uses_filtered_bm25_candidates() -> Result<()> {
+        let mut wiki = crate::usage::tests::Wiki::new()?;
+        wiki.page(
+            "pages/knowledge/cache.md",
+            "---\ntitle: Cache\ntags: [cache]\n---\nbody",
+        )?;
+        wiki.page(
+            "pages/knowledge/meaning.md",
+            "---\ntitle: Meaning\ntags: [other]\n---\nbody",
+        )?;
+        for (term, tag, lexical) in [
+            ("cache", None, true),
+            ("cache", Some("other"), false),
+            ("missing", None, false),
+        ] {
+            let query = fts_query(&[term.into()]);
+            let filters = Filters {
+                tag: tag.map(String::from),
+                ..Filters::default()
+            };
+            for no_semantic in [false, true] {
+                let (rows, dense) = if no_semantic {
+                    ranked(&wiki.index, &query, term, 1, &filters, true)?
+                } else {
+                    (
+                        fuse(
+                            &wiki.index,
+                            bm25(&wiki.index, &query, CANDIDATES, &filters)?,
+                            vec![crate::semantic::Hit {
+                                path: "knowledge/meaning".into(),
+                                section: None,
+                            }],
+                            &filters,
+                        )?,
+                        DenseStatus::Ok,
+                    )
+                };
+                let mut out = vec![];
+                let mut err = vec![];
+                render(
+                    &wiki.root,
+                    &wiki.index,
+                    &query,
+                    SearchOutput::new(rows, dense, 1),
+                    true,
+                    &mut out,
+                    &mut err,
+                )?;
+                let report: serde_json::Value = serde_json::from_slice(&out)?;
+                assert_eq!(report["lexical"], lexical);
+                assert_eq!(report["dense"], if no_semantic { "disabled" } else { "ok" });
+                assert_eq!(
+                    report["hits"].as_array().unwrap().len(),
+                    usize::from(lexical || !no_semantic)
+                );
+                if !lexical && !no_semantic {
+                    assert_eq!(report["hits"][0]["via"], "dense");
+                    assert_eq!(report["hits"][0]["semantic"], true);
+                }
+                assert!(err.is_empty());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn keyword_miss_note_only_accompanies_printed_dense_hits() -> Result<()> {
+        let wiki = crate::usage::tests::Wiki::new()?;
+        let note = "note: no keyword match; these results match by meaning only. If none fits, try claude-wiki sessions <terms>.\n";
+        let unavailable = "note: dense retrieval unavailable (offline); results are BM25 only\n";
+        for (rows, dense, n, expected, meaning) in [
+            (
+                vec![hit("knowledge/dense", None, Some(1))],
+                DenseStatus::Ok,
+                1,
+                note,
+                true,
+            ),
+            (
+                vec![hit("knowledge/dense", None, Some(1))],
+                DenseStatus::Ok,
+                0,
+                "",
+                false,
+            ),
+            (vec![], DenseStatus::Ok, 5, "", false),
+            (vec![], DenseStatus::Disabled, 5, "", false),
+            (
+                vec![hit("knowledge/bm25", Some(1), None)],
+                DenseStatus::Disabled,
+                5,
+                "",
+                false,
+            ),
+            (
+                vec![hit("knowledge/both", Some(1), Some(1))],
+                DenseStatus::Ok,
+                5,
+                "",
+                false,
+            ),
+            (
+                vec![
+                    hit("knowledge/dense", None, Some(1)),
+                    hit("knowledge/bm25", Some(2), None),
+                ],
+                DenseStatus::Ok,
+                1,
+                "",
+                true,
+            ),
+            (
+                vec![],
+                DenseStatus::Unavailable("offline".into()),
+                5,
+                unavailable,
+                false,
+            ),
+        ] {
+            let mut out = vec![];
+            let mut err = vec![];
+            render(
+                &wiki.root,
+                &wiki.index,
+                "query",
+                SearchOutput::new(rows, dense, n),
+                false,
+                &mut out,
+                &mut err,
+            )?;
+            assert_eq!(String::from_utf8(err)?, expected);
+            assert_eq!(String::from_utf8(out)?.contains(" (meaning)"), meaning);
+        }
+        Ok(())
     }
 
     #[test]

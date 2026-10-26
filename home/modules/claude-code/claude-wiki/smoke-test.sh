@@ -50,7 +50,7 @@ out=$(printf 'free text' | "$wiki" related --json --cwd /)
 out=$("$wiki" injections --session missing --json)
 [ "$out" = '{"pages":[]}' ] || fail "injections without usage database" injections "$out"
 out=$("$wiki" search semanticnomatch --json)
-[ "$out" = "{\"dense\":\"unavailable\",\"dense_error\":\"cannot connect to $CLAUDE_WIKI_SOCKET\",\"hits\":[]}" ] || fail "JSON search without daemon" search "$out"
+[ "$out" = "{\"dense\":\"unavailable\",\"dense_error\":\"cannot connect to $CLAUDE_WIKI_SOCKET\",\"hits\":[],\"lexical\":false}" ] || fail "JSON search without daemon" search "$out"
 out=$("$wiki" search semanticnomatch 2>"$HOME/search.stderr")
 [ "$out" = 'no pages match "semanticnomatch"* (0 pages in the wiki)' ] || fail "no daemon preserves search stdout" search "$out"
 check "no daemon reports unavailable" "note: dense retrieval unavailable (cannot connect to $CLAUDE_WIKI_SOCKET); results are BM25 only" cat "$HOME/search.stderr"
@@ -122,6 +122,7 @@ nothing to see
 the phrase parrot appears here
 EOF
 check "section heading and lines" '§ Second section (lines 8-9)' "$wiki" search parrot
+check "JSON search keyword match" '"lexical":true' "$wiki" search parrot --json
 check "JSON search result" '"rel":"pages/knowledge/sectioned.md"' "$wiki" search parrot --json
 check "JSON search section" '"section":{"end":9,"heading":"Second section","start":8}' "$wiki" search parrot --json
 check_not "a page without headings has no section line" '§' "$wiki" search --tag postgres replica
@@ -255,6 +256,8 @@ check "worktree project mapping" 'session fixture-session  (demo,' "$wiki" sessi
 check "project filter" 'no sessions match' "$wiki" sessions orbital --project other
 check "excluded session" 'no sessions match' "$wiki" sessions orbital --exclude-session fixture-session
 check "environment excludes current session" 'no sessions match' env CLAUDE_SESSION_ID=fixture-session "$wiki" sessions orbital
+printf '%s\n' '{"type":"user","entrypoint":"sdk-cli","sessionId":"scripted-session","uuid":"scripted","timestamp":"2026-09-16T12:00:00Z","message":{"content":"scriptedhiddenonly"}}' >"$sessions_dir/project/scripted.jsonl"
+check "scripted user messages are skipped" 'no sessions match' "$wiki" sessions scriptedhiddenonly --role user
 for word in resulthiddenonly thinkinghiddenonly toolusehiddenonly metahiddenonly sidehiddenonly commandhiddenonly missinghiddenonly nestedhiddenonly; do
   check "skip $word" 'no sessions match' "$wiki" sessions "$word"
 done
@@ -508,6 +511,8 @@ sed 's/usage-fixture-read/usage-fixture-read-next/g' "$fixtures/usage.jsonl" >>"
 check "lint incrementally scans appended reads" '"read_sessions":1,"reads":2' "$wiki" lint --json
 check "stats scans subagent wiki access" 'knowledge: .*1 cross-session' "$wiki" stats
 check "stats JSON" '"cross_session_read":1' "$wiki" stats --json
+check "stats scripted coverage" '1 scripted sessions excluded' "$wiki" stats
+check "stats JSON scripted coverage" '"scripted_sessions":1' "$wiki" stats --json
 "$wiki" skill-pages codex-implement --cwd "$HOME/demo-worktree" --session stats-custom --source skill-prompt >/dev/null
 check "stats includes custom source in text" '^skill-prompt: 1 injections,' "$wiki" stats
 check "stats includes custom source in JSON" '"skill-prompt":{"injections":1,' "$wiki" stats --json

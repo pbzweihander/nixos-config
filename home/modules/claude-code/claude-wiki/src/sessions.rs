@@ -36,6 +36,8 @@ pub struct Args {
     pub reindex: bool,
 }
 
+const INDEX_FORMAT: i64 = 1;
+
 pub fn source_dirs() -> Result<Vec<PathBuf>> {
     let fallback = env_path("CLAUDE_CONFIG_DIR")
         .unwrap_or_else(|| home().join(".claude"))
@@ -160,6 +162,7 @@ fn parse(line: &[u8]) -> Option<Message> {
     if !["user", "assistant"].contains(&role)
         || value["isSidechain"] == true
         || value["isMeta"] == true
+        || value["entrypoint"] == "sdk-cli"
     {
         return None;
     }
@@ -196,7 +199,8 @@ fn parse(line: &[u8]) -> Option<Message> {
 }
 
 fn initialize(db: &Connection) -> Result<()> {
-    db.execute_batch("create table if not exists transcripts(path text primary key, offset integer, size integer, mtime_ns integer);
+    db.execute_batch("create table if not exists state(key text primary key, value integer);
+        create table if not exists transcripts(path text primary key, offset integer, size integer, mtime_ns integer);
         create table if not exists messages(id integer primary key, session_id text, uuid text, ts text, role text, project text, branch text, path text, text text);
         create index if not exists messages_session_ts on messages(session_id, ts, id);
         create index if not exists messages_path on messages(path);
@@ -205,6 +209,22 @@ fn initialize(db: &Connection) -> Result<()> {
             insert into messages_fts(rowid, text) values (new.id, new.text); end;
         create trigger if not exists messages_ad after delete on messages begin
             insert into messages_fts(messages_fts, rowid, text) values ('delete', old.id, old.text); end;")?;
+    let version = db
+        .query_row(
+            "select value from state where key='index_format'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?;
+    if version.is_none_or(|version| version < INDEX_FORMAT) {
+        let tx = db.unchecked_transaction()?;
+        tx.execute_batch("delete from messages; delete from transcripts;")?;
+        tx.execute(
+            "insert or replace into state values ('index_format', ?)",
+            [INDEX_FORMAT],
+        )?;
+        tx.commit()?;
+    }
     let has_uuid_index: bool = db.query_row(
         "select exists(select 1 from sqlite_master where type = 'index' and name = 'messages_uuid')",
         [],
@@ -608,6 +628,95 @@ mod tests {
         assert!(messages.iter().any(|m| m.text.contains("[REDACTED]")));
         assert_eq!(project("/repos/demo/.claude/worktrees/task"), "demo");
     }
+    #[test]
+    fn scripted_messages_are_not_indexed() {
+        for role in ["user", "assistant"] {
+            let mut value = serde_json::json!({
+                "type": role, "sessionId": "scripted", "uuid": "message",
+                "timestamp": "2026-09-16T12:00:00Z",
+                "message": {"content": [{"type": "text", "text": "Reply with just: hi"}]}
+            });
+            for entrypoint in [Value::Null, "cli".into(), "sdk-cli".into()] {
+                value["entrypoint"] = entrypoint.clone();
+                assert_eq!(
+                    parse(&serde_json::to_vec(&value).unwrap()).is_some(),
+                    entrypoint != "sdk-cli"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn index_format_rebuilds_once_without_reindex() -> Result<()> {
+        let tmp = TestDir::new()?;
+        let project = tmp.0.join("project");
+        fs::create_dir(&project)?;
+        let path = project.join("session.jsonl");
+        let mut text = String::new();
+        for entrypoint in ["cli", "sdk-cli"] {
+            text += &format!(
+                "{}\n",
+                serde_json::json!({
+                    "type": "user", "entrypoint": entrypoint, "sessionId": entrypoint,
+                    "uuid": entrypoint, "timestamp": "2026-09-16T12:00:00Z",
+                    "message": {"content": format!("{entrypoint} uniqueword")}
+                })
+            );
+        }
+        fs::write(&path, text)?;
+        let (mtime, size) = index::stamp(&path.metadata()?);
+        for version in [None, Some(INDEX_FORMAT - 1)] {
+            let mut db = Connection::open_in_memory()?;
+            initialize(&db)?;
+            db.execute_batch("insert into messages(uuid, text) values ('cli', 'uniqueword'), ('sdk-cli', 'uniqueword');")?;
+            db.execute(
+                "insert into transcripts values (?, ?, ?, ?)",
+                params![path.to_str(), size, size, mtime],
+            )?;
+            if let Some(version) = version {
+                db.execute(
+                    "update state set value=? where key='index_format'",
+                    [version],
+                )?;
+            } else {
+                db.execute_batch("drop table state;")?;
+            }
+            initialize(&db)?;
+            refresh(&mut db, std::slice::from_ref(&tmp.0))?;
+            assert_eq!(
+                db.query_row("select uuid from messages", [], |r| r.get::<_, String>(0))?,
+                "cli"
+            );
+            assert_eq!(
+                db.query_row(
+                    "select count(*) from messages_fts where messages_fts match 'uniqueword'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                1
+            );
+            assert_eq!(
+                db.query_row(
+                    "select value from state where key='index_format'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                INDEX_FORMAT
+            );
+            db.execute(
+                "insert into messages(uuid, text) values ('retained', 'retained')",
+                [],
+            )?;
+            initialize(&db)?;
+            refresh(&mut db, std::slice::from_ref(&tmp.0))?;
+            assert_eq!(
+                db.query_row("select count(*) from messages", [], |r| r.get::<_, i64>(0))?,
+                2
+            );
+        }
+        Ok(())
+    }
+
     #[test]
     fn repository_metadata_is_optional_but_message_identity_is_required() {
         let mut value: Value = serde_json::from_slice(

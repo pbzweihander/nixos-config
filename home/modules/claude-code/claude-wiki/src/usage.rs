@@ -22,14 +22,15 @@ pub struct Args {
     pub json: bool,
 }
 
-const SCAN_FORMAT: i64 = 2;
+const SCAN_FORMAT: i64 = 3;
 
 fn transcript_tables(db: &Connection) -> Result<()> {
     db.execute_batch("create table if not exists tools(tool_use_id text primary key, session_id text, at integer);
         create table if not exists accesses(tool_use_id text, path text, kind text, primary key(tool_use_id, path, kind));
         create index if not exists accesses_path on accesses(path);
         create table if not exists transcripts(path text primary key, offset integer, size integer, mtime integer, fingerprint text);
-        create table if not exists sessions(session_id text primary key, first_at integer, last_at integer);")?;
+        create table if not exists sessions(session_id text primary key, first_at integer, last_at integer);
+        create table if not exists scripted_sessions(session_id text primary key);")?;
     Ok(())
 }
 
@@ -52,7 +53,7 @@ fn prepare_scan(db: &Connection) -> Result<()> {
     if version != Some(SCAN_FORMAT) {
         // Only transcript scans rebuild derived data. Hooks never discard injections.
         db.execute_batch(
-            "drop table tools; drop table accesses; drop table transcripts; drop table sessions;
+            "drop table tools; drop table accesses; drop table transcripts; drop table sessions; drop table scripted_sessions;
             delete from state where key='scanned';",
         )?;
         transcript_tables(db)?;
@@ -463,6 +464,14 @@ fn scan(root: &Path, db: &mut Connection, dirs: &[PathBuf]) -> Result<()> {
         }
         let offset = sessions::complete_lines(file.try_clone()?, offset, |line| {
             if let Ok(value) = serde_json::from_slice::<Value>(line) {
+                if value["entrypoint"] == "sdk-cli"
+                    && let Some(session) = value["sessionId"].as_str()
+                {
+                    tx.execute(
+                        "insert or ignore into scripted_sessions values (?)",
+                        [session],
+                    )?;
+                }
                 if let (Some(session), Some(at)) =
                     (value["sessionId"].as_str(), timestamp(&value["timestamp"]))
                 {
@@ -486,7 +495,7 @@ fn scan(root: &Path, db: &mut Connection, dirs: &[PathBuf]) -> Result<()> {
 }
 
 pub fn read_pages(db: &Connection, since: i64) -> Result<HashSet<String>> {
-    Ok(db.prepare("select distinct path from accesses join tools using(tool_use_id) where kind = 'read' and at >= ?")?
+    Ok(db.prepare("select distinct path from accesses join tools using(tool_use_id) where kind = 'read' and at >= ? and session_id not in (select session_id from scripted_sessions)")?
         .query_map([since], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?)
 }
 
@@ -512,7 +521,8 @@ pub fn per_page(db: &Connection, now: i64) -> Result<BTreeMap<String, PageUsage>
     let mut pages = BTreeMap::<String, PageUsage>::new();
     let mut stmt = db.prepare(
         "select path, sum(kind='read'), count(distinct case when kind='read' then session_id end),
-         max(case when kind='read' then at end) from accesses join tools using(tool_use_id) group by path",
+         max(case when kind='read' then at end) from accesses join tools using(tool_use_id)
+         where session_id not in (select session_id from scripted_sessions) group by path",
     )?;
     for row in stmt.query_map([], |r| {
         Ok((
@@ -533,7 +543,8 @@ pub fn per_page(db: &Connection, now: i64) -> Result<BTreeMap<String, PageUsage>
     let mut stmt = db.prepare(
         "select i.path, sum(not exists(select 1 from accesses a join tools t using(tool_use_id)
          where a.path=i.path and t.session_id=i.session_id and a.kind='read' and t.at>i.first_at))
-         from (select session_id, path, min(at) as first_at from injections group by session_id, path) i
+         from (select session_id, path, min(at) as first_at from injections
+         where session_id not in (select session_id from scripted_sessions) group by session_id, path) i
          group by i.path",
     )?;
     for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
@@ -582,6 +593,7 @@ struct Report {
 #[derive(Serialize)]
 struct Coverage {
     from: Option<i64>,
+    scripted_sessions: i64,
     sessions: i64,
     to: Option<i64>,
     transcripts: i64,
@@ -613,12 +625,12 @@ fn aggregate(db: &Connection, index: &Connection, since: i64, now: i64) -> Resul
     let mut sources = BTreeMap::new();
     let mut ignored = BTreeMap::<String, i64>::new();
     let mut source_names = db
-        .prepare("select distinct source from injections where at>=?")?
+        .prepare("select distinct source from injections where at>=? and session_id not in (select session_id from scripted_sessions)")?
         .query_map([since], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<HashSet<_>>>()?;
     source_names.extend(["remind", "recall-skill", "recall-failure", "context"].map(String::from));
     for source in source_names {
-        let rows = db.prepare("select i.session_id, i.path, exists(select 1 from accesses a join tools t using(tool_use_id) where a.path=i.path and t.session_id=i.session_id and a.kind='read' and t.at>i.first_at) from (select session_id, path, min(at) as first_at from injections where source=? and at>=? group by session_id, path) i")?
+        let rows = db.prepare("select i.session_id, i.path, exists(select 1 from accesses a join tools t using(tool_use_id) where a.path=i.path and t.session_id=i.session_id and a.kind='read' and t.at>i.first_at) from (select session_id, path, min(at) as first_at from injections where source=? and at>=? and session_id not in (select session_id from scripted_sessions) group by session_id, path) i")?
             .query_map(params![source, since], |r| Ok((r.get::<_, String>(1)?, r.get::<_, bool>(2)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let read = rows.iter().filter(|(_, read)| *read).count();
@@ -636,12 +648,12 @@ fn aggregate(db: &Connection, index: &Connection, since: i64, now: i64) -> Resul
         );
     }
     // Count distinct session/page suggestions across all sources for the top list.
-    let rows = db.prepare("select path, count(*) from (select i.session_id, i.path, min(i.at) as first_at from injections i where i.at>=? group by i.session_id,i.path) i where not exists(select 1 from accesses a join tools t using(tool_use_id) where a.path=i.path and t.session_id=i.session_id and a.kind='read' and t.at>i.first_at) group by path")?
+    let rows = db.prepare("select path, count(*) from (select i.session_id, i.path, min(i.at) as first_at from injections i where i.at>=? and i.session_id not in (select session_id from scripted_sessions) group by i.session_id,i.path) i where not exists(select 1 from accesses a join tools t using(tool_use_id) where a.path=i.path and t.session_id=i.session_id and a.kind='read' and t.at>i.first_at) group by path")?
         .query_map([since], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
     ignored.extend(rows);
     let read = read_pages(db, since)?;
     let ever = read_pages(db, i64::MIN)?;
-    let cross: HashSet<String> = db.prepare("select distinct a.path from accesses a join tools t using(tool_use_id) where a.kind='read' and t.at>=? and not exists(select 1 from accesses w join tools wt using(tool_use_id) where w.path=a.path and wt.session_id=t.session_id and w.kind='write')")?
+    let cross: HashSet<String> = db.prepare("select distinct a.path from accesses a join tools t using(tool_use_id) where a.kind='read' and t.at>=? and t.session_id not in (select session_id from scripted_sessions) and not exists(select 1 from accesses w join tools wt using(tool_use_id) where w.path=a.path and wt.session_id=t.session_id and w.kind='write')")?
         .query_map([since], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
     let mut types = BTreeMap::new();
     let mut titles = BTreeMap::new();
@@ -684,14 +696,17 @@ fn aggregate(db: &Connection, index: &Connection, since: i64, now: i64) -> Resul
         })
         .collect();
     let (sessions, first, last): (i64, Option<i64>, Option<i64>) = db.query_row(
-        "select count(*), min(max(first_at, ?)), max(last_at) from sessions where last_at >= ?",
+        "select count(*), min(max(first_at, ?)), max(last_at) from sessions where last_at >= ? and session_id not in (select session_id from scripted_sessions)",
         params![since, since],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
     let transcripts: i64 = db.query_row("select count(*) from transcripts", [], |r| r.get(0))?;
+    let scripted_sessions =
+        db.query_row("select count(*) from scripted_sessions", [], |r| r.get(0))?;
     Ok(Report {
         coverage: Coverage {
             from: first,
+            scripted_sessions,
             sessions,
             to: last,
             transcripts,
@@ -745,11 +760,12 @@ pub fn run(root: &Path, index: &Connection, args: &Args) -> Result<()> {
             .map_or_else(|| "none".into(), |d| d.to_rfc3339())
     };
     println!(
-        "scanned: {} transcripts, {} sessions; {} to {}",
+        "scanned: {} transcripts, {} sessions; {} to {}; {} scripted sessions excluded",
         span.transcripts,
         span.sessions,
         time(span.from),
-        time(span.to)
+        time(span.to),
+        span.scripted_sessions
     );
     Ok(())
 }
@@ -798,6 +814,7 @@ pub(crate) mod tests {
         let mut report = Report {
             coverage: Coverage {
                 from: Some(10),
+                scripted_sessions: 1,
                 sessions: 2,
                 to: Some(20),
                 transcripts: 3,
@@ -839,7 +856,7 @@ pub(crate) mod tests {
         assert_eq!(
             serde_json::to_string(&report)?,
             concat!(
-                r#"{"coverage":{"from":10,"sessions":2,"to":20,"transcripts":3},"#,
+                r#"{"coverage":{"from":10,"scripted_sessions":1,"sessions":2,"to":20,"transcripts":3},"#,
                 r#""injected_without_read":[{"count":2,"path":"a","title":"A"}],"since":10,"#,
                 r#""sources":{"context":{"injections":0,"rate":0.0,"read_later":0},"remind":{"injections":2,"rate":0.5,"read_later":1}},"#,
                 r#""types":{"knowledge":{"cross_session_read":1,"ever_read":2,"older_than_14d_unread":3,"pages":5}}}"#,
@@ -847,6 +864,7 @@ pub(crate) mod tests {
         );
         report.coverage = Coverage {
             from: None,
+            scripted_sessions: 0,
             sessions: 0,
             to: None,
             transcripts: 0,
@@ -857,7 +875,7 @@ pub(crate) mod tests {
         report.types.clear();
         assert_eq!(
             serde_json::to_string(&report)?,
-            r#"{"coverage":{"from":null,"sessions":0,"to":null,"transcripts":0},"injected_without_read":[],"since":null,"sources":{},"types":{}}"#
+            r#"{"coverage":{"from":null,"scripted_sessions":0,"sessions":0,"to":null,"transcripts":0},"injected_without_read":[],"since":null,"sources":{},"types":{}}"#
         );
         Ok(())
     }
@@ -1178,6 +1196,123 @@ pub(crate) mod tests {
             db.query_row("select count(*) from tools", [], |r| r.get::<_, i64>(0))?,
             2
         );
+        Ok(())
+    }
+
+    #[test]
+    fn scripted_sessions_exclude_prior_accesses_and_hook_injections() -> Result<()> {
+        let mut wiki = Wiki::new()?;
+        let paths: Vec<_> = ["shared", "authored", "unread", "written"]
+            .map(|slug| format!("pages/knowledge/{slug}.md"))
+            .into();
+        for path in &paths {
+            wiki.page(path, "---\ntitle: Test\ncreated: 2020-01-01\n---\nbody")?;
+        }
+        let dirs = vec![wiki.root.join("transcripts")];
+        let project = dirs[0].join("project");
+        fs::create_dir_all(&project)?;
+        let main = project.join("main.jsonl");
+        let mut file = File::create(&main)?;
+        for (id, name, path) in [
+            ("read-shared", "Read", &paths[0]),
+            ("read-authored", "Read", &paths[1]),
+            ("write-authored", "Write", &paths[1]),
+        ] {
+            let mut value = line(id, name, json!({"file_path": wiki.root.join(path)}));
+            value["entrypoint"] = "cli".into();
+            writeln!(file, "{value}")?;
+        }
+        log(
+            &wiki.root,
+            "parent",
+            "remind",
+            &[paths[0].clone(), paths[2].clone()],
+        );
+        let mut db = open(&wiki.root)?;
+        db.execute("update injections set at=1", [])?;
+        scan(&wiki.root, &mut db, &dirs)?;
+        let now = 1800000000;
+        let expected_usage = per_page(&db, now)?;
+        let expected_reads = read_pages(&db, i64::MIN)?;
+        let mut expected = aggregate(&db, &wiki.index, i64::MIN, now)?;
+        assert_eq!(expected.types["knowledge"].cross_session_read, 1);
+        assert_eq!(expected.types["knowledge"].older_than_14d_unread, 2);
+
+        let subagents = project.join("scripted/subagents");
+        fs::create_dir_all(&subagents)?;
+        let mut agent = File::create(subagents.join("agent.jsonl"))?;
+        for (id, name, path) in [
+            ("scripted-read-shared", "Read", &paths[0]),
+            ("scripted-write-shared", "Write", &paths[0]),
+            ("scripted-read-unread", "Read", &paths[2]),
+            ("scripted-write-only", "Write", &paths[3]),
+        ] {
+            let mut value = line(id, name, json!({"file_path": wiki.root.join(path)}));
+            value["sessionId"] = "scripted".into();
+            value["timestamp"] = "2026-10-01T00:00:00Z".into();
+            writeln!(agent, "{value}")?;
+        }
+        log(&wiki.root, "scripted", "remind", &paths);
+        log(&wiki.root, "hook-only", "scripted-source", &paths);
+        scan(&wiki.root, &mut db, &dirs)?;
+        assert_eq!(read_pages(&db, i64::MIN)?.len(), 3);
+        // Markers need neither a timestamp nor a tool call, and may arrive later.
+        for _ in 0..2 {
+            writeln!(
+                agent,
+                "{}",
+                json!({"sessionId": "scripted", "entrypoint": "sdk-cli"})
+            )?;
+        }
+        writeln!(
+            file,
+            "{}",
+            json!({"sessionId": "hook-only", "entrypoint": "sdk-cli"})
+        )?;
+        scan(&wiki.root, &mut db, &dirs)?;
+        expected.coverage.transcripts = 2;
+        expected.coverage.scripted_sessions = 2;
+        let expected_json = serde_json::to_value(&expected)?;
+        for since in [i64::MIN, 2] {
+            let report = aggregate(&db, &wiki.index, since, now)?;
+            assert_eq!(report.coverage.scripted_sessions, 2);
+            assert_eq!(report.coverage.sessions, 1);
+            assert_eq!(report.types["knowledge"].ever_read, 2);
+            assert_eq!(report.types["knowledge"].cross_session_read, 1);
+            assert!(!report.sources.contains_key("scripted-source"));
+        }
+        assert_eq!(
+            serde_json::to_value(aggregate(&db, &wiki.index, i64::MIN, now)?)?,
+            expected_json
+        );
+        assert_eq!(per_page(&db, now)?, expected_usage);
+        assert_eq!(read_pages(&db, i64::MIN)?, expected_reads);
+        assert_eq!(
+            db.query_row("select count(*) from injections", [], |r| r
+                .get::<_, i64>(0))?,
+            10
+        );
+
+        // The previous scan format rebuilds once, without losing hook injections.
+        db.execute(
+            "update state set value=? where key='scan_format'",
+            [SCAN_FORMAT - 1],
+        )?;
+        scan(&wiki.root, &mut db, &dirs)?;
+        assert_eq!(per_page(&db, now)?, expected_usage);
+        assert_eq!(
+            serde_json::to_value(aggregate(&db, &wiki.index, i64::MIN, now)?)?,
+            expected_json
+        );
+        drop(db);
+        fs::remove_dir_all(&project)?;
+        let mut db = open(&wiki.root)?;
+        scan(&wiki.root, &mut db, &dirs)?;
+        assert_eq!(
+            serde_json::to_value(aggregate(&db, &wiki.index, i64::MIN, now)?)?,
+            expected_json
+        );
+        assert_eq!(per_page(&db, now)?, expected_usage);
         Ok(())
     }
 

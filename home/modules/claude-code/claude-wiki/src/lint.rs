@@ -440,8 +440,24 @@ mod tests {
             [],
         )?;
         let db = usage::open(&wiki.root)?;
-        db.execute_batch("insert into state values ('scanned', 1), ('scan_format', 2);")?;
-        let result = worklist(&wiki.root, &wiki.index, now)?;
+        db.execute_batch(
+            "insert into state values ('scanned', 1), ('scan_format', 3);
+            insert into scripted_sessions values ('scripted');
+            insert into tools values ('r', 'scripted', 1);
+            insert into accesses values ('r', 'pages/knowledge/z.md', 'read');",
+        )?;
+        usage::log(
+            &wiki.root,
+            "scripted",
+            "remind",
+            &["pages/knowledge/z.md".into()],
+        );
+        let mut result = worklist(&wiki.root, &wiki.index, now)?;
+        prioritize(&mut result, &usage::per_page(&db, now)?);
+        assert_eq!(
+            result.unread.as_ref().unwrap()[1].usage,
+            usage::PageUsage::default()
+        );
         assert_eq!(
             result
                 .unread
@@ -657,7 +673,7 @@ mod tests {
         }
         assert_eq!(initial, worklist(&wiki.root, &wiki.index, now)?);
         let usage = usage::open(&wiki.root)?;
-        usage.execute_batch("insert into state values ('scanned', 1), ('scan_format', 2); insert into tools values ('r','s',1); insert into accesses values ('r','pages/knowledge/linked.md','read');")?;
+        usage.execute_batch("insert into state values ('scanned', 1), ('scan_format', 3); insert into tools values ('r','s',1); insert into accesses values ('r','pages/knowledge/linked.md','read');")?;
         let after = worklist(&wiki.root, &wiki.index, now)?;
         assert_eq!(after.unread.as_ref().unwrap().len(), 3);
         assert_eq!(after.stale_followups[0].age_days, 20);
