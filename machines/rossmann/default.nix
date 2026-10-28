@@ -59,9 +59,18 @@ in
         PasswordAuthentication = false;
       };
     };
-    udev.extraRules = ''
-      # Thrustmaster T Rudder
-      ATTRS{idVendor}=="044f", ATTRS{idProduct}=="b679", MODE="0660", TAG+="uaccess", ENV{ID_CLASS}="joystick", ENV{ID_INPUT_JOYSTICK}="1"
+    # Rudder pedals report only ABS_X/Y/Z without buttons, so udev's input_id
+    # classifies them as accelerometers and games don't see them as joysticks.
+    udev.extraHwdb = ''
+      # Thrustmaster T.Flight Rudder Pedals
+      id-input:modalias:input:b0003v044FpB679*
+       ID_INPUT_ACCELEROMETER=0
+       ID_INPUT_JOYSTICK=1
+
+      # Thrustmaster T-Pendular-Rudder
+      id-input:modalias:input:b0003v044FpB68F*
+       ID_INPUT_ACCELEROMETER=0
+       ID_INPUT_JOYSTICK=1
     '';
   };
 
