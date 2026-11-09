@@ -74,6 +74,39 @@ in
     '';
   };
 
+  # MOZA AB9 FFB base (346e:1000) is not in hid-universal-pidff's ID table, so
+  # it falls back to hid-generic, which drops buttons past KEY_MAX ("Invalid
+  # code 768 type 1"). Register it as a dynamic ID; once registered, later
+  # hot-plugs in the same boot bind to hid-universal-pidff on their own.
+  systemd.services.moza-ab9-universal-pidff = {
+    description = "Bind MOZA AB9 FFB base to hid-universal-pidff";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "systemd-modules-load.service" ];
+    path = [ pkgs.kmod ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+    };
+    script = ''
+      drv=/sys/bus/hid/drivers/hid-universal-pidff
+      modprobe hid-universal-pidff
+      # EEXIST when the ID is already registered in this boot.
+      echo '0003 0000346E 00001000' > "$drv/new_id" || true
+
+      # new_id only attaches unbound devices; move any AB9 that enumerated
+      # before this unit ran off hid-generic.
+      for dev in /sys/bus/hid/devices/0003:346E:1000.*; do
+        [ -e "$dev" ] || continue
+        name=$(basename "$dev")
+        [ "$(basename "$(readlink -f "$dev/driver")")" = hid-universal-pidff ] && continue
+        if [ -e "$dev/driver" ]; then
+          echo "$name" > "$dev/driver/unbind"
+        fi
+        echo "$name" > "$drv/bind"
+      done
+    '';
+  };
+
   time.timeZone = "Asia/Seoul";
 
   home-manager.users.pbzweihander = import ./home.nix;
