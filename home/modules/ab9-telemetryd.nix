@@ -80,6 +80,15 @@ in
         ~/.config/ab9-ffb/telemetry-effects-enabled.
       '';
     };
+    gain = lib.mkOption {
+      type = lib.types.numbers.between 0.25 4.0;
+      default = 1.0;
+      example = 0.5;
+      description = ''
+        Multiplier for every synthesized effect's preset strength, applied before
+        capPercent (--gain).
+      '';
+    };
     capPercent = lib.mkOption {
       type = lib.types.ints.between 5 50;
       default = 15;
@@ -116,7 +125,7 @@ in
           [ (lib.getExe ab9-ffb) ]
           ++ lib.optional cfg.armed "--apply"
           ++ [
-            "--gain 1"
+            "--gain ${toString cfg.gain}"
             "--cap-percent ${toString cfg.capPercent}"
           ]
         );
