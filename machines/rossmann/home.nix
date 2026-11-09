@@ -17,7 +17,7 @@
   }/bin";
 
   # MOZA AB9 telemetry effects; see home/modules/ab9-telemetryd.nix before arming.
-  services.ab9-telemetryd.armed = false;
+  services.ab9-telemetryd.armed = true;
 
   i18n.inputMethod.fcitx5.addons = with pkgs; [ fcitx5-mozc ];
 }
