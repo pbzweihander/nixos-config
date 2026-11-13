@@ -8,7 +8,7 @@
 # Prints [QUIET] when codex has emitted nothing for --quiet-secs seconds (default 600).
 # --local skips the nixpkgs-unstable build and runs the locally installed codex.
 # --account runs as another codex account: NAME is the directory ~/.<NAME> used as
-# CODEX_HOME (login, sessions and config live there), so `codex1` means ~/.codex1.
+# CODEX_HOME (login, sessions and config live there), so `pcodex` means ~/.pcodex.
 set -uo pipefail
 here="$(dirname "$(readlink -f "$0")")"
 # shellcheck source-path=SCRIPTDIR

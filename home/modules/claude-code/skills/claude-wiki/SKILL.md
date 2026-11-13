@@ -193,7 +193,7 @@ Sources are the colon-separated directories in `$CLAUDE_WIKI_SESSIONS_DIRS`;
 empty entries and missing directories are skipped, and symlinked duplicates are
 read once. When unset or empty, it defaults to `$CLAUDE_CONFIG_DIR/projects`, or
 `~/.claude/projects` if `CLAUDE_CONFIG_DIR` is unset; the installed wrapper lists
-both `~/.claude/projects` and `~/.sclaude/projects`. Transcripts outside the listed
+both `~/.claude/projects` and `~/.pclaude/projects`. Transcripts outside the listed
 directories are dropped from the index. For `sessions`, only immediate project directories'
 `*.jsonl` files are read; subagents, tool results, thinking, and meta messages are
 excluded. Scripted `sdk-cli` messages are not indexed; older text indexes rebuild

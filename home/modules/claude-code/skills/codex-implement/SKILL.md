@@ -223,8 +223,8 @@ The run directory is the handle for its processes, codex thread, and output:
 | `progress.seen` | Number of progress lines already printed by the watch. |
 
 **Accounts.** There is more than one codex account, each with its own usage limit:
-`codex` (the default, `~/.codex`) and `codex1` (`~/.codex1`). Start with the default
-and pass `--account codex1` before the run directory only after the default runs out.
+`codex` (the default, `~/.codex`) and `pcodex` (`~/.pcodex`). Start with the default
+and pass `--account pcodex` before the run directory only after the default runs out.
 The runner then sets `CODEX_HOME`; it refuses with `[FAILED] no codex account in ...`
 when that account has never logged in.
 
@@ -278,7 +278,7 @@ Other useful flags:
 If codex failed (`[FAILED]`, or `[EXIT]` with a non-zero rc), read the reason
 first. If it was blocked by the sandbox, do not rewrite the spec: resume the same
 session with the missing flag added (see step 4). If it was a usage limit, start the
-same spec again with `--account codex1`. Otherwise fix the spec or
+same spec again with `--account pcodex`. Otherwise fix the spec or
 environment and run again. Do not silently take over the implementation yourself
 on the first failure.
 

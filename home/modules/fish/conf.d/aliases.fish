@@ -125,17 +125,12 @@ abbr -a vc. "code -- ."
 # claude
 abbr -a wr wiki-recap
 abbr -a a claude
-abbr -a as sclaude
-abbr -a at tclaude
+abbr -a ap pclaude
 abbr -a aa "claude agents"
-abbr -a asa "sclaude agents"
-abbr -a ata "tclaude agents"
+abbr -a apa "pclaude agents"
 abbr -a ac "claude --continue"
-abbr -a asc "sclaude --continue"
-abbr -a atc "tclaude --continue"
+abbr -a apc "pclaude --continue"
 abbr -a ar "claude --resume"
-abbr -a asr "sclaude --resume"
-abbr -a atr "tclaude --resume"
+abbr -a apr "pclaude --resume"
 abbr -a ach "claude attach"
-abbr -a asch "sclaude attach"
-abbr -a atch "tclaude attach"
+abbr -a apch "pclaude attach"

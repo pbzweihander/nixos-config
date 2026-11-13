@@ -64,31 +64,31 @@ let
   wikiDir = "${config.xdg.dataHome}/claude-wiki";
 
   # One Claude Code config directory per account: `claude` uses ~/.claude, and the
-  # `sclaude` and `tclaude` fish functions set CLAUDE_CONFIG_DIR to ~/.sclaude and
-  # ~/.tclaude. All of them get the same rules and settings; their `projects` and
-  # `skills` directories link to ~/.claude, so transcripts, auto memory, and skills
-  # (including ones written at runtime) are shared. claude.ai-synced skills live in
-  # per-account buckets (skills/synced/<org>_<account>), so the accounts coexist there.
+  # `pclaude` fish function sets CLAUDE_CONFIG_DIR to ~/.pclaude. All of them get the
+  # same settings; their `projects`, `skills`, `rules`, and `plugins` directories
+  # link to ~/.claude, so transcripts, auto memory, skills (including ones written
+  # at runtime), rules, and installed plugins are shared. Which plugins are enabled
+  # stays per account, in each settings.json. claude.ai-synced skills and plugins live
+  # in per-account buckets (skills/synced/<org>_<account>, plugins/synced/...), so the
+  # accounts coexist there.
   configDirs = [
     ".claude"
-    ".sclaude"
-    ".tclaude"
+    ".pclaude"
   ];
   extraConfigDirs = lib.remove ".claude" configDirs;
   sharedDirs = [
     "projects"
     "skills"
+    "rules"
+    "plugins"
   ];
-  # Linked into every config directory.
-  sharedFiles = {
+  # Linked into ~/.claude only; the other accounts reach them through their
+  # `sharedDirs` links.
+  claudeFiles = {
     # User-level rules rather than CLAUDE.md, which stays editable (/memory).
     "rules/claude-wiki.md" = ./rules/claude-wiki.md;
     "rules/nix.md" = ./rules/nix.md;
     "rules/rust.md" = ./rules/rust.md;
-  };
-  # Linked into ~/.claude/skills only; the other accounts reach it through their
-  # `skills` link.
-  skillFiles = {
     "skills/claude-wiki" = ./skills/claude-wiki;
     "skills/codex-implement" = ./skills/codex-implement;
     # A plugin folder under skills/ loads as a mod (function hooks) in every session.
@@ -189,13 +189,7 @@ in
     ];
 
     file =
-      lib.mergeAttrsList (
-        map (
-          dir:
-          lib.mapAttrs' (path: source: lib.nameValuePair "${dir}/${path}" { inherit source; }) sharedFiles
-        ) configDirs
-      )
-      // lib.mapAttrs' (path: source: lib.nameValuePair ".claude/${path}" { inherit source; }) skillFiles
+      lib.mapAttrs' (path: source: lib.nameValuePair ".claude/${path}" { inherit source; }) claudeFiles
       // lib.listToAttrs (
         lib.concatMap (
           dir:
@@ -283,22 +277,16 @@ in
   };
 
   programs.fish.functions = {
-    sclaude = {
-      description = "Claude Code with the second account (config directory ~/.sclaude)";
+    pclaude = {
+      description = "Claude Code with config directory ~/.pclaude";
       wraps = "claude";
-      body = "env CLAUDE_CONFIG_DIR=$HOME/.sclaude claude $argv";
+      body = "env CLAUDE_CONFIG_DIR=$HOME/.pclaude claude $argv";
     };
-    tclaude = {
-      description = "Claude Code with the third account (config directory ~/.tclaude)";
-      wraps = "claude";
-      body = "env CLAUDE_CONFIG_DIR=$HOME/.tclaude claude $argv";
-    };
-    # Nothing is shared with ~/.codex: the second account is only there for when the
-    # first one runs out of usage. codex-implement reaches it with --account codex1.
-    codex1 = {
-      description = "Codex CLI with the second account (CODEX_HOME ~/.codex1)";
+    # Nothing is shared with ~/.codex. codex-implement reaches it with --account pcodex.
+    pcodex = {
+      description = "Codex CLI with CODEX_HOME ~/.pcodex";
       wraps = "codex";
-      body = "env CODEX_HOME=$HOME/.codex1 codex $argv";
+      body = "env CODEX_HOME=$HOME/.pcodex codex $argv";
     };
   };
 }
