@@ -45,6 +45,7 @@
       shfmt
 
       # etc
+      gh
       yamlfmt
       (mdformat.withPlugins (
         ps: with ps; [

@@ -65,6 +65,10 @@ with inputs;
   };
 
   programs = {
+    appimage = {
+      enable = true;
+      binfmt = true;
+    };
     nh = {
       enable = true;
       flake = "/home/pbzweihander/nixos-config";
