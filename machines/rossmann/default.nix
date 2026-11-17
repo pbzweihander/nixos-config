@@ -125,6 +125,10 @@ in
           to = 27032;
         }
       ];
+      allowedTCPPorts = [
+        # orca
+        6768
+      ];
     };
   };
 
