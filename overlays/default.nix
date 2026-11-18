@@ -1,6 +1,7 @@
 { inputs, lib }:
 final: prev: {
   sddm-arona = prev.callPackage ./sddm-arona { };
+  orca-ide = prev.callPackage ./orca-ide { };
 
   vscode = final.symlinkJoin {
     name = "vscode";

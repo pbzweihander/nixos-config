@@ -46,6 +46,7 @@
 
       # etc
       gh
+      orca-ide
       yamlfmt
       (mdformat.withPlugins (
         ps: with ps; [
