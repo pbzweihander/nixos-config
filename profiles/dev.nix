@@ -7,6 +7,10 @@
 
   programs.nix-ld.enable = true;
 
+  # The GNOME Orca screen reader (enabled by default with Plasma) also installs
+  # `orca` and an "Orca" desktop entry, which clash with the Orca IDE's.
+  services.orca.enable = false;
+
   environment.systemPackages =
     with pkgs;
     [

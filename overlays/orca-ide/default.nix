@@ -46,6 +46,7 @@
   vulkan-loader,
   wayland,
   xdg-utils,
+  runtimeShell,
 }:
 let
   sources = lib.importJSON ./sources.json;
@@ -138,14 +139,28 @@ stdenv.mkDerivation {
     # Use Chromium's unprivileged user namespace sandbox. A setuid helper cannot
     # work in the Nix store, and disabling that helper does not disable sandboxing.
     rm "$out/share/orca-ide/chrome-sandbox"
-    makeWrapper "$out/share/orca-ide/orca-ide" "$out/bin/orca-ide" \
+    makeWrapper "$out/share/orca-ide/orca-ide" "$out/libexec/orca-ide/orca-ide-gui" \
       --prefix XDG_DATA_DIRS : "$GSETTINGS_SCHEMAS_PATH" \
       --suffix PATH : ${lib.makeBinPath [ xdg-utils ]} \
       --add-flags "--disable-setuid-sandbox" \
       --add-flags "\''${NIXOS_OZONE_WL:+\''${WAYLAND_DISPLAY:+--ozone-platform-hint=auto --enable-wayland-ime}}"
 
+    # Upstream's deb links /usr/bin/orca-ide to the CLI shim (resources/bin/orca-ide),
+    # which Orca's own docs call outside Orca terminals; with no arguments that shim
+    # only prints help. Launch the GUI when called bare, otherwise run the CLI.
+    cat > "$out/bin/orca-ide" <<EOF
+    #!${runtimeShell}
+    if [ "\$#" -eq 0 ]; then
+      exec "$out/libexec/orca-ide/orca-ide-gui"
+    fi
+    exec "$out/share/orca-ide/resources/bin/orca-ide" "\$@"
+    EOF
+    chmod +x "$out/bin/orca-ide"
+    # Inside Orca terminals `orca` is the same CLI (~/.orca/cli/bin/orca).
+    ln -s orca-ide "$out/bin/orca"
+
     substituteInPlace "$out/share/applications/orca-ide.desktop" \
-      --replace-fail "Exec=/opt/Orca/orca-ide" "Exec=$out/bin/orca-ide" \
+      --replace-fail "Exec=/opt/Orca/orca-ide" "Exec=$out/libexec/orca-ide/orca-ide-gui" \
       --replace-fail "Icon=orca-ide" "Icon=$out/share/icons/hicolor/512x512/apps/orca-ide.png"
 
     # Keep resources/package-type = deb: upstream treats installs without a
