@@ -4,6 +4,14 @@
     fish = {
       enable = true;
       shellInit = "set -gx fish_greeting";
+      # Orca points fish_history at a per-worktree file (orca_<hash>); its
+      # terminalScopeHistoryByWorktree setting has no UI, so share the main
+      # history here instead.
+      interactiveShellInit = ''
+        if set -q ORCA_TERMINAL_HANDLE
+            set -e fish_history
+        end
+      '';
       plugins = [
         {
           name = "bass";
