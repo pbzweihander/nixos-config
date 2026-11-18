@@ -35,6 +35,16 @@ let
 
     nativeBuildInputs = [ python ];
 
+    # MOZA Cockpit ships one Mirage F1 preset, `Mirage-F1CE`. The other flyable
+    # variants (types from the module's entry.lua) fall back to it.
+    postPatch = ''
+      substituteInPlace ab9_profiled.py --replace-fail \
+        '    "TF-51D": "P-51D-30-NA",' \
+        '    "TF-51D": "P-51D-30-NA",
+          "Mirage-F1EE": "Mirage-F1CE",
+          "Mirage-F1BE": "Mirage-F1CE",'
+    '';
+
     dontConfigure = true;
     dontBuild = true;
 
