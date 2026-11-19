@@ -26,14 +26,14 @@ in
       Environment = [
         "HF_HUB_OFFLINE=1"
         "HF_HOME=${config.xdg.cacheHome}/huggingface"
-        # The benchmark's own answer is +0.274, the lowest cutoff that rejects every
-        # ordinary near miss, but it leaves the hook silent on 43% of the prompts the
-        # wiki can answer. -1.25 is the knee of the trade-off measured on 74 answerable
-        # and 86 unanswerable queries: useful rises 42 -> 58 while the pages named for a
-        # question the wiki cannot answer rise 6 -> 27, and most of those 27 are from the
-        # adversarial set, which names the right page for the wrong question. Past this
-        # the curve flattens: -2.0 buys three more useful hits for nine more misfires.
-        "WIKI_EMBED_RERANK_THRESHOLD=-1.25"
+        # Rerank logits rose by about one point when the wiki switched to Korean
+        # (2026-11-19): with Korean prompts against Korean pages the median score of an
+        # answerable prompt went +0.71 -> +1.85 and of a near miss -1.49 -> -0.93. The
+        # English-era cutoff -1.25 (useful 57/74, 39 misfires over 86 unanswerable
+        # queries on the 1387-page wiki) would now misfire 51 times. -0.25 is better on
+        # both counts: useful 63/74, 33 misfires. The benchmark's unanswerable set
+        # predates some pages that now answer it, so misfires are an upper bound.
+        "WIKI_EMBED_RERANK_THRESHOLD=-0.25"
       ];
       Restart = "on-failure";
       RestartSec = 30;
