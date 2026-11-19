@@ -90,7 +90,9 @@ let
     "rules/nix.md" = ./rules/nix.md;
     "rules/rust.md" = ./rules/rust.md;
     "skills/claude-wiki" = ./skills/claude-wiki;
-    "skills/codex-implement" = ./skills/codex-implement;
+    # Not installed for now: implementation is delegated to Codex workers through Orca
+    # instead. The source stays in ./skills/codex-implement; uncomment to bring it back.
+    # "skills/codex-implement" = ./skills/codex-implement;
     # A plugin folder under skills/ loads as a mod (function hooks) in every session.
     "skills/wiki-mod" = ./wiki-mod;
   };

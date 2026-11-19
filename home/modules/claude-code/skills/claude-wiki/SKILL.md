@@ -29,8 +29,12 @@ searchable right away. A SessionStart hook runs `claude-wiki context`, which pri
 the current project's name and overview page, its open follow-ups and knowledge
 pages, recently updated pages, and the tags in use.
 
-**The wiki is English only**: page titles, bodies, tags, and search keywords, even
-when the conversation is in Korean or another language.
+**The wiki is written in Korean**: page titles, prose, and `queries`, whatever
+language the conversation is in. Identifiers, commands, code, error messages, log
+lines, file names, and tags stay verbatim, and search keywords are Korean words plus
+those verbatim strings. One language matters more than which language: a page in
+another language is missed by keyword search and attracts unrelated queries in
+search by meaning. `check`, `sync`, and `lint` flag pages whose prose is not Korean.
 
 ## Page types
 
@@ -93,8 +97,11 @@ claude-wiki tags                                                                
   No keyword-miss note appears with `--no-semantic` or no hits.
 - Quote a multi-word argument to also match it as an exact phrase; pages containing
   the phrase rank higher: `claude-wiki search "readonly database" nix sandbox`.
-- Translate the user's words into English keywords before searching. Exact error
-  messages and identifiers make good terms.
+- Search with Korean keywords, the bare noun or stem without a particle (`재시작`,
+  not `재시작하면`): prefix matching then finds the inflected forms. Add exact error
+  messages and identifiers as they are; they make the best terms. An English word
+  for something the pages name in Korean (`restart` for `재시작`) finds nothing by
+  keyword, and only search by meaning, where `wiki-embed` runs, bridges it.
 - Each hit prints the page's absolute path, title, type, status, update date,
   project, tags, and a snippet with matches in `[brackets]`. Read the page with the
   Read tool before relying on it.
@@ -229,16 +236,16 @@ warning reports it. Shorten the project page or lower the overview budget to fit
 
    ```markdown
    ---
-   title: Nix builds use the daemon socket
+   title: Nix 빌드는 데몬 소켓을 사용한다
    tags: [nix, codex, sandbox]
    project: nixos-config
    created: 2026-09-15
    queries:
-     - Why does nix fail inside the codex sandbox?
-     - 샌드박스에서 nix 빌드가 왜 실패해요?
+     - codex 샌드박스 안에서 nix 빌드가 왜 실패해요?
+     - "cannot connect to socket at '/nix/var/nix/daemon-socket/socket': Operation not permitted"
    ---
 
-   Body.
+   본문.
    ```
 
    - name: short lowercase kebab-case naming the topic; the project name for
@@ -256,7 +263,7 @@ warning reports it. Shorten the project page or lower the overview budget to fit
    - `created`: today's date. The update date comes from the file mtime.
    - `queries` (optional): searches in a future session's words: a question, or an
      exact error message or symptom line as a session would paste it, not a list of
-     keywords. Korean is fine here even though the body is English.
+     keywords. Questions are in Korean; pasted errors stay as they are.
 3. **Run `claude-wiki check --probe <page>`** before syncing. Reword the title or add
    relevant identifiers until every query finds the page.
 4. **Run `claude-wiki sync -m "<short summary>" <pages>`** after every write, passing
@@ -269,8 +276,12 @@ warning reports it. Shorten the project page or lower the overview budget to fit
    any otherwise clean pages in that commit. Plain `claude-wiki sync` commits every change; it is only needed
    to pick up edits left behind by a session that ended without syncing.
 
-Write in English; quote commands, identifiers, and error messages verbatim, even ones
-in another language. Make every page readable on its own.
+Write in Korean, in plain declarative sentences (`~다`); quote commands,
+identifiers, and error messages verbatim. For a technical term, use what Korean
+engineers write: the established Korean word or transliteration when there is one
+(`파드`, `배포`, `캐시`, `쿼리`, `재시작`), otherwise the English term as it is
+(`liveness probe`, `upsert`, `StorageClass`), and keep one form per term so that
+keyword search finds every page on it. Make every page readable on its own.
 
 ## Validation and blocked pages
 

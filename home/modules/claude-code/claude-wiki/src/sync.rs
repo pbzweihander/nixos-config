@@ -74,6 +74,12 @@ fn validate(root: &Path, rel: &str, text: &str, page: &pages::Page) -> i32 {
         eprintln!("warning: {rel}: {finding}");
         code = code.max(1);
     }
+    if let Some(percent) = pages::non_korean_percent(&page.body) {
+        eprintln!(
+            "warning: {rel}: prose is {percent}% Hangul; wiki pages are written in Korean (identifiers, commands and quoted output stay verbatim)"
+        );
+        code = code.max(1);
+    }
     let budget = context::overview_budget();
     let length = page.body.chars().count();
     if page.kind == "projects" && length > budget {

@@ -31,6 +31,8 @@ struct Report {
     log_growth: Vec<Finding>,
     #[serde(rename = "missing-queries")]
     missing_queries: Vec<Finding>,
+    #[serde(rename = "non-korean")]
+    non_korean: Vec<Finding>,
     orphans: Vec<Finding>,
     #[serde(rename = "singleton-tags")]
     singleton_tags: Vec<SingletonTag>,
@@ -272,6 +274,12 @@ fn worklist(root: &Path, db: &Connection, now: i64) -> Result<Report> {
             }
         }
         if row.blocked.is_empty() {
+            if let Some(percent) = pages::non_korean_percent(&page.body) {
+                add(
+                    &mut result.non_korean,
+                    format!("prose is {percent}% Hangul"),
+                );
+            }
             for tag in page.tags.split_whitespace().collect::<HashSet<_>>() {
                 tags.entry(tag.into()).or_default().push(row.path.clone());
             }
@@ -314,6 +322,7 @@ fn prioritize(result: &mut Report, usage: &BTreeMap<String, usage::PageUsage>) {
         &mut result.frontmatter,
         &mut result.log_growth,
         &mut result.missing_queries,
+        &mut result.non_korean,
         &mut result.orphans,
         &mut result.snapshots,
     ] {
@@ -404,6 +413,7 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
         print_category("frontmatter", &result.frontmatter, args.all);
         print_category("log-growth", &result.log_growth, args.all);
         print_category("missing-queries", &result.missing_queries, args.all);
+        print_category("non-korean", &result.non_korean, args.all);
         print_category("orphans", &result.orphans, args.all);
         print_category("singleton-tags", &result.singleton_tags, args.all);
         print_category("snapshots", &result.snapshots, args.all);
@@ -496,6 +506,7 @@ mod tests {
                     ..Duplicate::default()
                 })
                 .collect(),
+            non_korean: findings(&["a", "b", "d", "e"]),
             orphans: findings(&["a", "b", "d", "e"]),
             stale_followups: [("a", 30), ("d", 20)]
                 .into_iter()
@@ -522,7 +533,11 @@ mod tests {
             assert_eq!(item.usage_a, zero);
             assert_eq!(item.usage_b, zero);
         }
-        for items in [&empty.orphans, empty.unread.as_ref().unwrap()] {
+        for items in [
+            &empty.non_korean,
+            &empty.orphans,
+            empty.unread.as_ref().unwrap(),
+        ] {
             for item in items {
                 assert_eq!(item.usage, zero);
             }
@@ -544,6 +559,7 @@ mod tests {
         )]);
         let mut ranked = original;
         prioritize(&mut ranked, &usage);
+        assert_eq!(ranked.non_korean, ranked.orphans);
         assert_eq!(
             ranked
                 .orphans
@@ -609,7 +625,7 @@ mod tests {
             concat!(
                 r#"{"broken-links":[{"detail":"missing","path":"a","usage":{"importance":1.5,"injected_unread":1,"last_read":123,"read_sessions":2,"reads":5}}],"#,
                 r#""duplicates":[{"a":"a","b":"b","score":0.99,"usage_a":{"importance":0.0,"injected_unread":0,"last_read":null,"read_sessions":0,"reads":0},"usage_b":{"importance":0.0,"injected_unread":0,"last_read":null,"read_sessions":0,"reads":0}}],"#,
-                r#""frontmatter":[],"log-growth":[],"missing-queries":[],"orphans":[],"#,
+                r#""frontmatter":[],"log-growth":[],"missing-queries":[],"non-korean":[],"orphans":[],"#,
                 r#""singleton-tags":[{"path":"b","tag":"tag","usage":{"importance":0.0,"injected_unread":0,"last_read":null,"read_sessions":0,"reads":0}}],"snapshots":[],"#,
                 r#""stale-followups":[{"age_days":30,"mtime":123,"path":"c","usage":{"importance":0.0,"injected_unread":0,"last_read":null,"read_sessions":0,"reads":0}}]}"#,
             )
@@ -619,7 +635,7 @@ mod tests {
                 unread: Some(vec![]),
                 ..Report::default()
             })?,
-            r#"{"broken-links":[],"duplicates":[],"frontmatter":[],"log-growth":[],"missing-queries":[],"orphans":[],"singleton-tags":[],"snapshots":[],"stale-followups":[],"unread":[]}"#
+            r#"{"broken-links":[],"duplicates":[],"frontmatter":[],"log-growth":[],"missing-queries":[],"non-korean":[],"orphans":[],"singleton-tags":[],"snapshots":[],"stale-followups":[],"unread":[]}"#
         );
         Ok(())
     }
@@ -659,6 +675,7 @@ mod tests {
         )?;
         let initial = worklist(&wiki.root, &wiki.index, now)?;
         assert!(initial.unread.is_none());
+        assert!(initial.non_korean.is_empty());
         for (category, count) in [
             ("snapshots", initial.snapshots.len()),
             ("log-growth", initial.log_growth.len()),

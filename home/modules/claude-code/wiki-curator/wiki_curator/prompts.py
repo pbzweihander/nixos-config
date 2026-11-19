@@ -3,7 +3,11 @@
 import json
 
 
-RULES = """Write English titles, bodies and tags. Korean is allowed in queries.
+RULES = """Write titles, prose and queries in Korean, in plain declarative sentences.
+Keep identifiers, commands, code, error messages, log lines, file names and tags
+verbatim; use the established Korean term or transliteration for a technical term
+when there is one, otherwise the English term as it is. Never translate existing
+Korean prose into English.
 Knowledge: one topic, present state, not a timeline. Preserve symptoms, exact errors,
 identifiers, cause, fix commands, evidence, versions, machines and applicability.
 Followups: current remaining work, blockers and next step; preserve open/done status.
@@ -19,7 +23,7 @@ behaviour checked), reported, unverified (relayed claims not checked). Never upg
 certainty. Keep corrections in 'What looked right and was not': the tempting wrong
 conclusion, why it looked plausible, and what disproved it; retain correction tags.
 Knowledge and followups link their history entry; the entry links back to the page.
-Queries are 2–3 nonempty searches in a future session's words, optionally one Korean:
+Queries are 2–3 nonempty searches in a future session's words, in Korean:
 a question, or an exact error message or symptom line as a session would paste it.
 Not a bag of keywords assembled to pass the probe. Run claude-wiki check --probe and
 revise until every query passes.

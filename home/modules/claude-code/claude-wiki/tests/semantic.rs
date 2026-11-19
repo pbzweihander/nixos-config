@@ -1255,6 +1255,121 @@ fn context_logs_only_overview_and_retained_project_lists_and_bounds_stdin() {
 }
 
 #[test]
+fn check_warns_about_non_korean_prose_for_every_page_type() {
+    let wiki = Wiki::new();
+    let english = "The cache stores build results so later runs can reuse them. ".repeat(10);
+    let korean = "캐시는 빌드 결과를 저장하므로 다음 실행에서 다시 사용할 수 있습니다. ".repeat(12);
+    for kind in ["knowledge", "projects", "followups", "history"] {
+        let target = format!("{kind}/language");
+        let path = wiki.0.join(format!("wiki/pages/{target}.md"));
+        for (body, code) in [(&english, 1), (&korean, 0)] {
+            fs::write(
+                &path,
+                format!("---\ntitle: 캐시\ncreated: 2026-09-29\nstatus: open\n---\n{body}"),
+            )
+            .unwrap();
+            let output = run_output(wiki.command(&["check", &target]), "");
+            assert_eq!(output.status.code(), Some(code), "{kind}: {output:?}");
+            assert_eq!(
+                String::from_utf8(output.stderr).unwrap(),
+                if code == 1 {
+                    format!(
+                        "warning: pages/{target}.md: prose is 0% Hangul; wiki pages are written in Korean (identifiers, commands and quoted output stay verbatim)\n"
+                    )
+                } else {
+                    String::new()
+                }
+            );
+        }
+    }
+    for (text, problem) in [
+        (english.clone(), "has no frontmatter"),
+        (
+            format!("---\ntitle: Cache\ncreated: 2026-09-29\n---\n{english}\n<!-- hidden -->"),
+            "blocked: pages/knowledge/foo.md: injection:",
+        ),
+    ] {
+        fs::write(wiki.0.join("wiki/pages/knowledge/foo.md"), text).unwrap();
+        let output = run_output(wiki.command(&["check", "knowledge/foo"]), "");
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        assert!(String::from_utf8(output.stderr).unwrap().contains(problem));
+    }
+}
+
+#[test]
+fn lint_non_korean_category_has_usage_json_and_text_limits() {
+    let wiki = Wiki::new();
+    let english = "The cache stores build results so later runs can reuse them. ".repeat(10);
+    let mut paths = vec![];
+    for i in 0..21 {
+        let kind = ["knowledge", "projects", "followups", "history"][i % 4];
+        let path = format!("pages/{kind}/language-{i:02}.md");
+        fs::write(
+            wiki.0.join("wiki").join(&path),
+            format!("---\ntitle: Cache\ncreated: 2026-09-29\nstatus: done\n---\n{english}"),
+        )
+        .unwrap();
+        paths.push(path);
+    }
+    paths.sort();
+    for (name, body) in [
+        ("blocked", format!("{english}\n<!-- hidden -->")),
+        (
+            "korean",
+            "캐시가 사라지면 저장 경로와 실행 환경을 먼저 확인합니다. ".repeat(12),
+        ),
+    ] {
+        fs::write(
+            wiki.0.join(format!("wiki/pages/knowledge/{name}.md")),
+            format!("---\ntitle: Cache\ncreated: 2026-09-29\n---\n{body}"),
+        )
+        .unwrap();
+    }
+    for (args, limit) in [(vec!["lint"], 20), (vec!["lint", "--all"], 21)] {
+        let output = run_output(wiki.command(&args), "");
+        assert!(output.status.success(), "{output:?}");
+        let text = String::from_utf8(output.stdout).unwrap();
+        let (before, after) = text.split_once("non-korean (21)\n").unwrap();
+        assert!(before.contains("missing-queries ("));
+        assert!(!before.contains("orphans ("));
+        let category = after.split_once("orphans (").unwrap().0;
+        let expected = paths
+            .iter()
+            .take(limit)
+            .map(|path| format!("  {path}: prose is 0% Hangul\n"))
+            .collect::<String>();
+        assert_eq!(
+            category,
+            if limit == 20 {
+                format!("{expected}  … and 1 more\n")
+            } else {
+                expected
+            }
+        );
+    }
+    let output = run_output(wiki.command(&["lint", "--json"]), "");
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let expected: Vec<_> = paths
+        .iter()
+        .map(|path| {
+            json!({
+                "detail": "prose is 0% Hangul",
+                "path": path,
+                "usage": {
+                    "importance": 0.0,
+                    "injected_unread": 0,
+                    "last_read": null,
+                    "read_sessions": 0,
+                    "reads": 0
+                }
+            })
+        })
+        .collect();
+    assert_eq!(report["non-korean"], json!(expected));
+}
+
+#[test]
 fn new_page_duplicate_notes_and_lint_pairs_use_batch_protocol() {
     let wiki = Wiki::new();
     let text = "---\ntitle: New cache\ncreated: 2020-01-01\n---\nCache.";

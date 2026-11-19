@@ -8,21 +8,26 @@ from .gitutil import changed_texts, changes, safe_page
 
 LINK = re.compile(r"\[\[([a-z]+/[a-z0-9._-]+)(?:\|[^\]\n]*)?\]\]")
 INLINE = re.compile(r"(?<!`)(`+)(?!`)([^\n]*?)(?<!`)\1(?!`)")
+# Fact tokens are ASCII: with Unicode \w a Korean particle attached to a token
+# ("25초", "/etc/nixos에서", "CLAUDE_WIKI_DIR를") would either hide the fact or become
+# part of it, so that rewording the particle looked like a lost fact.
 NUMBER = re.compile(
     r"(?<![\w])(?:[vV])?[+-]?\d+(?:[.,]\d+)*(?:\.[xX*])?"
-    r"(?:[-+][a-zA-Z]+(?:[.-]?\d+)*)?(?:[a-zA-Zµμ°]+|%)?(?![\w])"
+    r"(?:[-+][a-zA-Z]+(?:[.-]?\d+)*)?(?:[a-zA-Zµμ°]+|%)?(?![\w])",
+    re.ASCII,
 )
 URL = re.compile(r"(?:https?|ftp)://[^\s<>`\]\"']+")
 LINK_SPAN = re.compile(r"\[\[[a-z]+/[a-z0-9._-]+(?:\|([^\]\n]*))?\]\]")
-PATH = re.compile(r"(?<![\w./~:-])(?:~/|/)(?:[\w.@+%-]+/)+[\w.@+%-]+/?")
+PATH = re.compile(r"(?<![\w./~:-])(?:~/|/)(?:[\w.@+%-]+/)+[\w.@+%-]+/?", re.ASCII)
 FILENAME = re.compile(
     r"(?<![\w.-])\.?[a-zA-Z0-9_][\w.-]*\."
     r"(?:rs|py|nix|toml|json|yaml|yml|md|ts|tsx|js|go|sh|fish|sql|conf|service|timer)"
-    r"(?![\w-]|\.\w)"
+    r"(?![\w-]|\.\w)",
+    re.ASCII,
 )
-UPPER_SNAKE = re.compile(r"(?<!\w)[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+(?!\w)")
-SNAKE = re.compile(r"(?<!\w)[a-z][a-z0-9]*(?:_[a-z][a-z0-9]*)+(?!\w)")
-ERROR_CODE = re.compile(r"(?<!\w)(?:E[0-9]{2,4}|HTTP[0-9]{3})(?!\w)")
+UPPER_SNAKE = re.compile(r"(?<!\w)[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+(?!\w)", re.ASCII)
+SNAKE = re.compile(r"(?<!\w)[a-z][a-z0-9]*(?:_[a-z][a-z0-9]*)+(?!\w)", re.ASCII)
+ERROR_CODE = re.compile(r"(?<!\w)(?:E[0-9]{2,4}|HTTP[0-9]{3})(?!\w)", re.ASCII)
 ERROR_LINE = re.compile(
     r"error\[E\d+\]:|\b[A-Z][A-Za-z0-9]*(?:Error|Exception):|\bpanicked at\b|"
     r"^\s*fatal:|Traceback \(most recent call last\)"

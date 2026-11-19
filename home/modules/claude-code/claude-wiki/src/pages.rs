@@ -9,10 +9,15 @@ use std::{
 };
 
 pub const TYPES: [&str; 4] = ["knowledge", "projects", "followups", "history"];
+// Ignore short prose; measured English pages have at most 6% Hangul and Korean
+// pages at least 27%, so 15% separates them with room for verbatim identifiers.
+const MIN_PROSE_LETTERS: usize = 200;
+const MIN_HANGUL_PERCENT: usize = 15;
 static FRONTMATTER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)\A---\n(.*?)\n---\n?").unwrap());
 static HEADING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^#\s+(.+)$").unwrap());
 static LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[\[([^\[\]\r\n]*)\]\]").unwrap());
+static URL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"https?://\S*").unwrap());
 static TARGET: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\A([a-z]+)/([a-z0-9._-]+)\z").unwrap());
 
@@ -37,7 +42,7 @@ pub fn link_path(target: &str) -> Option<String> {
         .then(|| format!("pages/{target}.md"))
 }
 
-fn parse_links(body: &str, rel: &str) -> Vec<String> {
+fn without_code(body: &str) -> String {
     let mut prose = String::new();
     let mut fence = None;
     for line in body.lines() {
@@ -86,6 +91,29 @@ fn parse_links(body: &str, rel: &str) -> Vec<String> {
         }
     }
     visible.push_str(rest);
+    visible
+}
+
+pub fn non_korean_percent(body: &str) -> Option<usize> {
+    let prose = without_code(body);
+    let prose = LINK.replace_all(&prose, " ");
+    let prose = URL.replace_all(&prose, " ");
+    let mut letters = 0;
+    let mut hangul = 0;
+    for c in prose.chars() {
+        if matches!(c, '\u{ac00}'..='\u{d7a3}') {
+            letters += 1;
+            hangul += 1;
+        } else if c.is_ascii_alphabetic() {
+            letters += 1;
+        }
+    }
+    (letters >= MIN_PROSE_LETTERS && hangul * 100 < letters * MIN_HANGUL_PERCENT)
+        .then(|| hangul * 100 / letters)
+}
+
+fn parse_links(body: &str, rel: &str) -> Vec<String> {
+    let visible = without_code(body);
     let mut seen = HashSet::new();
     LINK.captures_iter(&visible)
         .filter_map(|c| link_path(c[1].split('|').next().unwrap()))
@@ -329,6 +357,68 @@ pub fn markdown_files(dir: &Path) -> Result<Vec<PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn english_prose_is_not_korean() {
+        let body = "The cache stores build results so later runs can reuse them. ".repeat(10);
+        assert_eq!(non_korean_percent(&body), Some(0));
+    }
+
+    #[test]
+    fn korean_prose_excludes_code_links_urls_and_frontmatter() {
+        let korean = "캐시가 사라지면 저장 경로와 실행 환경을 먼저 확인합니다. ".repeat(12);
+        let identifier = "identifier".repeat(300);
+        let text = format!(
+            "---\ntitle: {identifier}\ncreated: 2026-09-29\nqueries: [{identifier}]\n---\n\
+             # 캐시 복구\n{korean}\n`{identifier}`\n``outer `{identifier}` inner``\n\
+             ```text\n{identifier}\n```\n~~~text\n{identifier}\n~~~\n\
+             https://example.com/{identifier}\nhttp://example.com/{identifier}\n\
+             [[knowledge/{identifier}]] [[knowledge/cache|{identifier}]]"
+        );
+        let page = parse(&text, "pages/knowledge/cache.md");
+        assert!(page.problems.is_empty());
+        assert_eq!(non_korean_percent(&page.body), None);
+    }
+
+    #[test]
+    fn short_prose_and_other_character_classes_are_ignored() {
+        assert_eq!(non_korean_percent(""), None);
+        assert_eq!(non_korean_percent(&"a".repeat(199)), None);
+        assert_eq!(non_korean_percent(&"a".repeat(200)), Some(0));
+        let ignored = "123 !? é漢字ㄱㅏ가\u{abff}\u{d7a4}".repeat(200);
+        assert_eq!(
+            non_korean_percent(&format!("{}{ignored}", "a".repeat(199))),
+            None
+        );
+        assert_eq!(
+            non_korean_percent(&format!("{}{ignored}", "a".repeat(200))),
+            Some(0)
+        );
+        for excluded in [
+            format!("`{}`", "a".repeat(200)),
+            format!("```\n{}\n```", "a".repeat(200)),
+            format!("[[knowledge/{}]]", "a".repeat(200)),
+            format!("https://example.com/{}", "a".repeat(200)),
+        ] {
+            assert_eq!(non_korean_percent(&excluded), None, "{excluded}");
+        }
+    }
+
+    #[test]
+    fn hangul_threshold_is_inclusive_and_percentage_is_floored() {
+        for syllable in ['\u{ac00}', '\u{d7a3}'] {
+            let hangul = syllable.to_string();
+            assert_eq!(
+                non_korean_percent(&format!("{}{}", hangul.repeat(30), "A".repeat(170))),
+                None
+            );
+            assert_eq!(
+                non_korean_percent(&format!("{}{}", hangul.repeat(29), "A".repeat(171))),
+                Some(14)
+            );
+        }
+    }
+
     #[test]
     fn queries_are_optional_nonempty_strings() {
         for (yaml, expected) in [

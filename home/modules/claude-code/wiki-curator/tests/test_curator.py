@@ -381,6 +381,17 @@ class PreservationTests(RepoTest):
         self.assertEqual(self.check_change(old, old.replace("`probe --fast`", "the probe")), ["`probe --fast`"])
         self.assertEqual(self.check_change(old, old.replace("123ms", "quickly")), ["123ms"])
 
+    def test_korean_particles_do_not_hide_or_join_fact_tokens(self):
+        old = ("타임아웃은 25초이고 3개 중 2개가 실패했다. v1.6.0에서 고쳤고 123ms가 걸린다.\n"
+               "/etc/nixos에서 CLAUDE_WIKI_DIR를 읽고 search.rs의 fts_query가 E123을 낸다.\n")
+        found = tokens(page(old))
+        self.assertTrue({"25", "3", "2", "v1.6.0", "123ms", "/etc/nixos", "CLAUDE_WIKI_DIR",
+                         "search.rs", "fts_query", "E123"} <= found, found)
+        # Rewording a particle is not a lost fact; changing the number is.
+        self.assertEqual(self.check_change(old, old.replace("/etc/nixos에서", "/etc/nixos 안의")
+                                           .replace("CLAUDE_WIKI_DIR를", "CLAUDE_WIKI_DIR 값을")), [])
+        self.assertEqual(self.check_change(old, old.replace("25초", "30초")), ["25"])
+
     def test_identifier_patterns_in_prose_inline_and_fenced_code(self):
         identifiers = ["/etc/nixos", "~/.config/fish", "UPPER_SNAKE", "MAX_RETRIES_3",
                        "snake_case", "x_axis", "foo_bar_baz", "E12", "E123", "E1234", "HTTP503"]
