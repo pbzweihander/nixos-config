@@ -1,6 +1,7 @@
 {
   config,
   lib,
+  multiverse,
   pkgs,
   ...
 }:
@@ -83,6 +84,11 @@ let
     ".pclaude"
   ];
   extraConfigDirs = lib.remove ".claude" configDirs;
+  codexConfigDirs = [
+    ".codex"
+    ".pcodex"
+  ];
+  codexHookPython = pkgs.python3.withPackages (ps: [ ps.tomlkit ]);
   sharedDirs = [
     "projects"
     "skills"
@@ -245,6 +251,9 @@ in
 
     file =
       lib.mapAttrs' (path: source: lib.nameValuePair ".claude/${path}" { inherit source; }) claudeFiles
+      // {
+        ".agents/skills/claude-wiki".source = ./skills/claude-wiki;
+      }
       // lib.listToAttrs (
         lib.concatMap (
           dir:
@@ -328,6 +337,13 @@ in
         fi
       fi
       done
+      # Orca and Codex own these mutable files. Merge only marked wiki hooks and
+      # their trust state; preserve foreign array positions and AGENTS.md content.
+      run ${lib.getExe codexHookPython} ${./codex-hooks/merge.py} \
+        --codex ${lib.getExe multiverse.instance.tip.codex} \
+        --wiki ${lib.getExe' claude-wiki "claude-wiki"} \
+        --rules ${./rules/claude-wiki.md} \
+        ${lib.escapeShellArgs (map (dir: "${homeDir}/${dir}") codexConfigDirs)}
     '';
   };
 

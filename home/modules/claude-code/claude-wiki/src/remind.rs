@@ -1,13 +1,14 @@
+use crate::hook_payload::{Harness, Hook, ran_sync};
 use crate::sessions::complete_lines;
 use anyhow::Result;
 use clap::Args as ClapArgs;
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::Deserialize;
-use serde_json::Value;
 use std::{collections::HashSet, fs::File, io, path::Path};
 
 #[derive(ClapArgs)]
 pub struct Args {
+    #[arg(long, value_enum, default_value = "claude")]
+    pub harness: Harness,
     #[arg(long, env = "CLAUDE_WIKI_REMIND_INTERVAL", default_value_t = 15)]
     pub interval: u64,
     /// Handle PostToolUse, PostToolUseFailure or PreCompact hook JSON
@@ -16,28 +17,6 @@ pub struct Args {
     /// Failures before a successful commit/test counts as resolved debugging
     #[arg(long, env = "CLAUDE_WIKI_REMIND_FAILURES", default_value_t = 3, value_parser = clap::value_parser!(u32).range(1..))]
     pub failures: u32,
-}
-
-#[derive(Default, Deserialize)]
-struct Hook {
-    session_id: Option<String>,
-    transcript_path: Option<String>,
-    prompt: Option<String>,
-}
-
-pub(crate) fn ran_sync(line: &[u8]) -> bool {
-    let Ok(v) = serde_json::from_slice::<Value>(line) else {
-        return false;
-    };
-    v["type"] == "assistant"
-        && v["message"]["content"].as_array().is_some_and(|parts| {
-            parts.iter().any(|p| {
-                p["type"] == "tool_use"
-                    && p["input"]["command"]
-                        .as_str()
-                        .is_some_and(|s| s.contains("claude-wiki sync"))
-            })
-        })
 }
 
 fn update(db: &Connection, hook: Hook, interval: u64) -> Result<Option<String>> {
@@ -131,6 +110,7 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
     };
     let paths: Vec<_> = selected.iter().map(|(path, _)| path.clone()).collect();
     crate::recall::mark_seen(db, session, &paths)?;
+    let mut messages = vec![];
     if !selected.is_empty() {
         let root = root.canonicalize()?;
         let pages = selected
@@ -144,13 +124,20 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
             })
             .collect::<Vec<_>>()
             .join("; ");
-        println!(
+        messages.push(format!(
             "claude-wiki: pages that may already cover this: {pages}. Read one if it bears on the request; otherwise ignore this note and do not reply to it."
-        );
+        ));
         crate::usage::log(&root, session, "remind", &paths);
     }
     if let Some(message) = update(db, hook, args.interval)? {
-        println!("{message}");
+        messages.push(message);
+    }
+    if !messages.is_empty() {
+        println!(
+            "{}",
+            args.harness
+                .context("UserPromptSubmit", &messages.join("\n"))
+        );
     }
     Ok(())
 }

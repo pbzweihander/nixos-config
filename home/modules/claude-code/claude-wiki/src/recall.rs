@@ -1,8 +1,9 @@
+use crate::hook_payload::{Harness, Hook};
 use anyhow::Result;
 use clap::Args as ClapArgs;
 use regex::Regex;
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
     collections::HashSet,
@@ -25,6 +26,8 @@ static ERRORS: LazyLock<Regex> = LazyLock::new(|| {
 
 #[derive(ClapArgs)]
 pub struct Args {
+    #[arg(long, value_enum, default_value = "claude")]
+    harness: Harness,
     /// Minimum match score: each six-word window counts 1, each gated 3–5-word
     /// phrase counts 2. Default 2 means seven consecutive matching words
     /// (overlapping windows), two separate six-word runs, or one gated short phrase.
@@ -53,23 +56,6 @@ pub struct SkillPagesArgs {
     session: Option<String>,
     #[arg(long, value_parser = crate::usage::source)]
     source: Option<String>,
-}
-
-#[derive(Default, Deserialize)]
-struct Hook {
-    session_id: Option<String>,
-    transcript_path: Option<String>,
-    cwd: Option<String>,
-    #[serde(default)]
-    hook_event_name: String,
-    #[serde(default)]
-    tool_name: String,
-    #[serde(default)]
-    tool_input: Value,
-    #[serde(default)]
-    error: Value,
-    #[serde(default)]
-    is_interrupt: bool,
 }
 
 fn absolute(path: &Path, cwd: &Path) -> PathBuf {
@@ -442,6 +428,7 @@ fn decide(root: &Path, db: &Connection, hook: &Hook, args: &Args) -> Result<Opti
     let mut names = vec![];
     let mut project = None;
     let mut candidates = vec![];
+    let mut fallback_lines = vec![];
     if !wiki_operation(root, hook) {
         match hook.hook_event_name.as_str() {
             "PreToolUse" if hook.tool_name == "Skill" => {
@@ -460,6 +447,29 @@ fn decide(root: &Path, db: &Connection, hook: &Hook, args: &Args) -> Result<Opti
                 mode = Some("error");
                 windows = error_windows(hook.error.as_str().unwrap_or_default(), &crate::home());
                 candidates = error_candidates(db, args, &mut windows)?;
+            }
+            "PostToolUse" if args.harness == Harness::Codex => {
+                if let Some(error) = hook.codex_failure() {
+                    let text = if error.uncertain {
+                        mode = Some("diagnostic");
+                        fallback_lines = crate::codex_recall::pending(
+                            db,
+                            hook.session_id.as_deref().unwrap_or_default(),
+                            &error.text,
+                            args.explain,
+                        )?;
+                        fallback_lines
+                            .iter()
+                            .map(|(line, _)| line.as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    } else {
+                        mode = Some("error");
+                        error.text
+                    };
+                    windows = error_windows(&text, &crate::home());
+                    candidates = error_candidates(db, args, &mut windows)?;
+                }
             }
             _ => {}
         }
@@ -504,12 +514,23 @@ fn decide(root: &Path, db: &Connection, hook: &Hook, args: &Args) -> Result<Opti
         format!(
             "claude-wiki: wiki pages about the {skill} skill: {pages}. Read any that bears on this task; otherwise ignore this note and do not reply to it."
         )
+    } else if mode == Some("diagnostic") {
+        format!(
+            "claude-wiki: pages that may explain this shell diagnostic (exit status unavailable): {pages}. Read one if relevant; otherwise ignore this note and do not reply to it."
+        )
     } else {
         format!(
             "claude-wiki: pages that may explain this {} failure: {pages}. Read one if it is relevant to what you are about to do; otherwise ignore this note and do not reply to it.",
             hook.tool_name
         )
     };
+    if !fallback_lines.is_empty() {
+        crate::codex_recall::record(
+            db,
+            hook.session_id.as_deref().unwrap_or_default(),
+            &fallback_lines,
+        )?;
+    }
     mark_seen(db, hook.session_id.as_deref().unwrap_or_default(), &paths)?;
     crate::usage::log(
         root,
@@ -521,9 +542,10 @@ fn decide(root: &Path, db: &Connection, hook: &Hook, args: &Args) -> Result<Opti
         },
         &paths,
     );
-    Ok(Some(
-        json!({"hookSpecificOutput": {"hookEventName": hook.hook_event_name, "additionalContext": message}}),
-    ))
+    Ok(Some(crate::hook_payload::additional_context(
+        &hook.hook_event_name,
+        &message,
+    )))
 }
 
 pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
@@ -628,6 +650,7 @@ mod tests {
 
     fn args() -> Args {
         Args {
+            harness: Harness::Claude,
             min_windows: 2,
             max_skill_pages: 5,
             max_pages: 2,

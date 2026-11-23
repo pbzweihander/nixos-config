@@ -1,5 +1,7 @@
 //! Shared markdown wiki, indexed incrementally and serialized across sessions.
+mod codex_recall;
 mod context;
+mod hook_payload;
 mod index;
 mod injections;
 mod links;
