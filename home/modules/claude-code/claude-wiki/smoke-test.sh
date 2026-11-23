@@ -14,6 +14,7 @@ sessions_dir=$HOME/transcripts
 export CLAUDE_WIKI_SESSIONS_DIRS=$sessions_dir
 unset CLAUDE_WIKI_RECALL_MIN_WINDOWS CLAUDE_WIKI_RECALL_MAX_SKILL_PAGES CLAUDE_WIKI_RECALL_MAX_PAGES
 unset CLAUDE_SESSION_ID CLAUDE_WIKI_CONTEXT_BUDGET CLAUDE_WIKI_OVERVIEW_BUDGET CLAUDE_WIKI_REMIND_INTERVAL
+unset CLAUDE_WIKI_REMIND_FAILURES
 trap 'rm -rf "$HOME"' EXIT
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
@@ -308,6 +309,29 @@ for ((i=1; i<=15; i++)); do
 done
 out=$(printf 'invalid json' | "$wiki" remind 2>/dev/null)
 [ -z "$out" ] || fail "remind printed an error to stdout" remind "$out"
+
+# Event reminders share interval state, but do not need the page index or daemon.
+printf '%s\n' '{"session_id":"event","hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"git commit -m fix"},"tool_response":{"stdout":"committed","stderr":"","interrupted":false}}' >"$HOME/event.json"
+printf '%s\n' '{"session_id":"event"}' >"$HOME/event-prompt.json"
+for ((i=0; i<14; i++)); do "$wiki" remind <"$HOME/event-prompt.json" >/dev/null; done
+check "commit event JSON context" '"additionalContext":"claude-wiki: you just committed' "$wiki" remind --event <"$HOME/event.json"
+check_not "event resets prompt interval" '.' "$wiki" remind <"$HOME/event-prompt.json"
+check_not "commit event session dedupe" '.' "$wiki" remind --event <"$HOME/event.json"
+printf '%s\n' '{"session_id":"event","hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"claude-wiki sync"},"tool_response":{"interrupted":false}}' >"$HOME/event-sync.json"
+check_not "sync itself is quiet" '.' "$wiki" remind --event <"$HOME/event-sync.json"
+printf '%s\n' '{"session_id":"event","hook_event_name":"PreCompact","trigger":"auto"}' >"$HOME/event-compact.json"
+check_not "sync suppresses precompact event" '.' "$wiki" remind --event <"$HOME/event-compact.json"
+for ((i=0; i<15; i++)); do "$wiki" remind <"$HOME/event-prompt.json" >"$HOME/event-interval.txt"; done
+check "interval resumes after event and sync" 'claude-wiki: 15 prompts since' cat "$HOME/event-interval.txt"
+check "precompact window reopens with plain context" '^claude-wiki: context compaction' "$wiki" remind --event <"$HOME/event-compact.json"
+check_not "precompact dedupe" '.' "$wiki" remind --event <"$HOME/event-compact.json"
+printf '%s\n' '{"session_id":"debug-event","hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_input":{"command":"cargo test"},"error":"Exit code 1"}' >"$HOME/event-failure.json"
+for ((i=0; i<3; i++)); do check_not "failure only counts" '.' "$wiki" remind --event <"$HOME/event-failure.json"; done
+printf '%s\n' '{"session_id":"debug-event","hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"cargo test"},"tool_response":{"exit_code":0}}' >"$HOME/event-test.json"
+check "passing test resolves debugging streak" 'resolved a debugging streak' "$wiki" remind --event <"$HOME/event-test.json"
+check_not "event malformed stdin fails open" '.' bash -c 'printf invalid | "$1" remind --event 2>/dev/null' _ "$wiki"
+check_not "event malformed args fail open" '.' bash -c '"$1" remind --event --failures 0 2>/dev/null' _ "$wiki" </dev/null
+check_not "event unavailable state fails open" '.' bash -c 'CLAUDE_WIKI_DIR="$2" "$1" remind --event 2>/dev/null' _ "$wiki" "$HOME/event.json" <"$HOME/event.json"
 
 # Skill tags are scoped to the hook cwd, even when it names a worktree.
 for project in demo other; do

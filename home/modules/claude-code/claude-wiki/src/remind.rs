@@ -10,6 +10,12 @@ use std::{collections::HashSet, fs::File, io, path::Path};
 pub struct Args {
     #[arg(long, env = "CLAUDE_WIKI_REMIND_INTERVAL", default_value_t = 15)]
     pub interval: u64,
+    /// Handle PostToolUse, PostToolUseFailure or PreCompact hook JSON
+    #[arg(long)]
+    pub event: bool,
+    /// Failures before a successful commit/test counts as resolved debugging
+    #[arg(long, env = "CLAUDE_WIKI_REMIND_FAILURES", default_value_t = 3, value_parser = clap::value_parser!(u32).range(1..))]
+    pub failures: u32,
 }
 
 #[derive(Default, Deserialize)]
@@ -19,7 +25,7 @@ struct Hook {
     prompt: Option<String>,
 }
 
-fn ran_sync(line: &[u8]) -> bool {
+pub(crate) fn ran_sync(line: &[u8]) -> bool {
     let Ok(v) = serde_json::from_slice::<Value>(line) else {
         return false;
     };
@@ -35,7 +41,10 @@ fn ran_sync(line: &[u8]) -> bool {
 }
 
 fn update(db: &Connection, hook: Hook, interval: u64) -> Result<Option<String>> {
+    let tx = db.unchecked_transaction()?;
+    let db = &tx;
     let id = hook.session_id.unwrap_or_default();
+    let mut synced = false;
     let (mut prompts, mut offset): (i64, i64) = db
         .query_row(
             "select prompts, offset from remind_state where session_id = ?",
@@ -53,6 +62,7 @@ fn update(db: &Connection, hook: Hook, interval: u64) -> Result<Option<String>> 
                 offset = i64::try_from(complete_lines(file, offset as u64, |line| {
                     if ran_sync(line) {
                         prompts = 0;
+                        synced = true;
                     }
                     Ok(())
                 })?)?;
@@ -72,6 +82,8 @@ fn update(db: &Connection, hook: Hook, interval: u64) -> Result<Option<String>> 
         None
     };
     db.execute("insert into remind_state(session_id, prompts, offset) values (?,?,?) on conflict(session_id) do update set prompts=excluded.prompts, offset=excluded.offset", params![id, prompts, offset])?;
+    crate::remind_event::after_prompt(db, &id, synced, message.is_some())?;
+    tx.commit()?;
     Ok(message)
 }
 
