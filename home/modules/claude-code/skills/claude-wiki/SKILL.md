@@ -218,9 +218,16 @@ are indexed, without event duplicates, reasoning or tool output. Codex sidechain
 (`source.subagent`) are excluded. Orca desktop sessions are included as `codex/orca`;
 exec sessions are included because `source: exec` and `originator: codex_exec`
 identify a runner, not whether it did real delegated work or a scripted one-shot.
+Both harnesses exclude wiki-curator runs by their first-prompt marker
+`[wiki-curator automation]`, with cwd under `$XDG_CACHE_HOME/wiki-curator/`
+(or `~/.cache/wiki-curator/`) as a fallback for older runs. The marker survives
+custom worktree locations. Previously indexed curator runs are removed on the
+next index rebuild, and previously saved curator records are pruned on database open.
+Claude daemon jobs under `~/.claude/jobs/*/tmp` remain included: that directory
+also holds delegated interactive work and does not establish scripted automation.
 Results show originator/source metadata, also preserved in records.
 `CODEX_THREAD_ID` excludes the current session. Existing indexes rebuild once to
-include previously excluded worker sessions and populate the provenance fields.
+apply the updated inclusion rules and populate the provenance fields.
 
 `--records` searches deterministic session records instead of message text. Records
 contain the first/last prompts (1000 characters each), cwd/project/branch, observed
@@ -237,7 +244,7 @@ for Codex. It detaches via `setsid`, closes inherited pipes, skips the wiki lock
 fails open. `record --wait` runs synchronously and reports errors; `record --backfill
 --days 30` covers both configured sources, selecting transcripts modified in the last
 30 days (`--days 0` includes all). Each run replaces the record for that session ID.
-Backfill reports Codex counts by originator/source and skipped counts by reason.
+Backfill reports Codex counts by originator/source/cwd class and skipped counts by reason.
 Records live only in `$XDG_STATE_HOME/claude-wiki/records.sqlite`, defaulting to
 `~/.local/state/claude-wiki/records.sqlite`, with directory mode 700 and file mode 600.
 Known credential patterns are redacted, but records remain private conversation data.

@@ -155,3 +155,136 @@ fn backfill_includes_orca_and_exec_and_reports_exclusion_reasons() {
     );
     assert!(!tmp.0.join("wiki").exists());
 }
+
+#[test]
+fn curator_exclusion_applies_to_both_formats_and_rebuilds_old_indexes() {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let tmp = Temp(std::env::temp_dir().join(format!(
+        "wiki-curator-exclusion-{}-{nonce}",
+        std::process::id()
+    )));
+    let codex_dir = tmp.0.join("codex/2026/11/20");
+    let claude_dir = tmp.0.join("claude/project");
+    fs::create_dir_all(&codex_dir).unwrap();
+    fs::create_dir_all(&claude_dir).unwrap();
+    let command = |args: &[&str]| {
+        let result = Command::new(env!("CARGO_BIN_EXE_claude-wiki"))
+            .args(args)
+            .env("HOME", &tmp.0)
+            .env("XDG_CACHE_HOME", tmp.0.join("cache"))
+            .env("XDG_STATE_HOME", tmp.0.join("state"))
+            .env("CLAUDE_WIKI_DIR", tmp.0.join("wiki"))
+            .env("CLAUDE_WIKI_SESSIONS_DIRS", tmp.0.join("claude"))
+            .env("CLAUDE_WIKI_CODEX_SESSIONS_DIRS", tmp.0.join("codex"))
+            .env_remove("CLAUDE_SESSION_ID")
+            .env_remove("CODEX_THREAD_ID")
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{result:?}");
+        String::from_utf8(result.stdout).unwrap()
+    };
+    for harness in ["claude", "codex"] {
+        for name in [
+            "marker",
+            "marker-in-cache",
+            "cwd",
+            "default-cache",
+            "project",
+            "jobs",
+            "later-marker",
+        ] {
+            let cwd = match name {
+                "cwd" | "marker-in-cache" => tmp.0.join("cache/wiki-curator/worktree"),
+                "default-cache" => tmp.0.join(".cache/wiki-curator/worktree"),
+                "jobs" => tmp.0.join(".claude/jobs/12345678/tmp"),
+                // A similar name must not trigger a path prefix match.
+                _ => tmp.0.join("cache/wiki-curator-project"),
+            };
+            let id = format!("{harness}-{name}");
+            let prompt = if name.starts_with("marker") {
+                "[wiki-curator automation]\njournal"
+            } else {
+                "journal"
+            };
+            let mut lines = if harness == "codex" {
+                vec![
+                    serde_json::json!({"type":"session_meta", "payload":{"id":id,"cwd":cwd,"originator":"codex_exec","source":"exec"}}),
+                    serde_json::json!({"type":"response_item", "payload":{"type":"message","role":"user","content":[{"type":"input_text","text":prompt}]}}),
+                    serde_json::json!({"type":"response_item", "payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"journal completed"}]}}),
+                    serde_json::json!({"type":"response_item", "payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"[wiki-curator automation]\nquoted later"}]}}),
+                ]
+            } else {
+                vec![
+                    serde_json::json!({"type":"user","sessionId":id,"uuid":format!("{id}-user"),"cwd":cwd,"timestamp":"2026-11-20T11:00:00Z","message":{"content":prompt}}),
+                    // Missing cwd must not let assistant rows escape a session-wide exclusion.
+                    serde_json::json!({"type":"assistant","sessionId":id,"uuid":format!("{id}-assistant"),"timestamp":"2026-11-20T11:01:00Z","message":{"content":"journal completed"}}),
+                    serde_json::json!({"type":"user","sessionId":id,"uuid":format!("{id}-later"),"timestamp":"2026-11-20T11:02:00Z","message":{"content":"[wiki-curator automation]\nquoted later"}}),
+                ]
+            };
+            for line in &mut lines {
+                if line.get("timestamp").is_none() {
+                    line["timestamp"] = "2026-11-20T11:00:00Z".into();
+                }
+            }
+            let path = if harness == "codex" {
+                codex_dir.join(format!("rollout-{name}.jsonl"))
+            } else {
+                claude_dir.join(format!("{name}.jsonl"))
+            };
+            fs::write(
+                path,
+                lines.iter().map(|v| format!("{v}\n")).collect::<String>(),
+            )
+            .unwrap();
+        }
+    }
+    let output = command(&["record", "--backfill", "--days", "0"]);
+    assert!(
+        output.contains("claude=3 codex=3 skipped=8 older=0 failed=0"),
+        "{output}"
+    );
+    assert!(output.contains("\"wiki_curator_marker\":4"), "{output}");
+    assert!(output.contains("\"wiki_curator_cwd\":4"), "{output}");
+    assert!(output.contains("claude_jobs_tmp"), "{output}");
+    command(&["sessions", "journal"]);
+    let db = rusqlite::Connection::open(tmp.0.join("wiki/sessions.sqlite")).unwrap();
+    assert_eq!(
+        db.query_row("select count(distinct session_id) from messages", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        6
+    );
+    // Simulate the previous format containing a curator row from an unchanged file.
+    db.execute_batch("update state set value=3 where key='index_format'; insert into messages(session_id,uuid,text) values('old-curator','old-curator','oldcuratoruniqueword');").unwrap();
+    command(&["sessions", "journal"]);
+    assert_eq!(
+        db.query_row(
+            "select count(*) from messages_fts where messages_fts match 'oldcuratoruniqueword'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.query_row("select count(distinct session_id) from messages", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        6
+    );
+    db.execute_batch("insert into messages(uuid,text) values('retained','retained');")
+        .unwrap();
+    command(&["sessions", "journal"]);
+    assert_eq!(
+        db.query_row(
+            "select count(*) from messages where uuid='retained'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+}

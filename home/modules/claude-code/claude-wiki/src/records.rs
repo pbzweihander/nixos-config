@@ -58,6 +58,8 @@ struct Record {
     originator: String,
     #[serde(default)]
     source: String,
+    #[serde(default)]
+    cwd_class: String,
     transcript_path: String,
     cwd: String,
     project: String,
@@ -313,8 +315,8 @@ fn extract_explained(
     skip_reason: &mut &'static str,
 ) -> Result<Option<Record>> {
     let codex = transcript::Codex::open(path)?;
-    if codex.as_ref().is_some_and(|meta| meta.skipped) {
-        *skip_reason = "codex_subagent";
+    if let Some(reason) = transcript::exclusion(path, codex.as_ref())? {
+        *skip_reason = reason;
         return Ok(None);
     }
     let mut record = Record {
@@ -465,6 +467,7 @@ fn extract_explained(
         bail!("hook session does not match transcript")
     }
     record.project = sessions::project(&record.cwd);
+    record.cwd_class = transcript::cwd_class(&record.cwd).into();
     if let (Ok(start), Ok(end)) = (
         DateTime::parse_from_rfc3339(&record.started),
         DateTime::parse_from_rfc3339(&record.ended),
@@ -506,6 +509,27 @@ fn initialize(db: &Connection) -> Result<()> {
         create virtual table if not exists records_fts using fts5(body, content='records', content_rowid='id', tokenize='porter unicode61 remove_diacritics 2');
         create trigger if not exists records_ai after insert on records begin insert into records_fts(rowid,body) values(new.id,new.body); end;
         create trigger if not exists records_ad after delete on records begin insert into records_fts(records_fts,rowid,body) values('delete',old.id,old.body); end;")?;
+    // Previously recorded curator runs must disappear from search as well.
+    // Check the saved metadata, without needing the original transcript to exist;
+    // repeat this cheap scan so changes to XDG_CACHE_HOME are respected too.
+    let mut stmt = db.prepare("select id, coalesce(json_extract(body, '$.cwd'), ''), coalesce(json_extract(body, '$.first_prompt'), '') from records")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut excluded = Vec::new();
+    for row in rows {
+        let (id, cwd, prompt) = row?;
+        if transcript::curator_reason(&cwd, &prompt).is_some() {
+            excluded.push(id);
+        }
+    }
+    for id in excluded {
+        db.execute("delete from records where id=?", [id])?;
+    }
     Ok(())
 }
 
@@ -580,8 +604,14 @@ pub fn run(args: &Args) -> Result<()> {
             .spawn()?;
         return Ok(());
     }
+    let mut db = open()?;
     if let Some(record) = extract(&hook.transcript_path, &hook)? {
-        save(&mut open()?, &record)?;
+        save(&mut db, &record)?;
+    } else {
+        db.execute(
+            "delete from records where json_extract(body, '$.transcript_path')=?",
+            [hook.transcript_path.to_string_lossy().as_ref()],
+        )?;
     }
     Ok(())
 }
@@ -597,7 +627,7 @@ fn backfill(days: u32) -> Result<()> {
     let cutoff = Utc::now() - chrono::Duration::days(days.into());
     let mut db = open()?;
     let (mut claude, mut codex, mut skipped, mut failed, mut older) = (0, 0, 0, 0, 0);
-    let mut codex_sources = BTreeMap::<(String, String), usize>::new();
+    let mut codex_sources = BTreeMap::<(String, String, String), usize>::new();
     let mut skipped_reasons = BTreeMap::<&str, usize>::new();
     for path in paths {
         let result = (|| -> Result<Option<Record>> {
@@ -613,6 +643,10 @@ fn backfill(days: u32) -> Result<()> {
             } else {
                 skipped += 1;
                 *skipped_reasons.entry(reason).or_default() += 1;
+                db.execute(
+                    "delete from records where json_extract(body, '$.transcript_path')=?",
+                    [path.to_string_lossy().as_ref()],
+                )?;
             }
             Ok(record)
         })();
@@ -620,7 +654,7 @@ fn backfill(days: u32) -> Result<()> {
             Ok(Some(record)) if record.harness == "codex" => {
                 codex += 1;
                 *codex_sources
-                    .entry((record.originator, record.source))
+                    .entry((record.originator, record.source, record.cwd_class))
                     .or_default() += 1;
             }
             Ok(Some(_)) => claude += 1,
@@ -631,8 +665,8 @@ fn backfill(days: u32) -> Result<()> {
     println!(
         "records: claude={claude} codex={codex} skipped={skipped} older={older} failed={failed}"
     );
-    let origins: Vec<_> = codex_sources.into_iter().map(|((originator, source), records)| {
-        serde_json::json!({"originator":originator, "source":source, "records":records})
+    let origins: Vec<_> = codex_sources.into_iter().map(|((originator, source, cwd_class), records)| {
+        serde_json::json!({"originator":originator, "source":source, "cwd_class":cwd_class, "records":records})
     }).collect();
     println!("codex sources: {}", serde_json::to_string(&origins)?);
     println!(
@@ -712,6 +746,54 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures")
             .join(name)
+    }
+
+    #[test]
+    fn opening_records_removes_historical_curator_rows_and_fts_terms() -> Result<()> {
+        let mut db = Connection::open_in_memory()?;
+        initialize(&db)?;
+        let mut record = extract(&fixture("record-codex.jsonl"), &Hook::default())?.unwrap();
+        for (id, cwd, prompt) in [
+            (
+                "marker",
+                "/custom/worktree".into(),
+                format!("{}\ncuratoruniqueword", transcript::CURATOR_MARKER),
+            ),
+            (
+                "cwd",
+                home()
+                    .join(".cache/wiki-curator/worktree")
+                    .to_string_lossy()
+                    .into_owned(),
+                "curatoruniqueword".into(),
+            ),
+            (
+                "project",
+                "/repos/wiki-curator".into(),
+                "projectuniqueword".into(),
+            ),
+        ] {
+            record.session_id = id.into();
+            record.cwd = cwd;
+            record.first_prompt = prompt;
+            save(&mut db, &record)?;
+        }
+        for _ in 0..2 {
+            initialize(&db)?;
+            assert_eq!(
+                db.query_row("select count(*) from records", [], |r| r.get::<_, i64>(0))?,
+                1
+            );
+            assert_eq!(
+                db.query_row(
+                    "select count(*) from records_fts where records_fts match 'curatoruniqueword'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                0
+            );
+        }
+        Ok(())
     }
 
     #[test]

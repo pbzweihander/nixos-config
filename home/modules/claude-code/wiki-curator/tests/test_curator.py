@@ -826,6 +826,8 @@ class RunTests(RepoTest):
         self.assertEqual(codex["args"][:7], ["exec", "--skip-git-repo-check", "-s", "read-only", "--color", "never", "-o"])
         self.assertIn("Measured `probe --fast` takes 45s.", codex["prompt"])
         self.assertIn("reported, unverified", codex["prompt"])
+        self.assertTrue(codex["prompt"].startswith("[wiki-curator automation]\n"))
+        self.assertTrue(claude["prompt"].startswith("[wiki-curator automation]\n"))
 
     def test_preservation_failure_rejects_before_codex(self):
         self.fixture["writes"][A] = page(NEW.replace("45s", "46s"))

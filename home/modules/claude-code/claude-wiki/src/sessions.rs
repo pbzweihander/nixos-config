@@ -41,7 +41,7 @@ pub struct Args {
     pub harness: Option<String>,
 }
 
-const INDEX_FORMAT: i64 = 3;
+const INDEX_FORMAT: i64 = 4;
 
 pub fn codex_source_dirs() -> Result<Vec<PathBuf>> {
     let fallback = env_path("CODEX_HOME")
@@ -360,7 +360,8 @@ fn refresh_sources(db: &mut Connection, dirs: &[PathBuf], codex_dirs: &[PathBuf]
             offset = 0;
         }
         let codex = transcript::Codex::open(&path)?;
-        if codex.as_ref().is_some_and(|meta| meta.skipped) {
+        if transcript::exclusion(&path, codex.as_ref())?.is_some() {
+            tx.execute("delete from messages where path = ?", [path_str.as_ref()])?;
             tx.execute(
                 "insert or replace into transcripts(path, offset, size, mtime_ns) values (?,?,?,?)",
                 params![path_str.as_ref(), size, size, mtime],

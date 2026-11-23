@@ -8,6 +8,74 @@ use std::{
     path::Path,
 };
 
+// Kept in sync with wiki-curator/wiki_curator/prompts.py. A prompt marker
+// survives relocated worktrees and does not rely on private Codex env overrides.
+pub const CURATOR_MARKER: &str = "[wiki-curator automation]";
+
+pub fn cwd_class(cwd: &str) -> &'static str {
+    let path = Path::new(cwd);
+    let cache = crate::env_path("XDG_CACHE_HOME").unwrap_or_else(|| crate::home().join(".cache"));
+    if [cache, crate::home().join(".cache")]
+        .iter()
+        .any(|root| path.starts_with(root.join("wiki-curator")))
+    {
+        "wiki_curator"
+    } else if [".claude", ".pclaude"].iter().any(|dir| {
+        path.strip_prefix(crate::home().join(dir).join("jobs"))
+            .ok()
+            .is_some_and(|relative| {
+                relative
+                    .components()
+                    .nth(1)
+                    .is_some_and(|c| c.as_os_str() == "tmp")
+            })
+    }) {
+        "claude_jobs_tmp"
+    } else {
+        "project_or_other"
+    }
+}
+
+pub fn curator_reason(cwd: &str, prompt: &str) -> Option<&'static str> {
+    if prompt.lines().next() == Some(CURATOR_MARKER) {
+        Some("wiki_curator_marker")
+    } else if cwd_class(cwd) == "wiki_curator" {
+        Some("wiki_curator_cwd")
+    } else {
+        None
+    }
+}
+
+/// Session-wide exclusions: do not leave assistant/tool rows from an excluded
+/// run behind. Only the first real prompt is a launcher marker; later quotations
+/// of a curator prompt during normal project work do not exclude that session.
+pub fn exclusion(path: &Path, codex: Option<&Codex>) -> Result<Option<&'static str>> {
+    if codex.is_some_and(|meta| meta.skipped) {
+        return Ok(Some("codex_subagent"));
+    }
+    let mut cwd_reason = codex.and_then(|meta| curator_reason(&meta.cwd, ""));
+    for line in BufReader::new(File::open(path)?).split(b'\n') {
+        let Ok(value) = serde_json::from_slice::<Value>(&line?) else {
+            continue;
+        };
+        cwd_reason =
+            cwd_reason.or_else(|| curator_reason(string(&value, "cwd").unwrap_or_default(), ""));
+        let prompt = if let Some(meta) = codex {
+            meta.message(&value)
+                .filter(|(role, _)| role == "user")
+                .map(|(_, text)| text)
+        } else if value["type"] == "user" && !skipped(&value) {
+            Some(text(&value["message"]["content"]))
+        } else {
+            None
+        };
+        if let Some(prompt) = prompt.filter(|p| !p.trim().is_empty() && !p.starts_with('<')) {
+            return Ok(curator_reason("", &prompt).or(cwd_reason));
+        }
+    }
+    Ok(cwd_reason)
+}
+
 #[derive(Default)]
 pub struct Codex {
     pub session: String,
@@ -44,7 +112,8 @@ impl Codex {
             },
             // Orca desktop and codex_exec sessions include delegated real work.
             // The exec runner alone does not prove a scripted one-shot; preserve
-            // its provenance instead. Only explicit sidechains are excluded.
+            // its provenance instead. Curator automation is checked separately
+            // by the session-wide exclusion above.
             skipped: p["source"].get("subagent").is_some(),
         }))
     }
