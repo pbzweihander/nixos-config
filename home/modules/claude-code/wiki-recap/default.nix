@@ -8,7 +8,7 @@
   systemd.user = {
     services.wiki-recap = {
       Unit = {
-        Description = "Regenerate the claude-wiki recap";
+        Description = "Regenerate the agent-wiki recap";
         StartLimitIntervalSec = "2h";
         StartLimitBurst = 4;
       };
@@ -23,7 +23,7 @@
       };
     };
     timers.wiki-recap = {
-      Unit.Description = "Regenerate the claude-wiki recap every 4 hours";
+      Unit.Description = "Regenerate the agent-wiki recap every 4 hours";
       Timer = {
         OnCalendar = "*-*-* 02/4:00:00";
         Persistent = true;

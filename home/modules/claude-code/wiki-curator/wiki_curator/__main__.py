@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import signal
 
+from .config import wiki_dir
 from .preservation import load_justification, preserved
 from .review import execute as review_command
 from .runner import Interrupted, run, show_status
@@ -35,7 +36,7 @@ def main(argv=None):
     discard_parser.add_argument("id")
     discard_parser.add_argument("--json", action="store_true")
     for child in (run_parser, status_parser, review_parser, show_parser, land_parser, discard_parser):
-        child.add_argument("--wiki", type=Path, default=Path(os.environ.get("CLAUDE_WIKI_DIR", "~/.local/share/claude-wiki")).expanduser())
+        child.add_argument("--wiki", type=Path, default=wiki_dir())
     preservation_parser = commands.add_parser("check-preservation")
     preservation_parser.add_argument("parent")
     preservation_parser.add_argument("commit")

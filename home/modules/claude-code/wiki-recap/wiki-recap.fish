@@ -1,8 +1,20 @@
-# wiki-recap: a one-page recap of recent claude-wiki changes, written by Claude, cached
+# wiki-recap: a one-page recap of recent agent-wiki changes, written by Claude, cached
 # so that a systemd timer can prepare it and new terminals can show a three-line brief.
 # The nix wrapper runs this as `fish --no-config wiki-recap.fish`.
 
-set -g wiki_dir (set -q CLAUDE_WIKI_DIR; and echo $CLAUDE_WIKI_DIR; or echo ~/.local/share/claude-wiki)
+set -g wiki_dir
+if set -q AGENT_WIKI_DIR
+    set wiki_dir $AGENT_WIKI_DIR
+else if set -q CLAUDE_WIKI_DIR
+    set wiki_dir $CLAUDE_WIKI_DIR
+end
+if test -z "$wiki_dir"
+    set -l data_dir (set -q XDG_DATA_HOME; and echo $XDG_DATA_HOME; or echo ~/.local/share)
+    set wiki_dir $data_dir/agent-wiki
+    if not test -e $wiki_dir; and test -d $data_dir/claude-wiki
+        set wiki_dir $data_dir/claude-wiki
+    end
+end
 set -g cache_dir (set -q XDG_CACHE_HOME; and echo $XDG_CACHE_HOME; or echo ~/.cache)/wiki-recap
 # A cached recap is current for 4 hours (the timer interval) after it was last
 # generated or confirmed unchanged. The terminal brief allows 15 more minutes, so a
@@ -194,8 +206,8 @@ function generate -a dir
         set -a input ""
     end
     set -a input "## Open follow-ups (all projects)"
-    set -a input (claude-wiki list --type followups --status open -n 50 2>/dev/null | string replace -r '^.*/pages/' '' | string replace -r '^  (.*)  \(.*$' '    $1') ""
-    set -a input "## Tags" (claude-wiki tags 2>/dev/null) ""
+    set -a input (agent-wiki list --type followups --status open -n 50 2>/dev/null | string replace -r '^.*/pages/' '' | string replace -r '^  (.*)  \(.*$' '    $1') ""
+    set -a input "## Tags" (agent-wiki tags 2>/dev/null) ""
     # Share what the fixed sections leave of the budget: smallest pages first, each
     # taking at most an equal share of what is left, so the unused part of a small
     # page's share goes to the larger pages. No page gets more than $page_cap chars.

@@ -217,7 +217,8 @@ async function insert($: EngineInterface, kind: 'path' | 'link'): Promise<void> 
 }
 
 export const register: Register = (on, options) => {
-  const bin = typeof options.claudeWikiBin === 'string' && options.claudeWikiBin.trim() ? options.claudeWikiBin : 'claude-wiki'
+  const configuredBin = options.agentWikiBin || options.claudeWikiBin
+  const bin = typeof configuredBin === 'string' && configuredBin.trim() ? configuredBin : 'agent-wiki'
   const curatorBin = typeof options.wikiCuratorBin === 'string' && options.wikiCuratorBin.trim() ? options.wikiCuratorBin : 'wiki-curator'
 
   on('agent.spawn', async ($, e, next) => {
@@ -241,7 +242,7 @@ export const register: Register = (on, options) => {
   })
 
   on('skill.prompt', async ($, e, next) => {
-    if (e.skill.split(':').at(-1) === 'claude-wiki') return next(e)
+    if (['agent-wiki', 'claude-wiki'].includes(e.skill.split(':').at(-1) ?? '')) return next(e)
     let block: string
     try {
       block = skillBlock(await runJson($, bin, [

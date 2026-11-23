@@ -52,6 +52,7 @@ class AdjudicationTests(RepoTest):
         self.assertEqual(call["wiki"], call["cwd"])
         self.assertEqual(call["socket"], "")
         self.assertIn(PROBLEM, call["prompt"])
+        self.assertTrue(call["prompt"].startswith("[wiki-curator automation]\n"))
         self.assertIn('"recall":', call["prompt"])
         self.assertIn('"old":', call["prompt"])
         self.assertIn('"new":', call["prompt"])
@@ -92,7 +93,7 @@ class AdjudicationTests(RepoTest):
         self.assertNotEqual(stage["original_commit"], result["commit"])
         self.assertEqual(len(self.adjudicators()), 1)
         self.assertEqual(len(self.calls("codex")), 2)
-        self.assertEqual(len([c for c in self.calls("claude-wiki") if c["args"][0] == "check"]), 2)
+        self.assertEqual(len([c for c in self.calls("agent-wiki") if c["args"][0] == "check"]), 2)
         self.assertIn("merged (adjudicated: revise)", (self.cache / "latest.md").read_text())
 
     def test_invalid_edits_and_second_rejection_keep_candidate(self):

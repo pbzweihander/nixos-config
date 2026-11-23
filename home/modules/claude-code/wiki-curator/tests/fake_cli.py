@@ -14,8 +14,8 @@ prompt = sys.stdin.read()
 head = subprocess.run(["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
 with Path(os.environ["CURATOR_CALLS"]).open("a") as stream:
     stream.write(json.dumps({"name": name, "args": sys.argv[1:], "cwd": os.getcwd(),
-                             "wiki": os.environ.get("CLAUDE_WIKI_DIR"),
-                             "socket": os.environ.get("CLAUDE_WIKI_SOCKET"),
+                             "wiki": os.environ.get("AGENT_WIKI_DIR"),
+                             "socket": os.environ.get("AGENT_WIKI_SOCKET"),
                              "prompt": prompt, "head": head}) + "\n")
 
 
@@ -35,7 +35,7 @@ def edits(root, operations):
         git(root, "rm", path)
 
 
-if name == "claude-wiki":
+if name == "agent-wiki":
     if sys.argv[1] == "lint":
         print(fixture.get("lint_raw", json.dumps(fixture["lint"])))
         sys.exit(fixture.get("lint_exit", 0))

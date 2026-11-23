@@ -198,13 +198,13 @@ def recall(worktree, parent, commit, justification, env, socket_path=None):
         for probe in probes:
             query = probe["query"]
             if query not in cache:
-                output = command(["claude-wiki", "search", "--json", "--no-semantic",
+                output = command(["agent-wiki", "search", "--json", "--no-semantic",
                                   "-n", "10", "--", *query.split()], worktree, env=env)
                 value = strict_json(output.stdout)
                 if (not isinstance(value, dict) or not isinstance(value.get("hits"), list)
                         or any(not isinstance(hit, dict) or not isinstance(hit.get("rel"), str)
                                for hit in value["hits"])):
-                    raise ValueError("invalid claude-wiki search JSON")
+                    raise ValueError("invalid agent-wiki search JSON")
                 cache[query] = [hit["rel"] for hit in value["hits"][:10]]
             hits = cache[query]
             path = probe[path_key]

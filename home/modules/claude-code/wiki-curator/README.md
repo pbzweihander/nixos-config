@@ -1,10 +1,14 @@
 # wiki-curator
 
-Daily, conservative maintenance for the shared `claude-wiki` git repository. On
+`AGENT_WIKI_*` settings take precedence over their `CLAUDE_WIKI_*` aliases.
+The data and socket directories fall back to `claude-wiki` until Home Manager
+migrates them to `agent-wiki` and leaves compatibility symlinks.
+
+Daily, conservative maintenance for the shared `agent-wiki` git repository. On
 rossmann the user timer starts at 05:00 local time, with up to 15 minutes of random
 delay and catch-up after downtime. It attempts at most five tasks per run.
 
-The job reads `claude-wiki lint --json` and considers, in order:
+The job reads `agent-wiki lint --json` and considers, in order:
 
 1. Broken links, one page per task.
 2. Candidate duplicate knowledge pages or two open follow-ups with similarity at
@@ -46,6 +50,11 @@ tasks and other pairs. Once the deadline expires, the pair is eligible again.
 
 ## Isolation and gates
 
+All curator prompts start with `[wiki-curator automation]`, allowing session search
+and local records to exclude these runs even when the worktree is relocated.
+Existing rollouts are excluded by the cache's `wiki-curator/` directory as a fallback.
+Claude invocations also use `--no-session-persistence`.
+
 Each run owns a detached worktree in the cache. Before each task it checks out the
 latest `main` and cleans untracked files. Claude runs there with wiki hooks disabled,
 no session persistence, an explicit editing-tool allowlist, a 40-turn limit and a
@@ -55,7 +64,7 @@ redirects. The semantic daemon socket is disabled for worktree CLI commands;
 the recall gate separately requests dense ranks with page-text overrides.
 
 Before committing, the curator checks scope, redirects and required link updates,
-rejects new broken wiki links, and runs `claude-wiki check`. For each added or
+rejects new broken wiki links, and runs `agent-wiki check`. For each added or
 modified page, missing `[[type/slug]]` targets are compared with those already
 missing in that same page at the parent. Existing broken links are tolerated;
 new ones are recorded in the `broken-links` gate and reject the attempt.
@@ -200,17 +209,17 @@ systemctl --user status wiki-curator.timer wiki-curator.service
 journalctl --user -u wiki-curator.service
 ```
 
-The wiki defaults to `~/.local/share/claude-wiki`. Environment settings:
+The wiki defaults to `~/.local/share/agent-wiki`. Environment settings:
 
 | Variable | Meaning |
 | --- | --- |
-| `CLAUDE_WIKI_DIR` | Wiki root; `--wiki` takes precedence. |
+| `AGENT_WIKI_DIR` | Wiki root; `--wiki` takes precedence. |
 | `WIKI_CURATOR_MAX_TASKS` | Default task limit (five); `--max-tasks` takes precedence. Zero selects no tasks. |
 | `WIKI_CURATOR_MODEL` | Optional Claude model, passed as `--model`. |
 | `WIKI_CURATOR_ADJUDICATE` | Set to `0` to disable adjudication of Codex rejections; enabled otherwise. |
 | `WIKI_CURATOR_INVENTED_GATE` | `report` (default) records invented tokens; `reject` rejects them. Other values are task errors. |
-| `CLAUDE_WIKI_SOCKET` | Dense recall socket; an explicitly empty value disables dense recall. CLI commands in the worktree always receive an empty value. |
-| `XDG_RUNTIME_DIR` | When `CLAUDE_WIKI_SOCKET` is unset, dense recall uses `$XDG_RUNTIME_DIR/claude-wiki/embed.sock`. Without either variable, dense recall is unavailable. |
+| `AGENT_WIKI_SOCKET` | Dense recall socket; an explicitly empty value disables dense recall. CLI commands in the worktree always receive an empty value. |
+| `XDG_RUNTIME_DIR` | When `AGENT_WIKI_SOCKET` is unset, dense recall uses `$XDG_RUNTIME_DIR/agent-wiki/embed.sock`. Without either variable, dense recall is unavailable. |
 | `XDG_CACHE_HOME` | Cache root, default `~/.cache`. State is in its `wiki-curator/` directory. |
 
 The service PATH includes `~/.local/bin`, the home profile's `bin`, and

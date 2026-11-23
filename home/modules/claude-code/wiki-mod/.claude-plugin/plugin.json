@@ -4,11 +4,15 @@
   "description": "Shared wiki suggestions for subagents and skills, session status, a wiki browser, and curator review.",
   "types": "./types/index.d.ts",
   "userConfig": {
+    "agentWikiBin": {
+      "type": "string",
+      "title": "agent-wiki executable",
+      "description": "Executable name or absolute path to the agent-wiki CLI."
+    },
     "claudeWikiBin": {
       "type": "string",
-      "title": "claude-wiki executable",
-      "description": "Executable name or absolute path to the claude-wiki CLI.",
-      "default": "claude-wiki"
+      "title": "Legacy wiki executable",
+      "description": "Deprecated alias for agentWikiBin; the new option takes precedence."
     },
     "wikiCuratorBin": {
       "type": "string",

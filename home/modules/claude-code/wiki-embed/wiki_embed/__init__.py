@@ -1,1 +1,1 @@
-"""Resident semantic retrieval for claude-wiki."""
+"""Resident semantic retrieval for agent-wiki."""
