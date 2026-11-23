@@ -1,4 +1,4 @@
-use crate::{env_path, home, index, scan, search};
+use crate::{env_path, home, index, records, scan, search, transcript};
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Duration, NaiveDate, SecondsFormat, Utc};
 use clap::Args as ClapArgs;
@@ -34,9 +34,50 @@ pub struct Args {
     pub context: usize,
     #[arg(long)]
     pub reindex: bool,
+    /// Search deterministic local session records instead of message text
+    #[arg(long, conflicts_with_all = ["role", "context", "reindex"])]
+    pub records: bool,
+    #[arg(long, value_parser = ["claude", "codex"])]
+    pub harness: Option<String>,
 }
 
-const INDEX_FORMAT: i64 = 1;
+const INDEX_FORMAT: i64 = 2;
+
+pub fn codex_source_dirs() -> Result<Vec<PathBuf>> {
+    let fallback = env_path("CODEX_HOME")
+        .unwrap_or_else(|| home().join(".codex"))
+        .join("sessions");
+    resolve_source_dirs(
+        env::var_os("CLAUDE_WIKI_CODEX_SESSIONS_DIRS").as_deref(),
+        &fallback,
+    )
+}
+
+pub fn codex_paths(dir: &Path) -> Result<Vec<PathBuf>> {
+    fn visit(dir: &Path, depth: usize, paths: &mut Vec<PathBuf>) -> Result<()> {
+        let Some(entries) = existing(fs::read_dir(dir))? else {
+            return Ok(());
+        };
+        for entry in entries {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if kind.is_dir() && depth < 3 {
+                visit(&entry.path(), depth + 1, paths)?;
+            } else if kind.is_file()
+                && entry.file_name().to_string_lossy().starts_with("rollout-")
+                && entry.path().extension().is_some_and(|s| s == "jsonl")
+                && let Some(path) = existing(fs::canonicalize(entry.path()))?
+            {
+                paths.push(path);
+            }
+        }
+        Ok(())
+    }
+    let mut paths = vec![];
+    visit(dir, 0, &mut paths)?;
+    paths.sort();
+    Ok(paths)
+}
 
 pub fn source_dirs() -> Result<Vec<PathBuf>> {
     let fallback = env_path("CLAUDE_CONFIG_DIR")
@@ -139,6 +180,7 @@ pub fn complete_lines(
 #[derive(Debug)]
 struct Message {
     session_id: String,
+    harness: String,
     uuid: String,
     ts: String,
     role: String,
@@ -147,7 +189,7 @@ struct Message {
     text: String,
 }
 
-fn project(cwd: &str) -> String {
+pub fn project(cwd: &str) -> String {
     let main = cwd.split("/.claude/worktrees/").next().unwrap_or(cwd);
     Path::new(main)
         .file_name()
@@ -186,6 +228,7 @@ fn parse(line: &[u8]) -> Option<Message> {
         .with_timezone(&Utc)
         .to_rfc3339_opts(SecondsFormat::Millis, true);
     Some(Message {
+        harness: "claude".into(),
         session_id: field("sessionId")?,
         uuid: field("uuid")?,
         ts,
@@ -194,6 +237,24 @@ fn parse(line: &[u8]) -> Option<Message> {
         branch: field("gitBranch").unwrap_or_default(),
         // Redact before indexing: snippets can otherwise split a secret at a token
         // boundary or insert match markers that would evade output redaction.
+        text: scan::redact(&text),
+    })
+}
+
+fn parse_codex(meta: &transcript::Codex, line: &[u8], offset: u64) -> Option<Message> {
+    let value: Value = serde_json::from_slice(line).ok()?;
+    let (role, text) = meta.message(&value)?;
+    if meta.session.is_empty() {
+        return None;
+    }
+    Some(Message {
+        session_id: meta.session.clone(),
+        harness: "codex".into(),
+        uuid: format!("codex:{}:{offset}", meta.session),
+        ts: transcript::timestamp(&value)?,
+        role,
+        project: project(&meta.cwd),
+        branch: meta.branch.clone(),
         text: scan::redact(&text),
     })
 }
@@ -216,6 +277,17 @@ fn initialize(db: &Connection) -> Result<()> {
             |r| r.get::<_, i64>(0),
         )
         .optional()?;
+    let has_harness = db
+        .prepare("pragma table_info(messages)")?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .iter()
+        .any(|name| name == "harness");
+    if !has_harness {
+        db.execute_batch(
+            "alter table messages add column harness text not null default 'claude';",
+        )?;
+    }
     if version.is_none_or(|version| version < INDEX_FORMAT) {
         let tx = db.unchecked_transaction()?;
         tx.execute_batch("delete from messages; delete from transcripts;")?;
@@ -243,10 +315,18 @@ fn initialize(db: &Connection) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn refresh(db: &mut Connection, dirs: &[PathBuf]) -> Result<()> {
+    refresh_sources(db, dirs, &[])
+}
+
+fn refresh_sources(db: &mut Connection, dirs: &[PathBuf], codex_dirs: &[PathBuf]) -> Result<()> {
     let mut paths = vec![];
     for dir in dirs {
         paths.extend(transcript_paths(dir)?);
+    }
+    for dir in codex_dirs {
+        paths.extend(codex_paths(dir)?);
     }
     paths.sort();
     paths.dedup();
@@ -277,10 +357,24 @@ fn refresh(db: &mut Connection, dirs: &[PathBuf]) -> Result<()> {
             tx.execute("delete from messages where path = ?", [path_str.as_ref()])?;
             offset = 0;
         }
+        let codex = transcript::Codex::open(&path)?;
+        if codex.as_ref().is_some_and(|meta| meta.skipped) {
+            tx.execute(
+                "insert or replace into transcripts(path, offset, size, mtime_ns) values (?,?,?,?)",
+                params![path_str.as_ref(), size, size, mtime],
+            )?;
+            continue;
+        }
+        let mut position = offset as u64;
         let offset = complete_lines(file, offset as u64, |line| {
-            if let Some(m) = parse(line) {
-                tx.execute("insert or ignore into messages(session_id, uuid, ts, role, project, branch, path, text) values (?,?,?,?,?,?,?,?)",
-                    params![m.session_id, m.uuid, m.ts, m.role, m.project, m.branch, path_str.as_ref(), m.text])?;
+            let message = match &codex {
+                Some(meta) => parse_codex(meta, line, position),
+                None => parse(line),
+            };
+            position += line.len() as u64;
+            if let Some(m) = message {
+                tx.execute("insert or ignore into messages(session_id, uuid, ts, role, project, branch, path, text, harness) values (?,?,?,?,?,?,?,?,?)",
+                    params![m.session_id, m.uuid, m.ts, m.role, m.project, m.branch, path_str.as_ref(), m.text, m.harness])?;
             }
             Ok(())
         })?;
@@ -341,13 +435,20 @@ struct Hit {
 }
 
 pub fn run(root: &Path, args: &Args) -> Result<()> {
+    if args.records {
+        return records::search(args);
+    }
     let query = search::fts_query(&args.terms);
     if query.is_empty() {
         bail!("no search terms");
     }
     let mut where_sql = String::new();
     let mut values = vec![SqlValue::Text(query.clone())];
-    for (column, value) in [("project", &args.project), ("role", &args.role)] {
+    for (column, value) in [
+        ("project", &args.project),
+        ("role", &args.role),
+        ("harness", &args.harness),
+    ] {
         if let Some(value) = value {
             where_sql += &format!(" and m.{column} = ?");
             values.push(value.clone().into());
@@ -363,6 +464,7 @@ pub fn run(root: &Path, args: &Args) -> Result<()> {
     for id in [
         args.exclude_session.clone(),
         env::var("CLAUDE_SESSION_ID").ok(),
+        env::var("CODEX_THREAD_ID").ok(),
     ]
     .into_iter()
     .flatten()
@@ -376,7 +478,7 @@ pub fn run(root: &Path, args: &Args) -> Result<()> {
     let mut db = Connection::open(root.join("sessions.sqlite"))?;
     db.busy_timeout(StdDuration::from_secs(30))?;
     initialize(&db)?;
-    refresh(&mut db, &source_dirs()?)?;
+    refresh_sources(&mut db, &source_dirs()?, &codex_source_dirs()?)?;
     let mut stmt = db.prepare(&format!("select m.id, m.session_id, m.role, m.ts, snippet(messages_fts, 0, '[', ']', '…', 40)
         from messages_fts join messages m on m.id = messages_fts.rowid where messages_fts match ?{where_sql} order by bm25(messages_fts), m.ts, m.id"))?;
     let hits = stmt.query_map(params_from_iter(values), |r| {
@@ -409,10 +511,10 @@ pub fn run(root: &Path, args: &Args) -> Result<()> {
         );
     }
     for (id, hits) in groups {
-        let (project, branch, first): (String, String, String) = db.query_row(
-            "select project, branch, ts from messages where session_id = ? order by ts, id limit 1",
+        let (project, branch, first, harness): (String, String, String, String) = db.query_row(
+            "select project, branch, ts, harness from messages where session_id = ? order by ts, id limit 1",
             [&id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )?;
         let last: String = db.query_row(
             "select max(ts) from messages where session_id = ?",
@@ -420,7 +522,7 @@ pub fn run(root: &Path, args: &Args) -> Result<()> {
             |r| r.get(0),
         )?;
         println!(
-            "session {}  ({}, {}..{}, {})",
+            "session {}  ({harness}, {}, {}..{}, {})",
             clean(&id, usize::MAX),
             clean(&project, usize::MAX),
             &first[..10],
@@ -628,6 +730,78 @@ mod tests {
         assert!(messages.iter().any(|m| m.text.contains("[REDACTED]")));
         assert_eq!(project("/repos/demo/.claude/worktrees/task"), "demo");
     }
+
+    #[test]
+    fn codex_incremental_index_and_explicit_automation_markers() -> Result<()> {
+        use std::io::Write;
+        let tmp = TestDir::new()?;
+        let date = tmp.0.join("2026/11/20");
+        fs::create_dir_all(&date)?;
+        let path = date.join("rollout-test.jsonl");
+        let fixture = include_str!("../tests/fixtures/record-codex.jsonl");
+        fs::write(&path, fixture)?;
+        fs::write(date.join("session_index.jsonl"), fixture)?;
+        let mut db = Connection::open_in_memory()?;
+        initialize(&db)?;
+        for _ in 0..2 {
+            refresh_sources(&mut db, &[], std::slice::from_ref(&tmp.0))?;
+        }
+        assert_eq!(
+            db.query_row("select count(*) from messages", [], |r| r.get::<_, i64>(0))?,
+            3
+        );
+        assert_eq!(db.query_row("select count(*) from messages where harness='codex' and project='demo' and branch='records'", [], |r| r.get::<_, i64>(0))?, 3);
+        assert_eq!(
+            db.query_row(
+                "select count(*) from messages_fts where messages_fts match 'hiddenonly'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?,
+            0
+        );
+        let mut file = fs::OpenOptions::new().append(true).open(&path)?;
+        let next = serde_json::json!({"type":"response_item", "timestamp":"2026-11-20T12:00:00Z", "payload":{"type":"message", "role":"assistant", "content":[{"type":"output_text","text":"incrementaluniqueword"}]}});
+        write!(file, "{next}")?;
+        refresh_sources(&mut db, &[], std::slice::from_ref(&tmp.0))?;
+        assert_eq!(
+            db.query_row("select count(*) from messages", [], |r| r.get::<_, i64>(0))?,
+            3
+        );
+        writeln!(file)?;
+        refresh_sources(&mut db, &[], std::slice::from_ref(&tmp.0))?;
+        assert_eq!(
+            db.query_row("select count(*) from messages", [], |r| r.get::<_, i64>(0))?,
+            4
+        );
+        for (i, marker) in [
+            serde_json::json!({"source":"exec"}),
+            serde_json::json!({"originator":"orca_desktop"}),
+            serde_json::json!({"source":{"subagent":{"other":"guardian"}}}),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let mut lines: Vec<Value> = fixture
+                .lines()
+                .map(|s| serde_json::from_str(s).unwrap())
+                .collect();
+            for (key, value) in marker.as_object().unwrap() {
+                lines[0]["payload"][key] = value.clone();
+            }
+            let skipped_path = date.join(format!("rollout-skipped-{i}.jsonl"));
+            fs::write(
+                &skipped_path,
+                lines.iter().map(|v| format!("{v}\n")).collect::<String>(),
+            )?;
+            assert!(transcript::Codex::open(&skipped_path)?.unwrap().skipped);
+        }
+        refresh_sources(&mut db, &[], std::slice::from_ref(&tmp.0))?;
+        assert_eq!(
+            db.query_row("select count(*) from messages", [], |r| r.get::<_, i64>(0))?,
+            4
+        );
+        Ok(())
+    }
     #[test]
     fn scripted_messages_are_not_indexed() {
         for role in ["user", "assistant"] {
@@ -681,6 +855,8 @@ mod tests {
             } else {
                 db.execute_batch("drop table state;")?;
             }
+            // The prior schema did not have a harness column at all.
+            db.execute_batch("alter table messages drop column harness;")?;
             initialize(&db)?;
             refresh(&mut db, std::slice::from_ref(&tmp.0))?;
             assert_eq!(

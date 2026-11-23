@@ -6,6 +6,7 @@ mod links;
 mod lint;
 mod pages;
 mod recall;
+mod records;
 mod related;
 mod remind;
 mod scan;
@@ -13,6 +14,7 @@ mod search;
 mod semantic;
 mod sessions;
 mod sync;
+mod transcript;
 mod usage;
 
 use anyhow::{Context, Result, bail};
@@ -93,6 +95,8 @@ enum Commands {
     Context(context::Args),
     /// BM25 search over past session transcripts
     Sessions(sessions::Args),
+    /// Save a deterministic local session record (hook stdin or batch backfill)
+    Record(records::Args),
     /// Periodic UserPromptSubmit reminder
     Remind(remind::Args),
     /// Suggest wiki pages for skill calls or exact error text on failures
@@ -180,6 +184,16 @@ fn ensure_layout(root: &Path) -> Result<()> {
 }
 
 fn run(command: &Commands) -> Result<i32> {
+    if let Commands::Record(args) = command {
+        records::run(args)?;
+        return Ok(0);
+    }
+    if let Commands::Sessions(args) = command
+        && args.records
+    {
+        records::search(args)?;
+        return Ok(0);
+    }
     let root = wiki_root();
     fs::create_dir_all(&root)?;
     let mut lock = fd_lock::RwLock::new(
@@ -251,6 +265,7 @@ fn run_locked(root: &Path, command: &Commands) -> Result<i32> {
         } => return sync::check(root, &db, paths, *probe, *probe_top),
         Commands::Context(args) => context::run(root, &db, args)?,
         Commands::Sessions(args) => sessions::run(root, args)?,
+        Commands::Record(_) => unreachable!(),
         Commands::Remind(args) => remind::run(root, &db, args)?,
         Commands::Recall(args) => recall::run(root, &db, args)?,
     }
@@ -259,9 +274,12 @@ fn run_locked(root: &Path, command: &Commands) -> Result<i32> {
 
 fn main() {
     // Even malformed hook arguments must not interrupt a session.
-    let is_hook = env::args_os()
-        .nth(1)
-        .is_some_and(|s| s == "remind" || s == "recall" || s == "context");
+    let is_hook = env::args_os().nth(1).is_some_and(|s| {
+        s == "remind"
+            || s == "recall"
+            || s == "context"
+            || (s == "record" && !env::args_os().any(|s| s == "--backfill" || s == "--wait"))
+    });
     let cli = Cli::try_parse().unwrap_or_else(|e| {
         if is_hook {
             eprintln!("{e}");

@@ -109,7 +109,7 @@ fn normalized(path: &Path) -> PathBuf {
     out
 }
 
-fn page_path(root: &Path, path: &str, cwd: &Path) -> Option<String> {
+pub(crate) fn page_path(root: &Path, path: &str, cwd: &Path) -> Option<String> {
     let path = expand_home(Path::new(path));
     let absolute = normalized(&if path.is_absolute() {
         path
@@ -229,7 +229,56 @@ fn in_place(args: &[&str]) -> bool {
     false
 }
 
-fn bash_accesses(root: &Path, command: &str, cwd: &Path) -> Vec<(String, &'static str)> {
+/// Literal shell write targets only; never evaluate expansions or script bodies.
+pub(crate) fn shell_writes(command: &str) -> Vec<String> {
+    let tokens = shell_tokens(command);
+    let mut paths = vec![];
+    for segment in
+        tokens.split(|t| matches!(t, ShellToken::Op(";" | "&&" | "||" | "|" | "&" | "(" | ")")))
+    {
+        for pair in segment.windows(2) {
+            if let [
+                ShellToken::Op(">" | ">>" | ">|" | "&>" | "&>>"),
+                ShellToken::Word(path),
+            ] = pair
+            {
+                paths.push(path.clone());
+            }
+        }
+        let args: Vec<_> = segment
+            .iter()
+            .filter_map(|t| match t {
+                ShellToken::Word(word) => Some(word.as_str()),
+                _ => None,
+            })
+            .collect();
+        let first = args.first().copied().unwrap_or_default();
+        if first == "tee" {
+            paths.extend(
+                args.iter()
+                    .skip(1)
+                    .filter(|a| !a.starts_with('-'))
+                    .map(|s| s.to_string()),
+            );
+        } else if matches!(first, "sed" | "perl") && in_place(&args[1..]) {
+            // The final literal operand is the common in-place editing form.
+            if let Some(path) = args.last().filter(|p| !p.starts_with('-')) {
+                paths.push((*path).to_string());
+            }
+        }
+    }
+    paths.retain(|p| {
+        !p.contains(['$', '`', '\n'])
+            && !p.starts_with("/dev/")
+            && p != "-"
+            && !p.bytes().all(|b| b.is_ascii_digit())
+    });
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+pub(crate) fn bash_accesses(root: &Path, command: &str, cwd: &Path) -> Vec<(String, &'static str)> {
     let mut cwd = cwd.to_path_buf();
     let mut accesses = vec![];
     let tokens = shell_tokens(command);

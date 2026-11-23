@@ -14,6 +14,7 @@ let
     nativeCheckInputs = [
       pkgs.clippy
       pkgs.rustfmt
+      pkgs.util-linux
     ];
     preCheck = ''
       cargo fmt --check
@@ -21,7 +22,13 @@ let
     '';
     postInstall = ''
       wrapProgram $out/bin/claude-wiki \
-        --suffix PATH : ${lib.makeBinPath [ pkgs.git ]} \
+        --suffix PATH : ${
+          lib.makeBinPath [
+            pkgs.git
+            pkgs.util-linux
+          ]
+        } \
+        --set-default CLAUDE_WIKI_CODEX_SESSIONS_DIRS ${lib.escapeShellArg "${homeDir}/.codex/sessions:${homeDir}/.pcodex/sessions"} \
         --set-default CLAUDE_WIKI_SESSIONS_DIRS ${
           lib.escapeShellArg (lib.concatMapStringsSep ":" (dir: "${homeDir}/${dir}/projects") configDirs)
         }
@@ -131,6 +138,17 @@ let
     # Keep the command string stable: array entries are unioned on merge, so a
     # changed command would be added next to the old one instead of replacing it.
     hooks = {
+      SessionEnd = [
+        {
+          hooks = [
+            {
+              type = "command";
+              command = "claude-wiki record";
+              timeout = 5;
+            }
+          ];
+        }
+      ];
       SessionStart = [
         {
           hooks = [
