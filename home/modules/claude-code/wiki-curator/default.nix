@@ -12,7 +12,7 @@ in
 
   systemd.user = {
     services.wiki-curator = {
-      Unit.Description = "Curate claude-wiki with preservation and Codex gates";
+      Unit.Description = "Curate agent-wiki with preservation and Codex gates";
       Service = {
         Type = "oneshot";
         ExecStart = "${lib.getExe wiki-curator} run";
@@ -25,7 +25,7 @@ in
       };
     };
     timers.wiki-curator = {
-      Unit.Description = "Daily claude-wiki curation";
+      Unit.Description = "Daily agent-wiki curation";
       Timer = {
         OnCalendar = "*-*-* 05:00:00";
         Persistent = true;

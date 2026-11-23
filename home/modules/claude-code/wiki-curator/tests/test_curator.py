@@ -51,7 +51,7 @@ class RepoTest(unittest.TestCase):
         self.fixture_path = self.root / "fixture.json"
         self.calls_path = self.root / "calls.jsonl"
         fake = Path(__file__).with_name("fake_cli.py").read_text()
-        for name in ("claude", "codex", "claude-wiki"):
+        for name in ("claude", "codex", "agent-wiki"):
             path = self.bin / name
             path.write_text(f"#!{sys.executable}\n" + fake)
             path.chmod(0o755)
@@ -62,8 +62,8 @@ class RepoTest(unittest.TestCase):
             "GIT_AUTHOR_EMAIL": "curator@example.invalid", "GIT_COMMITTER_NAME": "Curator Test",
             "GIT_COMMITTER_EMAIL": "curator@example.invalid", "PATH": f"{self.bin}:{os.environ['PATH']}",
             "CURATOR_FIXTURE": str(self.fixture_path), "CURATOR_CALLS": str(self.calls_path),
-            "CURATOR_MAIN": str(self.wiki), "CLAUDE_WIKI_DIR": str(self.wiki),
-            "CLAUDE_WIKI_SOCKET": "",
+            "CURATOR_MAIN": str(self.wiki), "AGENT_WIKI_DIR": str(self.wiki),
+            "AGENT_WIKI_SOCKET": "",
             "PYTHONPATH": str(PACKAGE), "PYTHONDONTWRITEBYTECODE": "1",
         }
         for key in ("WIKI_CURATOR_MODEL", "WIKI_CURATOR_MAX_TASKS", "WIKI_CURATOR_ADJUDICATE",
@@ -932,7 +932,7 @@ class RunTests(RepoTest):
         self.fixture["check_exit"] = 1
         result = self.result()
         self.assertEqual(result["outcome"], "rejected")
-        self.assertIn("--probe", self.calls("claude-wiki")[-1]["args"])
+        self.assertIn("--probe", self.calls("agent-wiki")[-1]["args"])
         (self.cache / "state.json").unlink()
         self.fixture["check_exit"] = 0
         self.assertEqual(self.result()["outcome"], "merged")

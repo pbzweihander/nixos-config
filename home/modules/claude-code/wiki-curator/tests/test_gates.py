@@ -50,9 +50,9 @@ def fake_daemon(path, response):
 
 class SocketTests(unittest.TestCase):
     def test_environment_resolution(self):
-        for env, expected in (({}, None), ({"XDG_RUNTIME_DIR": "/runtime"}, "/runtime/claude-wiki/embed.sock"),
-                              ({"XDG_RUNTIME_DIR": "/runtime", "CLAUDE_WIKI_SOCKET": ""}, None),
-                              ({"XDG_RUNTIME_DIR": "/runtime", "CLAUDE_WIKI_SOCKET": "/custom"}, "/custom")):
+        for env, expected in (({}, None), ({"XDG_RUNTIME_DIR": "/runtime"}, "/runtime/agent-wiki/embed.sock"),
+                              ({"XDG_RUNTIME_DIR": "/runtime", "AGENT_WIKI_SOCKET": ""}, None),
+                              ({"XDG_RUNTIME_DIR": "/runtime", "AGENT_WIKI_SOCKET": "/custom"}, "/custom")):
             with self.subTest(env=env), patch.dict(os.environ, env, clear=True):
                 self.assertEqual(recall_socket(), expected)
 
@@ -102,7 +102,7 @@ class RecallTests(RepoTest):
         self.save_fixture()
         try:
             return recall(self.wiki, parent, commit, justification(redirects=redirects or {}),
-                          {**self.env, "CLAUDE_WIKI_SOCKET": ""}, socket_path)
+                          {**self.env, "AGENT_WIKI_SOCKET": ""}, socket_path)
         finally:
             self.assertEqual(git(self.wiki, "rev-parse", "HEAD").strip(), commit)
             self.assertEqual(status(self.wiki), {})
@@ -125,7 +125,7 @@ class RecallTests(RepoTest):
                                                       "parent_dense": None, "commit_dense": None}])
                 self.assertEqual(result["dense"], "unavailable: no socket configured")
                 self.assertEqual(result["ungated"], result["probes"] if before is None else [])
-        for call in self.calls("claude-wiki"):
+        for call in self.calls("agent-wiki"):
             self.assertEqual(call["args"], ["search", "--json", "--no-semantic", "-n", "10", "--", *QUERY.split()])
             self.assertEqual(call["wiki"], str(self.wiki))
             self.assertEqual(call["socket"], "")
@@ -241,7 +241,7 @@ class RecallTests(RepoTest):
         for hits, outcome in (([], "rejected"), (["knowledge/a"], "merged")):
             response = {"ok": True, "tier": "cpu", "results": {
                 "parent": [["knowledge/a"]], "commit": [hits]}}
-            with fake_daemon(path, response), patch.dict(os.environ, {"CLAUDE_WIKI_SOCKET": str(path)}):
+            with fake_daemon(path, response), patch.dict(os.environ, {"AGENT_WIKI_SOCKET": str(path)}):
                 result = self.result()
             self.assertEqual(result["outcome"], outcome, result)
             self.assertEqual(result["gates"]["recall"]["dense"], "ok")
@@ -249,7 +249,7 @@ class RecallTests(RepoTest):
                 self.assertEqual(result["reason"], "recall check failed")
                 self.assertFalse(self.calls("codex"))
                 (self.cache / "state.json").unlink()
-        for call in self.calls("claude-wiki"):
+        for call in self.calls("agent-wiki"):
             if call["args"][0] == "search":
                 self.assertEqual(call["socket"], "")
 
@@ -359,7 +359,7 @@ class BrokenLinkTests(RepoTest):
                          [{"page": A, "target": "pages/knowledge/new-missing.md"}])
         self.assertNotIn("commit", result)
         self.assertFalse(self.calls("codex"))
-        self.assertFalse(any(c["args"][0] == "check" for c in self.calls("claude-wiki")))
+        self.assertFalse(any(c["args"][0] == "check" for c in self.calls("agent-wiki")))
 
     def test_preexisting_broken_link_and_other_check_warnings_pass(self):
         self.fixture["writes"][A] = page(OLD + "More explanation.\n")

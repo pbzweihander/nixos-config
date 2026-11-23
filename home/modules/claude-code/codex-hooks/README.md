@@ -6,13 +6,13 @@ It does not create an unused account directory. `pcodex` selects the latter with
 
 | Event | Command | Output |
 | --- | --- | --- |
-| SessionStart | `claude-wiki context --harness codex` | Wiki context |
-| UserPromptSubmit | `claude-wiki remind --harness codex` | Related pages and write reminder |
-| PostToolUse, matcher Bash | `claude-wiki recall --harness codex` | Pages matching a shell failure or diagnostic |
+| SessionStart | `agent-wiki context --harness codex` | Wiki context |
+| UserPromptSubmit | `agent-wiki remind --harness codex` | Related pages and write reminder |
+| PostToolUse, matcher Bash | `agent-wiki recall --harness codex` | Pages matching a shell failure or diagnostic |
 
-Stop runs `claude-wiki record` detached using the common `session_id` and
+Stop runs `agent-wiki record` detached using the common `session_id` and
 `transcript_path` payload fields; a null transcript fails open. PostToolUse/Bash
-also runs `claude-wiki remind --event --harness codex`. Event reminders require
+also runs `agent-wiki remind --event --harness codex`. Event reminders require
 explicit status zero (structured status or a status header); raw output without
 status never triggers a commit/PR reminder.
 
@@ -46,7 +46,7 @@ the older stable `pkgs.codex`.
   existing fail-open behavior and never intentionally block a session.
 - Reminder sync detection accepts rollout JSONL `response_item` / `function_call`
   entries for `exec_command`, `shell`, and `shell_command`, including namespaced
-  tool names and stringified JSON arguments containing `claude-wiki sync`.
+  tool names and stringified JSON arguments containing `agent-wiki sync`.
 
 See the official [hook reference](https://learn.chatgpt.com/docs/hooks) and
 [global instruction discovery](https://learn.chatgpt.com/docs/agent-configuration/agents-md).
@@ -84,7 +84,9 @@ the existing page deduplication behavior and do not consume the fallback budget.
 
 ## Mutable files and trust
 
-`merge.py` owns commands starting with `: claude-wiki-hook;`. It replaces those
+`merge.py` owns commands starting with `: agent-wiki-hook;` or the legacy
+`: claude-wiki-hook;`. It migrates old AGENTS.md `claude-wiki:begin/end` markers
+to `agent-wiki:begin/end` without changing surrounding instructions. It replaces those
 definitions in place and appends new ones, preserving every foreign group and
 handler index. Obsolete owned groups become empty groups; obsolete owned handlers
 in mixed groups become disabled no-ops so later foreign trust keys do not move.
@@ -100,7 +102,7 @@ prompt on 0.155.1; a manually edited definition can be reviewed using `/hooks` o
 restored by another activation.
 
 The existing JSON/TOML is validated before any destination is written. TOML comments
-and foreign settings survive. Each changed file gets a `.claude-wiki.bak` backup
+and foreign settings survive. Each changed file gets a `.agent-wiki.bak` backup
 and an atomic replacement retaining its mode; unchanged files are not written.
 Symlinked destinations and detected concurrent edits are refused.
 
@@ -114,10 +116,10 @@ no watcher or rewrite loop is needed.
 The same wiki rules are appended to `$CODEX_HOME/AGENTS.md` inside an owned HTML
 comment block. Other text remains intact. A nonempty `AGENTS.override.md` takes
 precedence in Codex; users opting into that override must include their desired
-wiki rules there. The skill is installed at `~/.agents/skills/claude-wiki` for both
+wiki rules there. The skill is installed at `~/.agents/skills/agent-wiki` for both
 accounts. Read-only inspection on 2026-11-23 found mutable `.codex/hooks.json` and
 `.codex/config.toml`, no global `AGENTS.md`/`AGENTS.override.md`, no existing
-`.agents/skills/claude-wiki`, and no `.pcodex` directory.
+`.agents/skills/agent-wiki`, and no `.pcodex` directory.
 
 ## Verification, 2026-11-23
 
@@ -129,18 +131,18 @@ and preservation of user instructions and trust entries.
 
 A real `codex exec --skip-git-repo-check --json 'Reply only with OK.'` ran with
 fresh temporary HOME and CODEX_HOME, generated hooks/trust config, an empty test
-wiki, `CLAUDE_WIKI_REMIND_INTERVAL=1`, and no copied credentials or auth environment.
+wiki, `AGENT_WIKI_REMIND_INTERVAL=1`, and no copied credentials or auth environment.
 Codex `hooks/list` reported all three hooks `trusted`, without a trust bypass.
 The rollout recorded these exact texts in separate **developer** messages tagged
 `hooks.additional_context`:
 
 ```text
-Shared wiki: 0 pages under /tmp/wiki-codex-e2e-_jtfk61n/wiki/. Search it with `claude-wiki search <terms>` before non-trivial work; load the claude-wiki skill before writing to it.
+Shared wiki: 0 pages under /tmp/wiki-codex-e2e-_jtfk61n/wiki/. Search it with `agent-wiki search <terms>` before non-trivial work; load the agent-wiki skill before writing to it.
 [context 207/6,000 chars]
 ```
 
 ```text
-claude-wiki: 1 prompts since this session last ran `claude-wiki sync`. If this session has produced something another session would need (a root cause and its fix, a tool or environment quirk, a decision and its reason, out-of-scope work for later), record it in the wiki now (load the claude-wiki skill); otherwise continue and do not reply to this note.
+agent-wiki: 1 prompts since this session last ran `agent-wiki sync`. If this session has produced something another session would need (a root cause and its fix, a tool or environment quirk, a decision and its reason, out-of-scope work for later), record it in the wiki now (load the agent-wiki skill); otherwise continue and do not reply to this note.
 ```
 
 The model request then failed with `401 Unauthorized: Missing bearer or basic

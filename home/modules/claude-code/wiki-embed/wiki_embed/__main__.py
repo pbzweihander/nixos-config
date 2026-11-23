@@ -5,15 +5,16 @@ from pathlib import Path
 import socket
 import sys
 
+from .config import wiki_dir
 from .protocol import MAX_LINE, decode_request, encode_message
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Resident semantic retrieval for claude-wiki")
+    parser = argparse.ArgumentParser(description="Resident semantic retrieval for agent-wiki")
     parser.add_argument("--client", metavar="JSON", help="send one JSON request and print the response")
     parser.add_argument("--socket", type=Path, help="override the runtime socket path")
     parser.add_argument("--wiki-dir", type=Path,
-                        default=Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "claude-wiki")
+                        default=wiki_dir())
     args = parser.parse_args()
     # Apply before numpy/torch imports, including to native thread pools. The
     # always-on CPU fallback should leave cores available for the foreground app.

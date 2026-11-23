@@ -87,11 +87,17 @@ test('skill prompt injects candidates and passes the full plugin skill name and 
   })])
 })
 
+test('the new binary option takes precedence over the legacy alias', { options: { agentWikiBin: '/build/agent wiki', claudeWikiBin: '/build/old wiki' } }, async ($, on) => {
+  const w = world(on)
+  await $.skill.prompt({ skill: 'build', text: 'Build instructions' })
+  expect(w.calls[0]?.argv[0]).toBe('/build/agent wiki')
+})
+
 test('the wiki skill is excluded, including a plugin-qualified wiki skill', async ($, on) => {
   const w = world(on)
-  for (const skill of ['claude-wiki', 'tools:claude-wiki']) await $.skill.prompt({ skill, text: 'Wiki instructions' })
+  for (const skill of ['agent-wiki', 'tools:agent-wiki', 'claude-wiki', 'tools:claude-wiki']) await $.skill.prompt({ skill, text: 'Wiki instructions' })
   expect(w.calls).toEqual([])
-  expect(w.skills.map(input => input.text)).toEqual(['Wiki instructions', 'Wiki instructions'])
+  expect(w.skills.map(input => input.text)).toEqual(Array(4).fill('Wiki instructions'))
 })
 
 for (const failure of ['empty', 'bad JSON', 'bad shape', 'bad page', 'nonzero', 'truncated', 'timeout'] as const) {

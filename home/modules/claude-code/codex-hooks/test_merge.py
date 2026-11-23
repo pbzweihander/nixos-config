@@ -10,7 +10,7 @@ import merge
 
 class MergeTests(unittest.TestCase):
     def setUp(self):
-        self.desired = merge.definitions("/nix/store/test/bin/claude-wiki")
+        self.desired = merge.definitions("/nix/store/test/bin/agent-wiki")
         self.hashes = {
             (merge.event_label(event), handler["command"]): "sha256:test"
             for event, group in self.desired.items()
@@ -50,8 +50,8 @@ class MergeTests(unittest.TestCase):
             home.joinpath("config.toml").write_text(config)
             home.joinpath("AGENTS.md").write_text("User instructions stay exactly here.\n")
             merge.install(home, self.desired, self.hashes, "Wiki rules\n")
-            self.assertEqual(home.joinpath("hooks.json.claude-wiki.bak").read_text(), hooks_text)
-            self.assertEqual(home.joinpath("config.toml.claude-wiki.bak").read_text(), config)
+            self.assertEqual(home.joinpath("hooks.json.agent-wiki.bak").read_text(), hooks_text)
+            self.assertEqual(home.joinpath("config.toml.agent-wiki.bak").read_text(), config)
             text = home.joinpath("config.toml").read_text()
             self.assertTrue(text.startswith('# user comment\nmodel = "custom"'))
             states = tomllib.loads(text)["hooks"]["state"]
@@ -88,6 +88,22 @@ class MergeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 merge.install(home, self.desired, self.hashes, "Rules")
             self.assertTrue(home.joinpath("hooks.json").is_symlink())
+
+    def test_legacy_hooks_and_rules_migrate_without_duplicates(self):
+        legacy = json.loads(json.dumps({"hooks": {e: [g] for e, g in self.desired.items()}})
+                            .replace("agent-wiki", "claude-wiki"))
+        foreign = {"type": "command", "command": "echo claude-wiki context"}
+        legacy["hooks"]["SessionStart"].insert(0, {"hooks": [foreign]})
+        result = merge.merge_hooks(legacy, self.desired)
+        self.assertEqual(result["hooks"]["SessionStart"][0]["hooks"], [foreign])
+        handlers = [h for groups in result["hooks"].values() for g in groups for h in g["hooks"]]
+        self.assertEqual(sum(merge.owned(h) for h in handlers), 5)
+        self.assertFalse(any(h["command"].startswith(merge.LEGACY_MARKER) for h in handlers))
+        self.assertEqual(merge.merge_hooks(result, self.desired), result)
+        old = "Before\n<!-- claude-wiki:begin -->\nOld rules\n<!-- claude-wiki:end -->\nAfter"
+        rules = merge.merge_rules(old, "New rules")
+        self.assertEqual(rules, f"Before\n{merge.BEGIN}\nNew rules\n{merge.END}\nAfter")
+        self.assertEqual(merge.merge_rules(rules, "New rules"), rules)
 
 
 if __name__ == "__main__":

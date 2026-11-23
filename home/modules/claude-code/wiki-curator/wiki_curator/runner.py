@@ -15,6 +15,7 @@ import stat
 import subprocess
 import time
 
+from .config import socket_path
 from .adjudication import apply_edits, frontmatter_only, parse_adjudication, singleton_tags
 from .gitutil import (changed_texts, changes, command, git, page_text,
                       regular_page, safe_page, status)
@@ -28,8 +29,10 @@ CLAUDE_TIMEOUT = 20 * 60
 CODEX_TIMEOUT = 15 * 60
 LOCK_TIMEOUT = 120
 ALLOWED_TOOLS = [
-    "Read", "Edit", "Write", "Glob", "Grep", "Bash(claude-wiki check:*)",
-    "Bash(claude-wiki tags)", "Bash(claude-wiki links:*)", "Bash(claude-wiki search:*)",
+    "Read", "Edit", "Write", "Glob", "Grep", "Bash(agent-wiki check:*)",
+    "Bash(agent-wiki tags)", "Bash(agent-wiki links:*)", "Bash(agent-wiki search:*)",
+    "Bash(claude-wiki check:*)", "Bash(claude-wiki tags)",
+    "Bash(claude-wiki links:*)", "Bash(claude-wiki search:*)",
     "Bash(git mv:*)", "Bash(git rm:*)", "Bash(git status:*)", "Bash(git diff:*)",
 ]
 
@@ -266,10 +269,7 @@ def land(wiki, parent, commit, cooldowns):
 
 
 def recall_socket():
-    if "CLAUDE_WIKI_SOCKET" in os.environ:
-        return os.environ["CLAUDE_WIKI_SOCKET"] or None
-    runtime = os.environ.get("XDG_RUNTIME_DIR")
-    return str(Path(runtime) / "claude-wiki/embed.sock") if runtime else None
+    return socket_path()
 
 
 def perform_task(wiki, worktree, timestamp, task, state, result):
@@ -277,7 +277,7 @@ def perform_task(wiki, worktree, timestamp, task, state, result):
     invented_mode = os.environ.get("WIKI_CURATOR_INVENTED_GATE", "report")
     if invented_mode not in ("report", "reject"):
         raise ValueError("WIKI_CURATOR_INVENTED_GATE must be report or reject")
-    env = {**os.environ, "CLAUDE_WIKI_DIR": str(worktree), "CLAUDE_WIKI_SOCKET": ""}
+    env = {**os.environ, "AGENT_WIKI_DIR": str(worktree), "AGENT_WIKI_SOCKET": ""}
     parent = git(worktree, "rev-parse", "HEAD").strip()
     result["parent_commit"] = parent
     gates = result["gates"]
@@ -286,7 +286,7 @@ def perform_task(wiki, worktree, timestamp, task, state, result):
         gates[gate] = {**details, "accept": False, "reason": reason}
         result.update(outcome="rejected", reason=reason)
 
-    tags = command(["claude-wiki", "tags"], worktree, env=env).stdout if task.type == "singleton-tags" else "Run claude-wiki tags when needed."
+    tags = command(["agent-wiki", "tags"], worktree, env=env).stdout if task.type == "singleton-tags" else "Run agent-wiki tags when needed."
     argv = ["claude", "-p", "--setting-sources", "", "--no-session-persistence",
             "--permission-mode", "acceptEdits", "--max-turns", "40"]
     if os.environ.get("WIKI_CURATOR_MODEL"):
@@ -360,7 +360,7 @@ def perform_task(wiki, worktree, timestamp, task, state, result):
             fail("broken-links", "new broken wiki links", links=broken)
             return
         checks["broken-links"] = {"accept": True, "links": []}
-        check_argv = ["claude-wiki", "check"]
+        check_argv = ["agent-wiki", "check"]
         if task.type == "missing-queries":
             check_argv.append("--probe")
         # Include deleted paths: the wiki CLI accepts them for deletion/link validation.
@@ -599,8 +599,8 @@ def run(wiki, cache, max_tasks=5, only=None):
             state = read_state(cache)
             verify_main(wiki)
             cleanup_worktree(wiki, worktree)
-            env = {**os.environ, "CLAUDE_WIKI_DIR": str(wiki)}
-            lint = command(["claude-wiki", "lint", "--json"], wiki, env=env)
+            env = {**os.environ, "AGENT_WIKI_DIR": str(wiki)}
+            lint = command(["agent-wiki", "lint", "--json"], wiki, env=env)
             tasks = select_tasks(wiki, strict_json(lint.stdout), state["cooldowns"], time.time(), max_tasks, only,
                                  not_duplicates=state["not_duplicates"])
             registered = True

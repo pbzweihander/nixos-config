@@ -1,6 +1,10 @@
 # wiki-embed
 
-Resident semantic retrieval for claude-wiki. The home-manager module installs the
+`AGENT_WIKI_*` settings take precedence over their `CLAUDE_WIKI_*` aliases.
+The data and socket directories fall back to `claude-wiki` until Home Manager
+migrates them to `agent-wiki` and leaves compatibility symlinks.
+
+Resident semantic retrieval for agent-wiki. The home-manager module installs the
 package and enables the user service at login. Models are loaded from
 `$HF_HOME` (the service sets it to the user's Hugging Face cache), offline only.
 
@@ -13,7 +17,7 @@ wiki-embed-client '{"op":"pairs","min":0.88,"types":["knowledge","followups"]}'
 journalctl --user -u wiki-embed
 ```
 
-The socket is `$XDG_RUNTIME_DIR/claude-wiki/embed.sock`; its directory is mode
+The socket is `$XDG_RUNTIME_DIR/agent-wiki/embed.sock`; its directory is mode
 0700 and the socket is mode 0600. Each connection accepts one newline-terminated
 JSON object and returns one newline-terminated JSON object. Invalid requests
 return `{"ok":false,"error":"..."}`. Requests are limited to 1 MiB, `n` to 1–1000,
@@ -76,7 +80,7 @@ items at or above `min`, sorted by descending score with page IDs breaking ties,
 capped at 500. The CLI filters closed follow-ups from its lint worklist. Both new
 operations require a finite `min` between -1 and 1 and use the usual
 `{"ok":true,"tier":"cpu","results":[...]}` envelope. The Rust client gives them
-5,000 ms by default (`CLAUDE_WIKI_SEMANTIC_BATCH_TIMEOUT_MS`); hooks keep their
+5,000 ms by default (`AGENT_WIKI_SEMANTIC_BATCH_TIMEOUT_MS`); hooks keep their
 separate 300 ms budget.
 
 Both tiers run bge-m3, so there is one shared in-memory index and vector file,
@@ -107,8 +111,8 @@ published as the index grows: `status.pages` and `status.chunks` report progress
 and requests can search that partial index. Progress is checkpointed every five
 seconds and at completion or handoff. An interrupted page is finished by the next
 tier; already completed pages are reused. The shared atomic
-`vectors-BAAI--bge-m3.npz` cache lives in `$XDG_DATA_HOME/claude-wiki` (default
-`~/.local/share/claude-wiki`). Cache files contain no pickle objects. Requests
+`vectors-BAAI--bge-m3.npz` cache lives in `$XDG_DATA_HOME/agent-wiki` (default
+`~/.local/share/agent-wiki`). Cache files contain no pickle objects. Requests
 never wait on the refresh, model loader, or telemetry reader. During initial
 startup, requests return a warmup error until a model and some vectors are available
 (an empty catalog is ready immediately);

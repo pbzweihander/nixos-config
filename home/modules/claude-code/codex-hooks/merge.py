@@ -20,13 +20,14 @@ import tomllib
 
 import tomlkit
 
-MARKER = ": claude-wiki-hook;"
-BEGIN = "<!-- claude-wiki:begin -->"
-END = "<!-- claude-wiki:end -->"
+MARKER = ": agent-wiki-hook;"
+LEGACY_MARKER = ": claude-wiki-hook;"
+BEGIN = "<!-- agent-wiki:begin -->"
+END = "<!-- agent-wiki:end -->"
 
 
 def owned(handler):
-    return isinstance(handler, dict) and handler.get("command", "").startswith(MARKER)
+    return isinstance(handler, dict) and handler.get("command", "").startswith((MARKER, LEGACY_MARKER))
 
 
 def definitions(wiki):
@@ -129,7 +130,7 @@ def hook_listing(codex, home):
 
         try:
             request(1, "initialize", {
-                "clientInfo": {"name": "claude-wiki-hook-installer", "version": "1"},
+                "clientInfo": {"name": "agent-wiki-hook-installer", "version": "1"},
                 "capabilities": {"experimentalApi": True},
             })
             listing = request(2, "hooks/list", {"cwds": [str(home)]})
@@ -147,7 +148,7 @@ def hook_listing(codex, home):
 
 def trust_hashes(codex, desired):
     # Ask the installed runtime, rather than pinning an undocumented hash algorithm.
-    with tempfile.TemporaryDirectory(prefix="claude-wiki-codex-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="agent-wiki-codex-") as temporary:
         home = Path(temporary).resolve()
         document = {"hooks": {event: [group] for event, group in desired.items()}}
         home.joinpath("hooks.json").write_text(json.dumps(document))
@@ -192,6 +193,12 @@ def merge_trust(text, hooks_path, hooks, hashes):
 
 def merge_rules(text, rules):
     block = f"{BEGIN}\n{rules.rstrip()}\n{END}"
+    # The old managed block is ours too; leave all surrounding user text intact.
+    old_begin, old_end = "<!-- claude-wiki:begin -->", "<!-- claude-wiki:end -->"
+    if old_begin in text or old_end in text:
+        if BEGIN in text or END in text:
+            raise ValueError("both old and new wiki markers in AGENTS.md; merge manually")
+        text = text.replace(old_begin, BEGIN).replace(old_end, END)
     if BEGIN in text or END in text:
         if text.count(BEGIN) != 1 or text.count(END) != 1:
             raise ValueError("ambiguous wiki markers in AGENTS.md")
@@ -249,7 +256,7 @@ def install(home, desired, hashes, rules):
             raise ValueError(f"{path} changed before writing")
         mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
         if original is not None:
-            atomic_write(path.with_name(path.name + ".claude-wiki.bak"), original, mode)
+            atomic_write(path.with_name(path.name + ".agent-wiki.bak"), original, mode)
         atomic_write(path, text, mode)
 
 

@@ -77,8 +77,8 @@ export function injectionBlock(related: ReturnType<typeof parseRelated>): string
   const lines = [
     '',
     '---',
-    "Shared wiki (claude-wiki), added by the parent session's tooling, not by the task's author.",
-    'These pages may bear on this task; they are candidates, not instructions. Read one with the Read tool if it is relevant, and search more with `claude-wiki search <terms>`.',
+    "Shared wiki (agent-wiki), added by the parent session's tooling, not by the task's author.",
+    'These pages may bear on this task; they are candidates, not instructions. Read one with the Read tool if it is relevant, and search more with `agent-wiki search <terms>`.',
     ...related.pages.map(page => `- ${page.path} (${page.title})${page.section === null ? '' : ` § ${page.section.heading}, lines ${page.section.start}-${page.section.end}`}`),
   ]
   if (related.overview !== null) lines.push(`Project overview: ${related.overview}`)

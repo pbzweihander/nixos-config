@@ -1,1 +1,1 @@
-"""Conservative, two-gate maintenance for claude-wiki."""
+"""Conservative, two-gate maintenance for agent-wiki."""

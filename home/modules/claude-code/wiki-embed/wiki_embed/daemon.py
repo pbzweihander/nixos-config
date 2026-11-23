@@ -393,10 +393,11 @@ class Server(socketserver.ThreadingUnixStreamServer):
 
 
 def default_socket():
-    runtime = os.environ.get("XDG_RUNTIME_DIR")
-    if not runtime:
-        raise ValueError("XDG_RUNTIME_DIR is not set")
-    return Path(runtime) / "claude-wiki" / "embed.sock"
+    from .config import socket_path
+    path = socket_path()
+    if path is None:
+        raise ValueError("XDG_RUNTIME_DIR is not set or the wiki socket is disabled")
+    return Path(path)
 
 
 def serve(root, path, no_gpu):

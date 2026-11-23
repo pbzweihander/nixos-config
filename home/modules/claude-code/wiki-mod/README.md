@@ -5,13 +5,14 @@ pages to non-fork subagent prompts and skill prompts, pins session usage and
 curator counts under the prompt, and provides `/wiki` and `/wiki-review` on
 terminal and desktop.
 
-The `claudeWikiBin` string option defaults to `claude-wiki`; `wikiCuratorBin`
+The `agentWikiBin` string option defaults to `agent-wiki`; `wikiCuratorBin`
 defaults to `wiki-curator`. Each accepts a binary path, including paths with
-spaces, as one argv entry. For example, the session's plugin options can contain:
+spaces, as one argv entry. The old `claudeWikiBin` option remains a fallback;
+`agentWikiBin` takes precedence when set. For example, the session's plugin options can contain:
 
 ```json
 {
-  "claudeWikiBin": "/path/to/freshly-built/claude-wiki",
+  "agentWikiBin": "/path/to/freshly-built/agent-wiki",
   "wikiCuratorBin": "/path/to/freshly-built/wiki-curator"
 }
 ```
@@ -25,11 +26,11 @@ through stdin; the original task is preserved in full. Failed, malformed,
 truncated, and empty responses add nothing. Forks bypass the query. The counter
 records subagent prompts augmented this session.
 
-The `skill.prompt` hook calls `claude-wiki skill-pages <skill> --json -n 5 --cwd
+The `skill.prompt` hook calls `agent-wiki skill-pages <skill> --json -n 5 --cwd
 <session cwd> --session <id> --source skill-prompt` and appends returned paths and
 titles as candidates, with an explicit reminder that they are not instructions.
-It passes plugin-qualified names such as `plugin:skill` in full. The `claude-wiki`
-skill, including a plugin-qualified `claude-wiki`, is excluded. The CLI owns
+It passes plugin-qualified names such as `plugin:skill` in full. The `agent-wiki`
+and `claude-wiki` skills, including plugin-qualified names, are excluded. The CLI owns
 session deduplication and seen-page tracking; the mod queries each other skill
 invocation. Failures and empty results leave the skill text unchanged.
 

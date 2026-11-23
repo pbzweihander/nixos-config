@@ -6,11 +6,11 @@
   ...
 }:
 let
-  claude-wiki = pkgs.rustPlatform.buildRustPackage {
-    pname = "claude-wiki";
+  agent-wiki = pkgs.rustPlatform.buildRustPackage {
+    pname = "agent-wiki";
     version = "0.1.0";
-    src = ./claude-wiki;
-    cargoLock.lockFile = ./claude-wiki/Cargo.lock;
+    src = ./agent-wiki;
+    cargoLock.lockFile = ./agent-wiki/Cargo.lock;
     nativeBuildInputs = [ pkgs.makeWrapper ];
     nativeCheckInputs = [
       pkgs.clippy
@@ -21,8 +21,9 @@ let
       cargo fmt --check
       cargo clippy --offline --all-targets -- -D warnings
     '';
+    # Legacy defaults preserve explicit settings under either environment name.
     postInstall = ''
-      wrapProgram $out/bin/claude-wiki \
+      wrapProgram $out/bin/agent-wiki \
         --suffix PATH : ${
           lib.makeBinPath [
             pkgs.git
@@ -33,12 +34,16 @@ let
         --set-default CLAUDE_WIKI_SESSIONS_DIRS ${
           lib.escapeShellArg (lib.concatMapStringsSep ":" (dir: "${homeDir}/${dir}/projects") configDirs)
         }
+      ln -s agent-wiki $out/bin/claude-wiki
     '';
     doInstallCheck = true;
     nativeInstallCheckInputs = [ pkgs.git ];
     installCheckPhase = ''
       runHook preInstallCheck
-      bash smoke-test.sh $out/bin/claude-wiki
+      bash smoke-test.sh $out/bin/agent-wiki
+      test "$(readlink $out/bin/claude-wiki)" = agent-wiki
+      sed 's/AGENT_WIKI_/CLAUDE_WIKI_/g' smoke-test.sh > smoke-test-legacy.sh
+      bash smoke-test-legacy.sh $out/bin/claude-wiki
       runHook postInstallCheck
     '';
   };
@@ -56,7 +61,7 @@ let
           --add-flags "--no-config $out/libexec/wiki-recap.fish" \
           --suffix PATH : ${
             lib.makeBinPath [
-              claude-wiki
+              agent-wiki
               pkgs.coreutils
               pkgs.git
               pkgs.util-linux
@@ -69,7 +74,8 @@ let
   idleNotifThresholdMs = 10000;
 
   homeDir = config.home.homeDirectory;
-  wikiDir = "${config.xdg.dataHome}/claude-wiki";
+  wikiDir = "${config.xdg.dataHome}/agent-wiki";
+  legacyWikiDir = "${config.xdg.dataHome}/claude-wiki";
 
   # One Claude Code config directory per account: `claude` uses ~/.claude, and the
   # `pclaude` fish function sets CLAUDE_CONFIG_DIR to ~/.pclaude. All of them get the
@@ -99,10 +105,11 @@ let
   # `sharedDirs` links.
   claudeFiles = {
     # User-level rules rather than CLAUDE.md, which stays editable (/memory).
-    "rules/claude-wiki.md" = ./rules/claude-wiki.md;
+    "rules/agent-wiki.md" = ./rules/agent-wiki.md;
     "rules/nix.md" = ./rules/nix.md;
     "rules/rust.md" = ./rules/rust.md;
-    "skills/claude-wiki" = ./skills/claude-wiki;
+    "skills/agent-wiki" = ./skills/agent-wiki;
+    "skills/claude-wiki" = ./skills/agent-wiki;
     # Not installed for now: implementation is delegated to Codex workers through Orca
     # instead. The source stays in ./skills/codex-implement; uncomment to bring it back.
     # "skills/codex-implement" = ./skills/codex-implement;
@@ -114,7 +121,7 @@ let
   # Merged into ~/.claude/settings.json on activation instead of linked from the store:
   # Claude Code writes that file itself (/config, /model, /permissions).
   settings = {
-    # Transcripts are the only raw record of past sessions: `claude-wiki sessions`
+    # Transcripts are the only raw record of past sessions: `agent-wiki sessions`
     # searches them and the recall benchmark was mined from them. Claude Code deletes
     # them after 30 days unless told otherwise; they grow by roughly 25 GB a year.
     cleanupPeriodDays = 3650;
@@ -123,7 +130,10 @@ let
     # passthrough, which tmux.nix allows.
     preferredNotifChannel = "iterm2_with_bell";
     permissions.allow = [
+      "Bash(agent-wiki *)"
       "Bash(claude-wiki *)"
+      "Read(/${legacyWikiDir}/**)"
+      "Edit(/${legacyWikiDir}/**)"
       # a leading `//` marks an absolute path in permission rules
       "Read(/${wikiDir}/**)"
       "Edit(/${wikiDir}/**)"
@@ -149,7 +159,7 @@ let
           hooks = [
             {
               type = "command";
-              command = "claude-wiki record";
+              command = "agent-wiki record";
               timeout = 5;
             }
           ];
@@ -160,7 +170,7 @@ let
           hooks = [
             {
               type = "command";
-              command = "claude-wiki context";
+              command = "agent-wiki context";
             }
           ];
         }
@@ -172,7 +182,7 @@ let
           hooks = [
             {
               type = "command";
-              command = "claude-wiki remind";
+              command = "agent-wiki remind";
             }
           ];
         }
@@ -185,7 +195,7 @@ let
           hooks = [
             {
               type = "command";
-              command = "claude-wiki remind --event";
+              command = "agent-wiki remind --event";
               timeout = 2;
             }
           ];
@@ -195,7 +205,7 @@ let
           hooks = [
             {
               type = "command";
-              command = "claude-wiki recall";
+              command = "agent-wiki recall";
               timeout = 5;
             }
           ];
@@ -206,7 +216,7 @@ let
           hooks = [
             {
               type = "command";
-              command = "claude-wiki remind --event";
+              command = "agent-wiki remind --event";
               timeout = 2;
             }
           ];
@@ -222,7 +232,7 @@ let
           hooks = [
             {
               type = "command";
-              command = "claude-wiki recall";
+              command = "agent-wiki recall";
               timeout = 5;
             }
           ];
@@ -233,7 +243,7 @@ let
           hooks = [
             {
               type = "command";
-              command = "claude-wiki recall";
+              command = "agent-wiki recall";
               timeout = 5;
             }
           ];
@@ -243,7 +253,7 @@ let
           hooks = [
             {
               type = "command";
-              command = "claude-wiki remind --event";
+              command = "agent-wiki remind --event";
               timeout = 2;
             }
           ];
@@ -255,14 +265,15 @@ in
 {
   home = {
     packages = [
-      claude-wiki
+      agent-wiki
       wiki-recap
     ];
 
     file =
       lib.mapAttrs' (path: source: lib.nameValuePair ".claude/${path}" { inherit source; }) claudeFiles
       // {
-        ".agents/skills/claude-wiki".source = ./skills/claude-wiki;
+        ".agents/skills/agent-wiki".source = ./skills/agent-wiki;
+        ".agents/skills/claude-wiki".source = ./skills/agent-wiki;
       }
       // lib.listToAttrs (
         lib.concatMap (
@@ -281,80 +292,84 @@ in
     # Move the account's own content into ~/.claude/skills and drop the old
     # directory, so the link can take its place. Anything that would collide stays,
     # and checkLinkTargets then moves the directory aside with the backup extension.
-    activation.claudeCodeSharedSkills = lib.hm.dag.entryBefore [ "checkLinkTargets" ] ''
-      shared=${lib.escapeShellArg "${homeDir}/.claude/skills"}
-      for skills in ${lib.escapeShellArgs (map (dir: "${homeDir}/${dir}/skills") extraConfigDirs)}; do
-      [ -d "$skills" ] && [ ! -L "$skills" ] || continue
-      run mkdir -p "$shared/synced"
-      if [ -d "$skills/synced" ]; then
-        for entry in "$skills/synced"/* "$skills/synced"/.bucket-*; do
-          [ -e "$entry" ] || continue
-          [ -e "$shared/synced/''${entry##*/}" ] || run mv "$entry" "$shared/synced/"
-        done
-        run rmdir --ignore-fail-on-non-empty "$skills/synced"
-      fi
-      for entry in "$skills"/* "$skills"/.[!.]*; do
-        [ -e "$entry" ] || [ -L "$entry" ] || continue
-        case "$(readlink "$entry")" in
-          /nix/store/*) run rm "$entry" ;;
-          *) [ -e "$shared/''${entry##*/}" ] || run mv "$entry" "$shared/" ;;
-        esac
-      done
-      run rmdir --ignore-fail-on-non-empty "$skills"
-      done
-    '';
-
-    # Same approach as programs.zed-editor's mutableUserSettings, except that arrays
-    # (permission rules, hooks) are unioned instead of replaced, so entries added at
-    # runtime survive. Entries removed here are not removed from the file.
-    activation.claudeCodeSettings = lib.hm.dag.entryAfter [ "linkGeneration" ] ''
-      for settings in ${lib.escapeShellArgs (map (dir: "${homeDir}/${dir}/settings.json") configDirs)}; do
-      mkdir -p "$(dirname "$settings")"
-      [ -e "$settings" ] || echo '{}' > "$settings"
-      if merged="$(${lib.getExe pkgs.jq} --slurpfile static ${
-        (pkgs.formats.json { }).generate "claude-code-settings.json" settings
-      } '
-        def merge($b):
-          if type == "object" and ($b | type) == "object" then
-            reduce ($b | keys_unsorted[]) as $k (.; .[$k] |= merge($b[$k]))
-          elif type == "array" and ($b | type) == "array" then
-            reduce $b[] as $x (.; if index([$x]) then . else . + [$x] end)
-          else $b end;
-        merge($static[0])
-      ' "$settings")"; then
-        printf '%s\n' "$merged" > "$settings"
-      else
-        warnEcho "$settings is not valid JSON; not merging Claude Code settings"
-      fi
-      done
-
-      # The idle notification waits 60 s by default, and the key is read from the global
-      # config (.claude.json, which CLAUDE_CONFIG_DIR moves), not from settings.json.
-      # Written only when it differs: Claude Code rewrites this file all the time.
-      for global in ${
-        lib.escapeShellArgs (
-          map (
-            dir: if dir == ".claude" then "${homeDir}/.claude.json" else "${homeDir}/${dir}/.claude.json"
-          ) configDirs
-        )
-      }; do
-      [ -e "$global" ] || continue
-      if [ "$(${lib.getExe pkgs.jq} '.messageIdleNotifThresholdMs' "$global")" != ${toString idleNotifThresholdMs} ]; then
-        if updated="$(${lib.getExe pkgs.jq} '.messageIdleNotifThresholdMs = ${toString idleNotifThresholdMs}' "$global")"; then
-          printf '%s\n' "$updated" > "$global"
-        else
-          warnEcho "$global is not valid JSON; not setting messageIdleNotifThresholdMs"
+    activation = {
+      claudeCodeSharedSkills = lib.hm.dag.entryBefore [ "checkLinkTargets" ] ''
+        shared=${lib.escapeShellArg "${homeDir}/.claude/skills"}
+        for skills in ${lib.escapeShellArgs (map (dir: "${homeDir}/${dir}/skills") extraConfigDirs)}; do
+        [ -d "$skills" ] && [ ! -L "$skills" ] || continue
+        run mkdir -p "$shared/synced"
+        if [ -d "$skills/synced" ]; then
+          for entry in "$skills/synced"/* "$skills/synced"/.bucket-*; do
+            [ -e "$entry" ] || continue
+            [ -e "$shared/synced/''${entry##*/}" ] || run mv "$entry" "$shared/synced/"
+          done
+          run rmdir --ignore-fail-on-non-empty "$skills/synced"
         fi
-      fi
-      done
-      # Orca and Codex own these mutable files. Merge only marked wiki hooks and
-      # their trust state; preserve foreign array positions and AGENTS.md content.
-      run ${lib.getExe codexHookPython} ${./codex-hooks/merge.py} \
-        --codex ${lib.getExe multiverse.instance.tip.codex} \
-        --wiki ${lib.getExe' claude-wiki "claude-wiki"} \
-        --rules ${./rules/claude-wiki.md} \
-        ${lib.escapeShellArgs (map (dir: "${homeDir}/${dir}") codexConfigDirs)}
-    '';
+        for entry in "$skills"/* "$skills"/.[!.]*; do
+          [ -e "$entry" ] || [ -L "$entry" ] || continue
+          case "$(readlink "$entry")" in
+            /nix/store/*) run rm "$entry" ;;
+            *) [ -e "$shared/''${entry##*/}" ] || run mv "$entry" "$shared/" ;;
+          esac
+        done
+        run rmdir --ignore-fail-on-non-empty "$skills"
+        done
+      '';
+
+      # Old symlinks keep in-flight sessions and curator git worktrees usable.
+      # New service packages restart normally on Home Manager activation.
+      agentWikiMigration = lib.hm.dag.entryBetween [ "linkGeneration" ] [ "writeBoundary" ] ''
+        run ${lib.getExe pkgs.python3} ${./migrate-wiki.py} --mv ${lib.getExe' pkgs.coreutils "mv"} \
+          ${lib.escapeShellArg config.xdg.dataHome} \
+          ${lib.escapeShellArg config.xdg.stateHome} \
+          ${lib.escapeShellArg config.xdg.cacheHome} \
+          "''${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+      '';
+
+      # Same approach as programs.zed-editor's mutableUserSettings, except that arrays
+      # (permission rules, hooks) are unioned instead of replaced, so entries added at
+      # runtime survive. Only exact legacy wiki hook commands are removed.
+      claudeCodeSettings = lib.hm.dag.entryAfter [ "linkGeneration" ] ''
+        for settings in ${lib.escapeShellArgs (map (dir: "${homeDir}/${dir}/settings.json") configDirs)}; do
+        mkdir -p "$(dirname "$settings")"
+        [ -e "$settings" ] || echo '{}' > "$settings"
+        if merged="$(${lib.getExe pkgs.jq} --slurpfile static ${
+          (pkgs.formats.json { }).generate "claude-code-settings.json" settings
+        } -f ${./merge-settings.jq} "$settings")"; then
+          printf '%s\n' "$merged" > "$settings"
+        else
+          warnEcho "$settings is not valid JSON; not merging Claude Code settings"
+        fi
+        done
+
+        # The idle notification waits 60 s by default, and the key is read from the global
+        # config (.claude.json, which CLAUDE_CONFIG_DIR moves), not from settings.json.
+        # Written only when it differs: Claude Code rewrites this file all the time.
+        for global in ${
+          lib.escapeShellArgs (
+            map (
+              dir: if dir == ".claude" then "${homeDir}/.claude.json" else "${homeDir}/${dir}/.claude.json"
+            ) configDirs
+          )
+        }; do
+        [ -e "$global" ] || continue
+        if [ "$(${lib.getExe pkgs.jq} '.messageIdleNotifThresholdMs' "$global")" != ${toString idleNotifThresholdMs} ]; then
+          if updated="$(${lib.getExe pkgs.jq} '.messageIdleNotifThresholdMs = ${toString idleNotifThresholdMs}' "$global")"; then
+            printf '%s\n' "$updated" > "$global"
+          else
+            warnEcho "$global is not valid JSON; not setting messageIdleNotifThresholdMs"
+          fi
+        fi
+        done
+        # Orca and Codex own these mutable files. Merge only marked wiki hooks and
+        # their trust state; preserve foreign array positions and AGENTS.md content.
+        run ${lib.getExe codexHookPython} ${./codex-hooks/merge.py} \
+          --codex ${lib.getExe multiverse.instance.tip.codex} \
+          --wiki ${lib.getExe' agent-wiki "agent-wiki"} \
+          --rules ${./rules/agent-wiki.md} \
+          ${lib.escapeShellArgs (map (dir: "${homeDir}/${dir}") codexConfigDirs)}
+      '';
+    };
   };
 
   programs.fish.functions = {
