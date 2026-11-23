@@ -35,16 +35,21 @@ def definitions(wiki):
         ("SessionStart", "context"),
         ("UserPromptSubmit", "remind"),
         ("PostToolUse", "recall"),
+        ("Stop", "record"),
     ):
         group = {"hooks": [{
             "type": "command",
-            "command": f"{MARKER} {shlex.quote(wiki)} {command} --harness codex",
+            "command": f"{MARKER} {shlex.quote(wiki)} {command}" + ("" if command == "record" else " --harness codex"),
             "timeout": 5,
         }]}
         if event == "PostToolUse":
             group["matcher"] = "Bash"
+            group["hooks"].append({
+                "type": "command",
+                "command": f"{MARKER} {shlex.quote(wiki)} remind --event --harness codex",
+                "timeout": 2,
+            })
         result[event] = group
-    # TODO: add Stop -> record after the record subcommand lands on this branch.
     return result
 
 
@@ -89,6 +94,10 @@ def hook_listing(codex, home):
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("CODEX_", "ORCA_", "OPENAI_"))}
     env["CODEX_HOME"] = str(home)
+    env["HOME"] = str(home)
+    env["XDG_STATE_HOME"] = str(home / "state")
+    env["XDG_CONFIG_HOME"] = str(home / "config")
+    env["XDG_CACHE_HOME"] = str(home / "cache")
     with tempfile.TemporaryFile() as errors:
         process = subprocess.Popen(
             [codex, "app-server", "--stdio"], cwd=home, env=env,
@@ -149,7 +158,7 @@ def trust_hashes(codex, desired):
                 continue
             label = hook["key"].rsplit(":", 3)[1]
             hashes[(label, hook.get("command"))] = hook["currentHash"]
-        if len(hashes) != len(desired):
+        if len(hashes) != sum(len(group["hooks"]) for group in desired.values()):
             raise ValueError("Codex did not recognize all wiki hooks; review them with /hooks")
         return hashes
 

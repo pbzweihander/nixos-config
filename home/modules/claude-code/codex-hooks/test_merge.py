@@ -12,8 +12,9 @@ class MergeTests(unittest.TestCase):
     def setUp(self):
         self.desired = merge.definitions("/nix/store/test/bin/claude-wiki")
         self.hashes = {
-            (merge.event_label(event), group["hooks"][0]["command"]): "sha256:test"
+            (merge.event_label(event), handler["command"]): "sha256:test"
             for event, group in self.desired.items()
+            for handler in group["hooks"]
         }
 
     def test_foreign_handlers_keep_their_exact_positions(self):
@@ -67,7 +68,7 @@ class MergeTests(unittest.TestCase):
             merge.install(home / "absent", self.desired, self.hashes, "Rules")
             self.assertFalse((home / "absent").exists())
             merge.install(home, self.desired, self.hashes, "Rules")
-            self.assertEqual(len(tomllib.loads(home.joinpath("config.toml").read_text())["hooks"]["state"]), 3)
+            self.assertEqual(len(tomllib.loads(home.joinpath("config.toml").read_text())["hooks"]["state"]), 5)
 
     def test_invalid_input_is_never_partly_written(self):
         for name, text in [("hooks.json", "{broken"), ("config.toml", "[broken"), ("AGENTS.md", merge.BEGIN * 2)]:

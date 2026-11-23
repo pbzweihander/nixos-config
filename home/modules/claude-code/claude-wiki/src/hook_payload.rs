@@ -40,7 +40,7 @@ pub struct Hook {
     pub is_interrupt: bool,
 }
 
-fn shell_tool(name: &str) -> bool {
+pub fn shell_tool(name: &str) -> bool {
     matches!(
         name.rsplit('.').next().unwrap_or(name),
         "Bash" | "exec_command" | "shell" | "shell_command"
@@ -48,6 +48,35 @@ fn shell_tool(name: &str) -> bool {
 }
 
 impl Hook {
+    pub fn response_text(&self) -> String {
+        self.tool_response
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                ["stderr", "stdout", "output", "aggregated_output"]
+                    .into_iter()
+                    .filter_map(|key| self.tool_response[key].as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+    }
+
+    pub fn exit_code(&self) -> Option<i64> {
+        self.tool_response["exit_code"]
+            .as_i64()
+            .or_else(|| self.tool_response["metadata"]["exit_code"].as_i64())
+            .or_else(|| exit_status(&self.response_text()))
+    }
+
+    pub fn normalize_shell(&mut self) {
+        if shell_tool(&self.tool_name) {
+            self.tool_name = "Bash".into();
+            if self.tool_input["command"].is_null() {
+                self.tool_input["command"] = self.tool_input["cmd"].clone();
+            }
+        }
+    }
+
     pub fn codex_failure(&self) -> Option<ShellFailure> {
         if self.hook_event_name != "PostToolUse"
             || !shell_tool(&self.tool_name)
@@ -55,18 +84,8 @@ impl Hook {
         {
             return None;
         }
-        let response = &self.tool_response;
-        let text = response.as_str().map(str::to_owned).unwrap_or_else(|| {
-            ["stderr", "stdout", "output", "aggregated_output"]
-                .into_iter()
-                .filter_map(|key| response[key].as_str())
-                .collect::<Vec<_>>()
-                .join("\n")
-        });
-        let code = response["exit_code"]
-            .as_i64()
-            .or_else(|| response["metadata"]["exit_code"].as_i64())
-            .or_else(|| exit_status(&text));
+        let text = self.response_text();
+        let code = self.exit_code();
         if code == Some(0) {
             return None;
         }

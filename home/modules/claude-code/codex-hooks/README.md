@@ -10,8 +10,17 @@ It does not create an unused account directory. `pcodex` selects the latter with
 | UserPromptSubmit | `claude-wiki remind --harness codex` | Related pages and write reminder |
 | PostToolUse, matcher Bash | `claude-wiki recall --harness codex` | Pages matching a shell failure or diagnostic |
 
-`record` does not exist on this branch, so no Stop hook is installed. The installer
-contains a TODO for adding it once that subcommand is available.
+Stop runs `claude-wiki record` detached using the common `session_id` and
+`transcript_path` payload fields; a null transcript fails open. PostToolUse/Bash
+also runs `claude-wiki remind --event --harness codex`. Event reminders require
+explicit status zero (structured status or a status header); raw output without
+status never triggers a commit/PR reminder.
+
+Codex 0.155.1 does have PreCompact (`core/src/compact.rs` and
+`hooks/src/schema.rs` in the packaged source). Its output supports UI messages
+and stop control only: plain stdout is ignored and additionalContext is not
+consumed. No PreCompact hook is installed because it cannot carry the Claude
+compaction-summary instruction; stopping compaction is not appropriate here.
 
 ## Verified contract
 

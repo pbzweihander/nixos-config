@@ -99,4 +99,15 @@ fn codex_hook_commands_accept_payloads_inject_context_and_reset_on_rollout_sync(
     let result = fixture.run(&recall, failure.clone());
     assert!(context(&result, "PostToolUse").contains("exit status unavailable"));
     assert!(fixture.run(&recall, failure).is_empty());
+
+    let event = ["remind", "--event", "--harness", "codex"];
+    let mut commit = json!({"session_id":"commit", "hook_event_name":"PostToolUse",
+        "tool_name":"functions.exec_command", "tool_input":{"cmd":"git commit -m fix"},
+        "tool_response":"[main abc123] fix"});
+    assert!(fixture.run(&event, commit.clone()).is_empty());
+    commit["tool_response"] = json!("Process exited with code 1\nOutput:\nerror: failed");
+    assert!(fixture.run(&event, commit.clone()).is_empty());
+    commit["tool_response"] = json!("Process exited with code 0\nOutput:\n[main abc123] fix");
+    assert!(context(&fixture.run(&event, commit.clone()), "PostToolUse").contains("committed"));
+    assert!(fixture.run(&event, commit).is_empty());
 }

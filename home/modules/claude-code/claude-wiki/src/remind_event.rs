@@ -1,8 +1,8 @@
 //! Cheap, provider-neutral hook parsing; see event-reminders.md for the heuristics.
+use crate::hook_payload::{Harness, Hook, additional_context};
 use anyhow::{Result, ensure};
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::json;
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, BufRead, BufReader, Read, Seek, SeekFrom},
@@ -13,25 +13,6 @@ use std::{
 const MAX_INPUT: u64 = 256 * 1024;
 const MAX_TRANSCRIPT: u64 = 4 * 1024 * 1024;
 const SCAN_BUDGET: Duration = Duration::from_millis(100);
-
-// These common fields deliberately do not encode a Claude-specific transcript or
-// project layout. A future provider adapter can normalize its shell tool to Bash.
-#[derive(Default, Deserialize)]
-pub(crate) struct Hook {
-    #[serde(default)]
-    session_id: String,
-    transcript_path: Option<String>,
-    #[serde(default)]
-    hook_event_name: String,
-    #[serde(default)]
-    tool_name: String,
-    #[serde(default)]
-    tool_input: Value,
-    #[serde(default)]
-    tool_response: Value,
-    #[serde(default)]
-    is_interrupt: bool,
-}
 
 #[derive(Clone, Copy)]
 enum Event {
@@ -288,13 +269,18 @@ fn scan(path: Option<&str>, mut offset: u64) -> Result<(u64, bool, bool)> {
         if n == 0 || !line.ends_with(b"\n") {
             return Ok((offset, synced, reader.limit() > 0 && n == 0));
         }
-        synced |= crate::remind::ran_sync(&line);
+        synced |= crate::hook_payload::ran_sync(&line);
         offset += n as u64;
     }
 }
 
 fn decide(db: &Connection, hook: &Hook, failures: u32) -> Result<Option<String>> {
-    if hook.session_id.trim().is_empty()
+    if hook
+        .session_id
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .is_empty()
         || !matches!(
             hook.hook_event_name.as_str(),
             "PostToolUse" | "PostToolUseFailure" | "PreCompact"
@@ -304,7 +290,7 @@ fn decide(db: &Connection, hook: &Hook, failures: u32) -> Result<Option<String>>
     }
     initialize(db)?;
     let tx = db.unchecked_transaction()?;
-    let id = &hook.session_id;
+    let id = hook.session_id.as_deref().unwrap_or_default();
     let mut state = State::load(&tx, id)?;
     let (mut prompts, offset): (i64, i64) = tx
         .query_row(
@@ -389,7 +375,9 @@ fn parse(input: impl Read) -> Result<Hook> {
         bytes.len() as u64 <= MAX_INPUT,
         "event hook input too large"
     );
-    Ok(serde_json::from_slice(&bytes)?)
+    let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+    ensure!(value.is_object(), "event hook input must be an object");
+    Ok(serde_json::from_value(value)?)
 }
 
 fn output(hook: &Hook, message: &str) -> String {
@@ -397,15 +385,21 @@ fn output(hook: &Hook, message: &str) -> String {
         // PreCompact stdout is a compaction instruction, not additionalContext.
         message.into()
     } else {
-        json!({"hookSpecificOutput": {
-            "hookEventName": hook.hook_event_name, "additionalContext": message,
-        }})
-        .to_string()
+        additional_context(&hook.hook_event_name, message).to_string()
     }
 }
 
 pub(crate) fn run(root: &Path, args: &crate::remind::Args) -> Result<()> {
-    let hook = parse(io::stdin().lock())?;
+    let mut hook = parse(io::stdin().lock())?;
+    if args.harness == Harness::Codex {
+        if hook.exit_code() != Some(0) {
+            return Ok(());
+        }
+        hook.normalize_shell();
+        if !hook.tool_response.is_object() {
+            hook.tool_response = json!({"exit_code": 0});
+        }
+    }
     fs::create_dir_all(root)?;
     let mut lock = fd_lock::RwLock::new(
         OpenOptions::new()
@@ -428,6 +422,7 @@ pub(crate) fn run(root: &Path, args: &crate::remind::Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
     use std::io::Write;
 
     fn hook(event: &str, command: &str) -> Hook {
@@ -561,9 +556,9 @@ mod tests {
                 .unwrap()
                 .contains("merged a pull request")
         );
-        h.session_id = "other".into();
+        h.session_id = Some("other".into());
         assert!(decide(&db, &h, 3)?.is_some());
-        h.session_id = "test".into();
+        h.session_id = Some("test".into());
         after_prompt(&db, "test", false, true)?;
         assert!(decide(&db, &h, 3)?.is_some());
         Ok(())
