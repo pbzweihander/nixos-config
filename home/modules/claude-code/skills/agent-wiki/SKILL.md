@@ -13,7 +13,7 @@ description: Search and write the shared markdown wiki at ~/.local/share/agent-w
 
 # Agent wiki
 
-`claude-wiki` remains a binary and skill alias. Every `AGENT_WIKI_*` setting
+`claude-wiki` remains a binary alias. Every `AGENT_WIKI_*` setting
 accepts the corresponding `CLAUDE_WIKI_*` fallback; the new name wins when both
 are set (including an empty socket setting). Home Manager moves data/state/runtime
 directories to `agent-wiki` and leaves old paths as symlinks. Before activation,

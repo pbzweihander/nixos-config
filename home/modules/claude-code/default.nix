@@ -108,8 +108,9 @@ let
     "rules/agent-wiki.md" = ./rules/agent-wiki.md;
     "rules/nix.md" = ./rules/nix.md;
     "rules/rust.md" = ./rules/rust.md;
+    # One directory only: a second name for the same skill would list it twice; its
+    # description keeps "claude-wiki" as a trigger phrase.
     "skills/agent-wiki" = ./skills/agent-wiki;
-    "skills/claude-wiki" = ./skills/agent-wiki;
     # Not installed for now: implementation is delegated to Codex workers through Orca
     # instead. The source stays in ./skills/codex-implement; uncomment to bring it back.
     # "skills/codex-implement" = ./skills/codex-implement;
@@ -273,7 +274,6 @@ in
       lib.mapAttrs' (path: source: lib.nameValuePair ".claude/${path}" { inherit source; }) claudeFiles
       // {
         ".agents/skills/agent-wiki".source = ./skills/agent-wiki;
-        ".agents/skills/claude-wiki".source = ./skills/agent-wiki;
       }
       // lib.listToAttrs (
         lib.concatMap (
