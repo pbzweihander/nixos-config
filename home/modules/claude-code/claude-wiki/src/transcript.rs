@@ -13,6 +13,8 @@ pub struct Codex {
     pub session: String,
     pub cwd: String,
     pub branch: String,
+    pub originator: String,
+    pub source: String,
     pub skipped: bool,
 }
 
@@ -34,11 +36,16 @@ impl Codex {
                 .into(),
             cwd: string(p, "cwd").unwrap_or_default().into(),
             branch: string(&p["git"], "branch").unwrap_or_default().into(),
-            // These are explicit producer markers seen in real rollouts. Generic
-            // vscode sessions and prompt prose are not reliable automation markers.
-            skipped: p["originator"] == "orca_desktop"
-                || p["source"] == "exec"
-                || p["source"].get("subagent").is_some(),
+            originator: string(p, "originator").unwrap_or_default().into(),
+            source: match &p["source"] {
+                Value::String(s) => s.clone(),
+                Value::Null => String::new(),
+                source => source.to_string(),
+            },
+            // Orca desktop and codex_exec sessions include delegated real work.
+            // The exec runner alone does not prove a scripted one-shot; preserve
+            // its provenance instead. Only explicit sidechains are excluded.
+            skipped: p["source"].get("subagent").is_some(),
         }))
     }
 
@@ -77,7 +84,27 @@ pub fn timestamp(value: &Value) -> Option<String> {
 }
 
 pub fn skipped(value: &Value) -> bool {
-    value["isSidechain"] == true || value["isMeta"] == true || value["entrypoint"] == "sdk-cli"
+    skip_reason(value).is_some()
+}
+
+pub fn skip_reason(value: &Value) -> Option<&'static str> {
+    if value["entrypoint"] == "sdk-cli" {
+        Some("claude_sdk_cli")
+    } else if value["isSidechain"] == true {
+        Some("claude_sidechain")
+    } else if value["isMeta"] == true {
+        Some("claude_meta")
+    } else {
+        None
+    }
+}
+
+pub fn harness_label<'a>(harness: &'a str, originator: &str) -> &'a str {
+    if harness == "codex" && originator == "orca_desktop" {
+        "codex/orca"
+    } else {
+        harness
+    }
 }
 
 pub fn text(value: &Value) -> String {

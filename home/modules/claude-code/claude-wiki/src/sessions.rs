@@ -41,7 +41,7 @@ pub struct Args {
     pub harness: Option<String>,
 }
 
-const INDEX_FORMAT: i64 = 2;
+const INDEX_FORMAT: i64 = 3;
 
 pub fn codex_source_dirs() -> Result<Vec<PathBuf>> {
     let fallback = env_path("CODEX_HOME")
@@ -181,6 +181,8 @@ pub fn complete_lines(
 struct Message {
     session_id: String,
     harness: String,
+    originator: String,
+    source: String,
     uuid: String,
     ts: String,
     role: String,
@@ -201,11 +203,7 @@ pub fn project(cwd: &str) -> String {
 fn parse(line: &[u8]) -> Option<Message> {
     let value: Value = serde_json::from_slice(line).ok()?;
     let role = value.get("type")?.as_str()?;
-    if !["user", "assistant"].contains(&role)
-        || value["isSidechain"] == true
-        || value["isMeta"] == true
-        || value["entrypoint"] == "sdk-cli"
-    {
+    if !["user", "assistant"].contains(&role) || transcript::skipped(&value) {
         return None;
     }
     let content = &value["message"]["content"];
@@ -229,6 +227,8 @@ fn parse(line: &[u8]) -> Option<Message> {
         .to_rfc3339_opts(SecondsFormat::Millis, true);
     Some(Message {
         harness: "claude".into(),
+        originator: String::new(),
+        source: String::new(),
         session_id: field("sessionId")?,
         uuid: field("uuid")?,
         ts,
@@ -250,6 +250,8 @@ fn parse_codex(meta: &transcript::Codex, line: &[u8], offset: u64) -> Option<Mes
     Some(Message {
         session_id: meta.session.clone(),
         harness: "codex".into(),
+        originator: meta.originator.clone(),
+        source: meta.source.clone(),
         uuid: format!("codex:{}:{offset}", meta.session),
         ts: transcript::timestamp(&value)?,
         role,
@@ -277,16 +279,16 @@ fn initialize(db: &Connection) -> Result<()> {
             |r| r.get::<_, i64>(0),
         )
         .optional()?;
-    let has_harness = db
+    let columns = db
         .prepare("pragma table_info(messages)")?
         .query_map([], |r| r.get::<_, String>(1))?
-        .collect::<rusqlite::Result<Vec<_>>>()?
-        .iter()
-        .any(|name| name == "harness");
-    if !has_harness {
-        db.execute_batch(
-            "alter table messages add column harness text not null default 'claude';",
-        )?;
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (name, default) in [("harness", "claude"), ("originator", ""), ("source", "")] {
+        if !columns.iter().any(|column| column == name) {
+            db.execute_batch(&format!(
+                "alter table messages add column {name} text not null default '{default}';"
+            ))?;
+        }
     }
     if version.is_none_or(|version| version < INDEX_FORMAT) {
         let tx = db.unchecked_transaction()?;
@@ -373,8 +375,8 @@ fn refresh_sources(db: &mut Connection, dirs: &[PathBuf], codex_dirs: &[PathBuf]
             };
             position += line.len() as u64;
             if let Some(m) = message {
-                tx.execute("insert or ignore into messages(session_id, uuid, ts, role, project, branch, path, text, harness) values (?,?,?,?,?,?,?,?,?)",
-                    params![m.session_id, m.uuid, m.ts, m.role, m.project, m.branch, path_str.as_ref(), m.text, m.harness])?;
+                tx.execute("insert or ignore into messages(session_id, uuid, ts, role, project, branch, path, text, harness, originator, source) values (?,?,?,?,?,?,?,?,?,?,?)",
+                    params![m.session_id, m.uuid, m.ts, m.role, m.project, m.branch, path_str.as_ref(), m.text, m.harness, m.originator, m.source])?;
             }
             Ok(())
         })?;
@@ -511,24 +513,32 @@ pub fn run(root: &Path, args: &Args) -> Result<()> {
         );
     }
     for (id, hits) in groups {
-        let (project, branch, first, harness): (String, String, String, String) = db.query_row(
-            "select project, branch, ts, harness from messages where session_id = ? order by ts, id limit 1",
+        let (project, branch, first, harness, originator, source): (String, String, String, String, String, String) = db.query_row(
+            "select project, branch, ts, harness, originator, source from messages where session_id = ? order by ts, id limit 1",
             [&id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
         )?;
         let last: String = db.query_row(
             "select max(ts) from messages where session_id = ?",
             [&id],
             |r| r.get(0),
         )?;
+        let label = transcript::harness_label(&harness, &originator);
         println!(
-            "session {}  ({harness}, {}, {}..{}, {})",
+            "session {}  ({label}, {}, {}..{}, {})",
             clean(&id, usize::MAX),
             clean(&project, usize::MAX),
             &first[..10],
             &last[..10],
             clean(&branch, usize::MAX)
         );
+        if harness == "codex" {
+            println!(
+                "  originator={} source={}",
+                clean(&originator, 200),
+                clean(&source, 200)
+            );
+        }
         let first_user: Option<String> = db.query_row("select text from messages where session_id = ? and role = 'user' order by ts, id limit 1", [&id], |r| r.get(0)).optional()?;
         println!("  \"{}\"", clean(&first_user.unwrap_or_default(), 100));
         for hit in hits {
@@ -732,7 +742,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_incremental_index_and_explicit_automation_markers() -> Result<()> {
+    fn codex_incremental_index_includes_workers_and_skips_subagents() -> Result<()> {
         use std::io::Write;
         let tmp = TestDir::new()?;
         let date = tmp.0.join("2026/11/20");
@@ -774,7 +784,7 @@ mod tests {
             4
         );
         for (i, marker) in [
-            serde_json::json!({"source":"exec"}),
+            serde_json::json!({"source":"exec", "originator":"codex_exec"}),
             serde_json::json!({"originator":"orca_desktop"}),
             serde_json::json!({"source":{"subagent":{"other":"guardian"}}}),
         ]
@@ -788,17 +798,45 @@ mod tests {
             for (key, value) in marker.as_object().unwrap() {
                 lines[0]["payload"][key] = value.clone();
             }
-            let skipped_path = date.join(format!("rollout-skipped-{i}.jsonl"));
+            lines[0]["payload"]["id"] = format!("codex-worker-{i}").into();
+            let skipped_path = date.join(format!("rollout-worker-{i}.jsonl"));
             fs::write(
                 &skipped_path,
                 lines.iter().map(|v| format!("{v}\n")).collect::<String>(),
             )?;
-            assert!(transcript::Codex::open(&skipped_path)?.unwrap().skipped);
+            assert_eq!(
+                transcript::Codex::open(&skipped_path)?.unwrap().skipped,
+                i == 2
+            );
+            // Format 2 marked these files fully consumed without indexing them.
+            let (mtime, size) = index::stamp(&skipped_path.metadata()?);
+            db.execute(
+                "insert into transcripts values (?,?,?,?)",
+                params![skipped_path.to_str(), size, size, mtime],
+            )?;
         }
+        db.execute_batch("update state set value=2 where key='index_format'; alter table messages drop column originator; alter table messages drop column source;")?;
+        initialize(&db)?;
         refresh_sources(&mut db, &[], std::slice::from_ref(&tmp.0))?;
         assert_eq!(
             db.query_row("select count(*) from messages", [], |r| r.get::<_, i64>(0))?,
-            4
+            10
+        );
+        assert_eq!(
+            db.query_row(
+                "select count(*) from messages where originator='orca_desktop'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?,
+            3
+        );
+        assert_eq!(
+            db.query_row(
+                "select count(*) from messages where source='exec'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?,
+            3
         );
         Ok(())
     }
@@ -855,8 +893,11 @@ mod tests {
             } else {
                 db.execute_batch("drop table state;")?;
             }
-            // The prior schema did not have a harness column at all.
-            db.execute_batch("alter table messages drop column harness;")?;
+            // Exercise both the pre-harness schema and the previous worker policy.
+            db.execute_batch("alter table messages drop column originator; alter table messages drop column source;")?;
+            if version.is_none() {
+                db.execute_batch("alter table messages drop column harness;")?;
+            }
             initialize(&db)?;
             refresh(&mut db, std::slice::from_ref(&tmp.0))?;
             assert_eq!(

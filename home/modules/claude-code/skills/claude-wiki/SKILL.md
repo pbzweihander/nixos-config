@@ -214,9 +214,13 @@ Codex rollouts come from `$CLAUDE_WIKI_CODEX_SESSIONS_DIRS`, a colon-separated l
 defaulting to `$CODEX_HOME/sessions` or `~/.codex/sessions`; the installed wrapper
 lists both `~/.codex/sessions` and `~/.pcodex/sessions`. Results label the harness;
 `--harness claude|codex` filters it. Only `response_item` user/assistant messages
-are indexed, without event duplicates, reasoning or tool output. Explicit Codex
-automation markers (`source: exec`, `source.subagent`, `originator: orca_desktop`)
-are excluded. `CODEX_THREAD_ID` also excludes the current session.
+are indexed, without event duplicates, reasoning or tool output. Codex sidechains
+(`source.subagent`) are excluded. Orca desktop sessions are included as `codex/orca`;
+exec sessions are included because `source: exec` and `originator: codex_exec`
+identify a runner, not whether it did real delegated work or a scripted one-shot.
+Results show originator/source metadata, also preserved in records.
+`CODEX_THREAD_ID` excludes the current session. Existing indexes rebuild once to
+include previously excluded worker sessions and populate the provenance fields.
 
 `--records` searches deterministic session records instead of message text. Records
 contain the first/last prompts (1000 characters each), cwd/project/branch, observed
@@ -233,6 +237,7 @@ for Codex. It detaches via `setsid`, closes inherited pipes, skips the wiki lock
 fails open. `record --wait` runs synchronously and reports errors; `record --backfill
 --days 30` covers both configured sources, selecting transcripts modified in the last
 30 days (`--days 0` includes all). Each run replaces the record for that session ID.
+Backfill reports Codex counts by originator/source and skipped counts by reason.
 Records live only in `$XDG_STATE_HOME/claude-wiki/records.sqlite`, defaulting to
 `~/.local/state/claude-wiki/records.sqlite`, with directory mode 700 and file mode 600.
 Known credential patterns are redacted, but records remain private conversation data.

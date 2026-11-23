@@ -54,6 +54,10 @@ struct Hook {
 struct Record {
     session_id: String,
     harness: String,
+    #[serde(default)]
+    originator: String,
+    #[serde(default)]
+    source: String,
     transcript_path: String,
     cwd: String,
     project: String,
@@ -300,8 +304,17 @@ impl Record {
 }
 
 fn extract(path: &Path, hook: &Hook) -> Result<Option<Record>> {
+    extract_explained(path, hook, &mut "no_recordable_content")
+}
+
+fn extract_explained(
+    path: &Path,
+    hook: &Hook,
+    skip_reason: &mut &'static str,
+) -> Result<Option<Record>> {
     let codex = transcript::Codex::open(path)?;
     if codex.as_ref().is_some_and(|meta| meta.skipped) {
+        *skip_reason = "codex_subagent";
         return Ok(None);
     }
     let mut record = Record {
@@ -316,15 +329,19 @@ fn extract(path: &Path, hook: &Hook) -> Result<Option<Record>> {
         record.session_id = meta.session.clone();
         record.cwd = meta.cwd.clone();
         record.branch = meta.branch.clone();
+        record.originator = meta.originator.clone();
+        record.source = meta.source.clone();
     }
     let mut tools = HashMap::<String, Tool>::new();
     let mut running = HashMap::<String, Tool>::new();
     let mut seen = BTreeSet::new();
+    let mut excluded = BTreeSet::new();
     sessions::complete_lines(File::open(path)?, 0, |line| {
         let Ok(value) = serde_json::from_slice::<Value>(line) else {
             return Ok(());
         };
-        if transcript::skipped(&value) {
+        if let Some(reason) = transcript::skip_reason(&value) {
+            excluded.insert(reason);
             return Ok(());
         }
         if let Some(ts) = transcript::timestamp(&value) {
@@ -434,6 +451,14 @@ fn extract(path: &Path, hook: &Hook) -> Result<Option<Record>> {
     if record.session_id.is_empty()
         || (record.first_prompt.is_empty() && record.tool_calls.is_empty())
     {
+        *skip_reason = ["claude_sdk_cli", "claude_sidechain", "claude_meta"]
+            .into_iter()
+            .find(|reason| excluded.contains(reason))
+            .unwrap_or(if record.session_id.is_empty() {
+                "missing_session_id"
+            } else {
+                "no_recordable_content"
+            });
         return Ok(None);
     }
     if !hook.session_id.is_empty() && record.session_id != hook.session_id {
@@ -572,6 +597,8 @@ fn backfill(days: u32) -> Result<()> {
     let cutoff = Utc::now() - chrono::Duration::days(days.into());
     let mut db = open()?;
     let (mut claude, mut codex, mut skipped, mut failed, mut older) = (0, 0, 0, 0, 0);
+    let mut codex_sources = BTreeMap::<(String, String), usize>::new();
+    let mut skipped_reasons = BTreeMap::<&str, usize>::new();
     for path in paths {
         let result = (|| -> Result<Option<Record>> {
             let modified: DateTime<Utc> = path.metadata()?.modified()?.into();
@@ -579,16 +606,23 @@ fn backfill(days: u32) -> Result<()> {
                 older += 1;
                 return Ok(None);
             }
-            let record = extract(&path, &Hook::default())?;
+            let mut reason = "no_recordable_content";
+            let record = extract_explained(&path, &Hook::default(), &mut reason)?;
             if let Some(record) = &record {
                 save(&mut db, record)?;
             } else {
                 skipped += 1;
+                *skipped_reasons.entry(reason).or_default() += 1;
             }
             Ok(record)
         })();
         match result {
-            Ok(Some(record)) if record.harness == "codex" => codex += 1,
+            Ok(Some(record)) if record.harness == "codex" => {
+                codex += 1;
+                *codex_sources
+                    .entry((record.originator, record.source))
+                    .or_default() += 1;
+            }
             Ok(Some(_)) => claude += 1,
             Ok(None) => (),
             Err(_) => failed += 1,
@@ -596,6 +630,14 @@ fn backfill(days: u32) -> Result<()> {
     }
     println!(
         "records: claude={claude} codex={codex} skipped={skipped} older={older} failed={failed}"
+    );
+    let origins: Vec<_> = codex_sources.into_iter().map(|((originator, source), records)| {
+        serde_json::json!({"originator":originator, "source":source, "records":records})
+    }).collect();
+    println!("codex sources: {}", serde_json::to_string(&origins)?);
+    println!(
+        "skipped reasons: {}",
+        serde_json::to_string(&skipped_reasons)?
     );
     if failed > 0 {
         bail!("{failed} transcripts could not be recorded")
@@ -647,7 +689,7 @@ pub fn search(args: &sessions::Args) -> Result<()> {
         println!(
             "record {} ({}, {}, {}, {}s)",
             record.session_id,
-            record.harness,
+            transcript::harness_label(&record.harness, &record.originator),
             record.project,
             record.ended,
             record.duration_seconds
@@ -782,5 +824,22 @@ mod tests {
             ),
             vec!["file.txt", "source.rs"]
         );
+    }
+
+    #[test]
+    fn orca_records_keep_provenance_and_legacy_records_remain_readable() -> Result<()> {
+        let record = extract(&fixture("record-orca.jsonl"), &Hook::default())?.unwrap();
+        assert_eq!(record.originator, "orca_desktop");
+        assert_eq!(record.source, "vscode");
+        assert_eq!(
+            transcript::harness_label(&record.harness, &record.originator),
+            "codex/orca"
+        );
+        let mut value = serde_json::to_value(&record)?;
+        value.as_object_mut().unwrap().remove("originator");
+        value.as_object_mut().unwrap().remove("source");
+        let legacy: Record = serde_json::from_value(value)?;
+        assert!(legacy.originator.is_empty() && legacy.source.is_empty());
+        Ok(())
     }
 }
