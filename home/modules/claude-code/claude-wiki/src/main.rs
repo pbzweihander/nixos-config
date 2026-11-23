@@ -8,6 +8,7 @@ mod pages;
 mod recall;
 mod related;
 mod remind;
+mod remind_event;
 mod scan;
 mod search;
 mod semantic;
@@ -93,7 +94,7 @@ enum Commands {
     Context(context::Args),
     /// BM25 search over past session transcripts
     Sessions(sessions::Args),
-    /// Periodic UserPromptSubmit reminder
+    /// Periodic UserPromptSubmit reminder, or a reminder after a meaningful event
     Remind(remind::Args),
     /// Suggest wiki pages for skill calls or exact error text on failures
     Recall(recall::Args),
@@ -181,6 +182,13 @@ fn ensure_layout(root: &Path) -> Result<()> {
 
 fn run(command: &Commands) -> Result<i32> {
     let root = wiki_root();
+    if let Commands::Remind(args) = command
+        && args.event
+    {
+        // Event hooks only need reminder state: do not refresh the wiki or query embeddings.
+        remind_event::run(&root, args)?;
+        return Ok(0);
+    }
     fs::create_dir_all(&root)?;
     let mut lock = fd_lock::RwLock::new(
         fs::OpenOptions::new()

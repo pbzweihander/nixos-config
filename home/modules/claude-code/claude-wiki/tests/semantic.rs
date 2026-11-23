@@ -1563,6 +1563,60 @@ fn hooks_respect_lock_deadline_and_non_hooks_still_wait() {
 }
 
 #[test]
+fn event_reminders_skip_busy_locks_and_fail_open_on_sqlite_contention() {
+    let wiki = Wiki::new();
+    let input = json!({"session_id":"event-lock", "hook_event_name":"PreCompact"}).to_string();
+    let mut lock = fd_lock::RwLock::new(
+        fs::OpenOptions::new()
+            .write(true)
+            .open(wiki.0.join("wiki/.lock"))
+            .unwrap(),
+    );
+    let guard = lock.write().unwrap();
+    let started = Instant::now();
+    let output = run_output(wiki.command(&["remind", "--event"]), &input);
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(output.status.success() && output.stdout.is_empty() && output.stderr.is_empty());
+    drop(guard);
+
+    let db = rusqlite::Connection::open(wiki.0.join("wiki/index.sqlite")).unwrap();
+    db.execute_batch("begin exclusive").unwrap();
+    let started = Instant::now();
+    let output = run_output(wiki.command(&["remind", "--event"]), &input);
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(output.status.success() && output.stdout.is_empty());
+    db.execute_batch("rollback").unwrap();
+    assert!(run(wiki.command(&["remind", "--event"]), &input).contains("context compaction"));
+}
+
+#[test]
+fn event_reminders_do_not_refresh_pages_or_connect_to_semantic_daemon() {
+    let wiki = Wiki::new();
+    let listener = wiki.listener();
+    fs::write(
+        wiki.0.join("wiki/pages/knowledge/new.md"),
+        "---\ntitle: new\n---\nbody",
+    )
+    .unwrap();
+    let input = json!({
+        "session_id":"event-fast", "hook_event_name":"PostToolUse", "tool_name":"Bash",
+        "tool_input":{"command":"git commit -m fix"}, "tool_response":{"interrupted":false},
+    })
+    .to_string();
+    assert!(run(wiki.command(&["remind", "--event"]), &input).contains("you just committed"));
+    assert_no_connection(&listener);
+    let db = rusqlite::Connection::open(wiki.0.join("wiki/index.sqlite")).unwrap();
+    let count: i64 = db
+        .query_row(
+            "select count(*) from files where path='pages/knowledge/new.md'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
 fn plain_check_uses_one_head_listing_and_no_per_page_git_show() {
     let wiki = Wiki::new();
     for i in 0..40 {

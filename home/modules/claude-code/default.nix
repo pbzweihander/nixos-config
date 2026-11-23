@@ -153,6 +153,31 @@ let
           ];
         }
       ];
+      # Event reminders share the interval counter; keep these command strings
+      # stable because activation unions hook entries. Event processing fails open.
+      PostToolUse = [
+        {
+          matcher = "Bash";
+          hooks = [
+            {
+              type = "command";
+              command = "claude-wiki remind --event";
+              timeout = 2;
+            }
+          ];
+        }
+      ];
+      PreCompact = [
+        {
+          hooks = [
+            {
+              type = "command";
+              command = "claude-wiki remind --event";
+              timeout = 2;
+            }
+          ];
+        }
+      ];
       # A failure's exact error text and a skill's tag identify useful knowledge;
       # ordinary calls and successful output mostly identify the topic already in hand.
       # Keep the command string stable: array entries are unioned on merge, so a
@@ -176,6 +201,16 @@ let
               type = "command";
               command = "claude-wiki recall";
               timeout = 5;
+            }
+          ];
+        }
+        # A separate entry preserves the existing recall entry during array union.
+        {
+          hooks = [
+            {
+              type = "command";
+              command = "claude-wiki remind --event";
+              timeout = 2;
             }
           ];
         }
