@@ -9,6 +9,8 @@ use std::{collections::HashSet, env, path::Path, process::Command};
 
 #[derive(ClapArgs)]
 pub struct Args {
+    #[arg(long, value_enum, default_value = "claude")]
+    pub harness: crate::hook_payload::Harness,
     #[arg(short, default_value_t = 10)]
     pub n: usize,
     #[arg(long, env = "CLAUDE_WIKI_CONTEXT_BUDGET", default_value_t = 6000)]
@@ -323,7 +325,7 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
             args.budget
         );
     }
-    print!("{text}");
+    print!("{}", args.harness.context("SessionStart", &text));
     if let Some(session) = session {
         for section in &sections {
             if let Some(paths) = listed.get(section.name) {
