@@ -52,6 +52,7 @@ class AdjudicationTests(RepoTest):
         self.assertEqual(call["wiki"], call["cwd"])
         self.assertEqual(call["socket"], "")
         self.assertIn(PROBLEM, call["prompt"])
+        self.assertTrue(call["prompt"].startswith("[wiki-curator automation]\n"))
         self.assertIn('"recall":', call["prompt"])
         self.assertIn('"old":', call["prompt"])
         self.assertIn('"new":', call["prompt"])

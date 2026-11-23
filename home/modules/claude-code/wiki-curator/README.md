@@ -46,6 +46,11 @@ tasks and other pairs. Once the deadline expires, the pair is eligible again.
 
 ## Isolation and gates
 
+All curator prompts start with `[wiki-curator automation]`, allowing session search
+and local records to exclude these runs even when the worktree is relocated.
+Existing rollouts are excluded by the cache's `wiki-curator/` directory as a fallback.
+Claude invocations also use `--no-session-persistence`.
+
 Each run owns a detached worktree in the cache. Before each task it checks out the
 latest `main` and cleans untracked files. Claude runs there with wiki hooks disabled,
 no session persistence, an explicit editing-tool allowlist, a 40-turn limit and a

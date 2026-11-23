@@ -12,8 +12,10 @@ export CLAUDE_WIKI_SOCKET=$HOME/no-daemon.sock
 export CLAUDE_WIKI_SKILL_DIRS=$HOME/skills
 sessions_dir=$HOME/transcripts
 export CLAUDE_WIKI_SESSIONS_DIRS=$sessions_dir
+export CLAUDE_WIKI_CODEX_SESSIONS_DIRS=$HOME/codex-transcripts
+export XDG_STATE_HOME=$HOME/state
 unset CLAUDE_WIKI_RECALL_MIN_WINDOWS CLAUDE_WIKI_RECALL_MAX_SKILL_PAGES CLAUDE_WIKI_RECALL_MAX_PAGES
-unset CLAUDE_SESSION_ID CLAUDE_WIKI_CONTEXT_BUDGET CLAUDE_WIKI_OVERVIEW_BUDGET CLAUDE_WIKI_REMIND_INTERVAL
+unset CLAUDE_SESSION_ID CODEX_THREAD_ID CLAUDE_WIKI_CONTEXT_BUDGET CLAUDE_WIKI_OVERVIEW_BUDGET CLAUDE_WIKI_REMIND_INTERVAL
 unset CLAUDE_WIKI_REMIND_FAILURES
 trap 'rm -rf "$HOME"' EXIT
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
@@ -251,9 +253,9 @@ out=$("$wiki" sessions orbital --role assistant)
 check "omitted directory drops messages" 'no sessions match' env CLAUDE_WIKI_SESSIONS_DIRS="$sessions_dir:$HOME/transcripts-alias" "$wiki" sessions secondaccountuniqueword
 check "restored directory reindexes messages" 'session second-session' "$wiki" sessions secondaccountuniqueword
 
-check "missing branch and cwd still indexes" 'session outside-repository  (, 2026-09-16..2026-09-16, )' "$wiki" sessions branchlessuniqueword
+check "missing branch and cwd still indexes" 'session outside-repository  (claude, , 2026-09-16..2026-09-16, )' "$wiki" sessions branchlessuniqueword
 check "missing branch and cwd text is found" '\[branchlessuniqueword\]' "$wiki" sessions branchlessuniqueword
-check "worktree project mapping" 'session fixture-session  (demo,' "$wiki" sessions orbital --project demo
+check "worktree project mapping" 'session fixture-session  (claude, demo,' "$wiki" sessions orbital --project demo
 check "project filter" 'no sessions match' "$wiki" sessions orbital --project other
 check "excluded session" 'no sessions match' "$wiki" sessions orbital --exclude-session fixture-session
 check "environment excludes current session" 'no sessions match' env CLAUDE_SESSION_ID=fixture-session "$wiki" sessions orbital
@@ -280,6 +282,34 @@ check "session rebuild" 'session fixture-session' "$wiki" sessions orbital --rei
 cp "$fixtures/session.jsonl" "$sessions_dir/project/session.jsonl"
 check "truncated file drops old messages" 'no sessions match' "$wiki" sessions appenduniqueword
 check "truncated file reindexes original messages" 'session fixture-session' "$wiki" sessions orbital
+
+# Records stay in private local state and both transcript formats are searchable.
+mkdir -p "$CLAUDE_WIKI_CODEX_SESSIONS_DIRS/2026/11/20"
+cp "$fixtures/record-codex.jsonl" "$CLAUDE_WIKI_CODEX_SESSIONS_DIRS/2026/11/20/rollout-test.jsonl"
+check "Codex transcript and harness" 'session record-codex  (codex, demo' "$wiki" sessions aurora --harness codex
+check_not "Codex event copies excluded" 'session record-codex' "$wiki" sessions duplicatehiddenonly
+check "Claude harness filter" 'no sessions match' "$wiki" sessions aurora --harness claude
+"$wiki" record --wait --transcript-path "$fixtures/record-claude.jsonl"
+"$wiki" record --wait --transcript-path "$fixtures/record-codex.jsonl"
+check "record error search" 'error\[E0425\]' "$wiki" sessions --records E0425
+check "record file search" 'src/journal.rs' "$wiki" sessions --records journal --harness codex
+check "record commit search" 'abc1234 Fix cache' "$wiki" sessions --records abc1234
+"$wiki" record --wait --transcript-path "$fixtures/record-claude.jsonl"
+check "records exclude session" 'no session records match' "$wiki" sessions --records abc1234 --exclude-session record-claude
+check "record date filter" 'no session records match' "$wiki" sessions --records abc1234 --after 2026-11-21
+check "record project filter" 'no session records match' "$wiki" sessions --records abc1234 --project other
+check "records do not become pages" 'no pages match' "$wiki" search --no-semantic abc1234
+check_not "records are not context" 'abc1234' "$wiki" context
+[ -f "$XDG_STATE_HOME/claude-wiki/records.sqlite" ] || fail "record database missing" record ""
+[ ! -e "$CLAUDE_WIKI_DIR/records.sqlite" ] || fail "record database in wiki" record ""
+[ "$(stat -c %a "$XDG_STATE_HOME/claude-wiki/records.sqlite")" = 600 ] || fail "record permissions" record ""
+check "backfill both sources" 'records: claude=.*codex=1 .*failed=0' "$wiki" record --backfill --days 0
+cp "$fixtures/record-orca.jsonl" "$CLAUDE_WIKI_CODEX_SESSIONS_DIRS/2026/11/20/rollout-orca.jsonl"
+check "Orca sessions are real work" 'session record-orca  (codex/orca,' "$wiki" sessions worker --harness codex
+check "Codex provenance in session output" 'originator=orca_desktop source=vscode' "$wiki" sessions worker --harness codex
+"$wiki" record --wait --transcript-path "$fixtures/record-orca.jsonl"
+check "Orca records are labeled" 'record record-orca (codex/orca,' "$wiki" sessions --records worker --harness codex
+check_not "malformed record hook fails open" '.' bash -c 'printf invalid | "$1" record 2>/dev/null' _ "$wiki"
 
 # Without a daemon, even a prompt whose words match pages produces no suggestion.
 printf '{"session_id":"related","prompt":"%s"}\n' \
