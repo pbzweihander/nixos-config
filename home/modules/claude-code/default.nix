@@ -190,6 +190,16 @@ let
             }
           ];
         }
+        {
+          matcher = "Bash";
+          hooks = [
+            {
+              type = "command";
+              command = "claude-wiki recall";
+              timeout = 5;
+            }
+          ];
+        }
       ];
       PreCompact = [
         {

@@ -399,7 +399,7 @@ check "recall exact error phrases" 'may explain this Bash failure:.*recall-isola
 check_not "recall failure session dedupe" '.' "$wiki" recall <<<"$recall_input"
 check "recall other failure session" 'recall-isolation.md' "$wiki" recall \
   <<<"${recall_input/recall-failure/recall-other}"
-check_not "recall one matching window is insufficient" '.' "$wiki" recall \
+check "recall unique complete error line qualifies" 'recall-isolation.md' "$wiki" recall \
   <<<'{"session_id":"recall-single","hook_event_name":"PostToolUseFailure","tool_name":"Bash","error":"error building bubblewrap command cannot establish"}'
 for i in 1 2 3 4; do
   printf -- '---\ntitle: shared error %s\ncreated: 2026-09-28\n---\nfatal orbital recovery cannot restore the journal cache\n' "$i" \
@@ -409,7 +409,7 @@ check_not "recall ignores windows shared by four pages" '.' "$wiki" recall \
   <<<'{"hook_event_name":"PostToolUseFailure","tool_name":"Bash","error":"fatal orbital recovery cannot restore the journal cache"}'
 check_not "recall ignores Bash PreToolUse" '.' "$wiki" recall \
   <<<'{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"error building bubblewrap command cannot establish app-server socket mount isolation"}}'
-check_not "recall ignores successful output" '.' "$wiki" recall \
+check_not "recall successful output requires a session for its budget" '.' "$wiki" recall \
   <<<'{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_response":{"stderr":"error building bubblewrap command cannot establish app-server socket mount isolation"}}'
 check_not "recall ignores interrupted failures" '.' "$wiki" recall \
   <<<'{"hook_event_name":"PostToolUseFailure","tool_name":"Bash","is_interrupt":true,"error":"error building bubblewrap command cannot establish app-server socket mount isolation"}'

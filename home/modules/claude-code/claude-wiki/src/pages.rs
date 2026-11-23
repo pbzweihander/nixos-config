@@ -42,6 +42,79 @@ pub fn link_path(target: &str) -> Option<String> {
         .then(|| format!("pages/{target}.md"))
 }
 
+/// Warnings omit the diagnostic itself: even malformed pages can contain secrets.
+pub fn error_quote_problems(page: &Page) -> Vec<String> {
+    static QUOTED: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"`([^`]+)`|"([^"]+)"|'([^']+)'"#).unwrap());
+    if page.kind != "knowledge" {
+        return vec![];
+    }
+    let mut problems = vec![];
+    if page
+        .queries
+        .iter()
+        .any(|query| crate::recall::error_line(query) && !page.body.contains(query.trim()))
+    {
+        problems.push(
+            "error-like query is absent verbatim from the body (queries are not indexed)".into(),
+        );
+    }
+    let mut fence: Option<&str> = None;
+    for line in page.body.lines() {
+        let line = line.trim();
+        if line.starts_with("```") || line.starts_with("~~~") {
+            let marker = &line[..3];
+            if fence == Some(marker) {
+                fence = None;
+            } else if fence.is_none() {
+                fence = Some(marker);
+            }
+            continue;
+        }
+        let abbreviated = |text: &str| text.contains("...") && crate::recall::error_line(text);
+        if ((fence.is_some() || line.starts_with('>')) && abbreviated(line))
+            || QUOTED.captures_iter(line).any(|parts| {
+                parts
+                    .iter()
+                    .skip(1)
+                    .flatten()
+                    .any(|part| abbreviated(part.as_str()))
+            })
+        {
+            problems.push(
+                "quoted error line contains ...; quote the complete diagnostic verbatim".into(),
+            );
+            break;
+        }
+    }
+    problems
+}
+
+#[cfg(test)]
+#[test]
+fn knowledge_error_quotes_must_be_complete_and_in_the_body() {
+    let mut page = Page {
+        kind: "knowledge".into(),
+        queries: vec!["ModuleNotFoundError: No module named tomlkit".into()],
+        ..Page::default()
+    };
+    assert_eq!(error_quote_problems(&page).len(), 1);
+    page.body = format!("```text\n{}\n```", page.queries[0]);
+    assert!(error_quote_problems(&page).is_empty());
+    page.body.push_str("\n> error: cannot open ... socket\n");
+    assert_eq!(error_quote_problems(&page).len(), 1);
+    page.body = "원인은 error 처리입니다. 일반 설명 ...".into();
+    page.queries.clear();
+    assert!(error_quote_problems(&page).is_empty());
+    page.body = "'error: cannot ...'".into();
+    assert_eq!(error_quote_problems(&page).len(), 1);
+    page.body = "원인은 error 처리입니다. `option` ...".into();
+    assert!(error_quote_problems(&page).is_empty());
+    page.kind = "history".into();
+    page.body = "`error: cannot ...`".into();
+    assert!(error_quote_problems(&page).is_empty());
+}
+
 fn without_code(body: &str) -> String {
     let mut prose = String::new();
     let mut fence = None;

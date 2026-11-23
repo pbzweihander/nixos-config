@@ -1,4 +1,5 @@
-//! Bound unknown-exit-status recall without persisting command diagnostics.
+//! Shared limiter for successful-output and unknown-exit-status diagnostics.
+//! Retain the existing table names when reusing the Codex fallback budget.
 use anyhow::Result;
 use regex::Regex;
 use rusqlite::{Connection, params};

@@ -31,6 +31,8 @@ struct Report {
     log_growth: Vec<Finding>,
     #[serde(rename = "missing-queries")]
     missing_queries: Vec<Finding>,
+    #[serde(rename = "error-quotes")]
+    error_quotes: Vec<Finding>,
     #[serde(rename = "non-korean")]
     non_korean: Vec<Finding>,
     orphans: Vec<Finding>,
@@ -215,6 +217,9 @@ fn worklist(root: &Path, db: &Connection, now: i64) -> Result<Report> {
         for finding in sync::broken_links(root, &page) {
             add(&mut result.broken_links, finding);
         }
+        for finding in pages::error_quote_problems(&page) {
+            add(&mut result.error_quotes, finding);
+        }
         if page.kind == "knowledge"
             && snapshot_slug(
                 &DATE,
@@ -322,6 +327,7 @@ fn prioritize(result: &mut Report, usage: &BTreeMap<String, usage::PageUsage>) {
         &mut result.frontmatter,
         &mut result.log_growth,
         &mut result.missing_queries,
+        &mut result.error_quotes,
         &mut result.non_korean,
         &mut result.orphans,
         &mut result.snapshots,
@@ -413,6 +419,7 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
         print_category("frontmatter", &result.frontmatter, args.all);
         print_category("log-growth", &result.log_growth, args.all);
         print_category("missing-queries", &result.missing_queries, args.all);
+        print_category("error-quotes", &result.error_quotes, args.all);
         print_category("non-korean", &result.non_korean, args.all);
         print_category("orphans", &result.orphans, args.all);
         print_category("singleton-tags", &result.singleton_tags, args.all);
@@ -625,7 +632,7 @@ mod tests {
             concat!(
                 r#"{"broken-links":[{"detail":"missing","path":"a","usage":{"importance":1.5,"injected_unread":1,"last_read":123,"read_sessions":2,"reads":5}}],"#,
                 r#""duplicates":[{"a":"a","b":"b","score":0.99,"usage_a":{"importance":0.0,"injected_unread":0,"last_read":null,"read_sessions":0,"reads":0},"usage_b":{"importance":0.0,"injected_unread":0,"last_read":null,"read_sessions":0,"reads":0}}],"#,
-                r#""frontmatter":[],"log-growth":[],"missing-queries":[],"non-korean":[],"orphans":[],"#,
+                r#""frontmatter":[],"log-growth":[],"missing-queries":[],"error-quotes":[],"non-korean":[],"orphans":[],"#,
                 r#""singleton-tags":[{"path":"b","tag":"tag","usage":{"importance":0.0,"injected_unread":0,"last_read":null,"read_sessions":0,"reads":0}}],"snapshots":[],"#,
                 r#""stale-followups":[{"age_days":30,"mtime":123,"path":"c","usage":{"importance":0.0,"injected_unread":0,"last_read":null,"read_sessions":0,"reads":0}}]}"#,
             )
@@ -635,7 +642,7 @@ mod tests {
                 unread: Some(vec![]),
                 ..Report::default()
             })?,
-            r#"{"broken-links":[],"duplicates":[],"frontmatter":[],"log-growth":[],"missing-queries":[],"non-korean":[],"orphans":[],"singleton-tags":[],"snapshots":[],"stale-followups":[],"unread":[]}"#
+            r#"{"broken-links":[],"duplicates":[],"frontmatter":[],"log-growth":[],"missing-queries":[],"error-quotes":[],"non-korean":[],"orphans":[],"singleton-tags":[],"snapshots":[],"stale-followups":[],"unread":[]}"#
         );
         Ok(())
     }

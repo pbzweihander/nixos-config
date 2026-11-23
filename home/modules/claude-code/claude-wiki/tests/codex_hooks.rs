@@ -90,7 +90,8 @@ fn codex_hook_commands_accept_payloads_inject_context_and_reset_on_rollout_sync(
         "tool_name":"Bash", "tool_input":{"command":"build-app"},
         "tool_response":{"exit_code":0,"stderr":"error: cannot establish app-server socket mount isolation"}});
     let recall = ["recall", "--harness", "codex"];
-    assert!(fixture.run(&recall, failure.clone()).is_empty());
+    assert!(context(&fixture.run(&recall, failure.clone()), "PostToolUse").contains("error line"));
+    failure["session_id"] = json!("known-failure");
     failure["tool_response"]["exit_code"] = json!(1);
     let result = fixture.run(&recall, failure.clone());
     assert!(context(&result, "PostToolUse").contains("socket.md"));

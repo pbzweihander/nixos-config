@@ -21,15 +21,37 @@ static PAGE_PATH: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"pages/(?:knowledge|projects|followups|history)/[A-Za-z0-9._-]+\.md").unwrap()
 });
 static ERRORS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(error|failed|failure|cannot|can't|not permitted|permission denied|not found|no such|panic|traceback|exception|fatal|refused|timed out|invalid|unrecognized|unknown option|read-only file system)\b").unwrap()
+    Regex::new(r"(?i)\b(error|failed|failure|cannot|can't|not permitted|permission denied|not found|no such|panic|traceback|exception|fatal|refused|timed out|invalid|unrecognized|unknown option|read-only file system|\w+(?:error|exception)|no module named|exceeded|does not exist|not available|refusing|unable to|denied)\b").unwrap()
 });
+
+pub(crate) fn error_line(line: &str) -> bool {
+    ERRORS.is_match(line)
+}
+
+// A leading reader prints file contents, so its diagnostic-looking lines are not
+// evidence about this call. A build piped INTO a reader remains eligible.
+fn reads_file_content(command: &str) -> bool {
+    static READER: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?x)^\s*(?:
+            [A-Za-z_][A-Za-z_0-9]*=(?:[^\s'";|&]+|'[^']*'|"[^"]*")*\s+
+            | cd\s+(?:[^'";&]|'[^']*'|"[^"]*")+&&\s*
+            | (?:env|command)\s+
+        )*(?:\S*/)?(?:grep|rg|ugrep|cat|head|tail|less|bat|jq|find|ls|awk|claude-wiki
+            | sed\s+-n\S*
+            | git\s+(?:(?:-C|-c|--git-dir|--work-tree)\s+(?:[^\s'";|&]+|'[^']*'|"[^"]*")\s+)*(?:log|show|diff|grep|blame)
+            | gh\s+(?:pr|issue|run\s+view|api)
+        )(?:\s|$)"#).unwrap()
+    });
+    READER.is_match(command)
+}
 
 #[derive(ClapArgs)]
 pub struct Args {
     #[arg(long, value_enum, default_value = "claude")]
     harness: Harness,
     /// Minimum match score: each six-word window counts 1, each gated 3–5-word
-    /// phrase counts 2. Default 2 means seven consecutive matching words
+    /// phrase or unique whole error line (at least four words) counts 2.
+    /// Default 2 means seven consecutive matching words
     /// (overlapping windows), two separate six-word runs, or one gated short phrase.
     #[arg(long, env = "CLAUDE_WIKI_RECALL_MIN_WINDOWS", default_value_t = 2)]
     min_windows: usize,
@@ -114,6 +136,7 @@ fn wiki_operation(root: &Path, hook: &Hook) -> bool {
 struct ErrorWindow {
     phrase: String,
     short: bool,
+    whole: bool,
     df: usize,
     kept: bool,
     reason: Option<&'static str>,
@@ -133,13 +156,37 @@ fn error_windows(error: &str, home: &Path) -> Vec<ErrorWindow> {
     {
         let line = line.to_lowercase();
         let words: Vec<_> = WORDS.find_iter(&line).map(|m| m.as_str()).collect();
-        for segment in words.rsplit(|word| {
+        let words = words.as_slice();
+        let words = words
+            .strip_prefix(&["error"])
+            .or_else(|| words.strip_prefix(&["fatal"]))
+            .unwrap_or(words);
+        let dropped = |word: &&str| {
             word.chars().all(char::is_numeric)
                 || (word.len() >= 7
                     && word.bytes().all(|c| c.is_ascii_hexdigit())
                     && word.bytes().any(|c| c.is_ascii_digit()))
                 || home_words.contains(word)
-        }) {
+        };
+        // A whole diagnostic retains its literal identifiers; normal sliding
+        // windows below still split at IDs, hashes and home path tokens.
+        if words.len() >= 4 && line.len() <= 2000 {
+            let phrase = words.join(" ");
+            if seen.insert(phrase.clone()) {
+                windows.push(ErrorWindow {
+                    phrase,
+                    short: words.len() < WINDOW,
+                    whole: true,
+                    df: 0,
+                    kept: false,
+                    reason: None,
+                });
+                if windows.len() == MAX_WINDOWS {
+                    break 'lines;
+                }
+            }
+        }
+        for segment in words.rsplit(dropped) {
             if segment.len() < 3 {
                 continue;
             }
@@ -149,6 +196,7 @@ fn error_windows(error: &str, home: &Path) -> Vec<ErrorWindow> {
                     windows.push(ErrorWindow {
                         phrase,
                         short: words.len() < WINDOW,
+                        whole: false,
                         df: 0,
                         kept: false,
                         reason: None,
@@ -227,7 +275,7 @@ fn error_candidates(
             Some("no matches")
         } else if window.df > MAX_WINDOW_PAGES {
             Some("shared by too many pages")
-        } else if window.short {
+        } else if window.short && !(window.whole && window.df == 1) {
             let mut rare = false;
             for token in window.phrase.split_whitespace() {
                 let df: i64 = token_counts
@@ -246,7 +294,7 @@ fn error_candidates(
     let queries: Vec<_> = windows
         .iter()
         .filter(|w| w.kept)
-        .map(|w| json!({"phrase": quote(&w.phrase), "weight": if w.short { 2 } else { 1 }}))
+        .map(|w| json!({"phrase": quote(&w.phrase), "weight": if w.short || (w.whole && w.df == 1) { 2 } else { 1 }}))
         .collect();
     if queries.is_empty() {
         return Ok(vec![]);
@@ -448,14 +496,41 @@ fn decide(root: &Path, db: &Connection, hook: &Hook, args: &Args) -> Result<Opti
                 windows = error_windows(hook.error.as_str().unwrap_or_default(), &crate::home());
                 candidates = error_candidates(db, args, &mut windows)?;
             }
-            "PostToolUse" if args.harness == Harness::Codex => {
-                if let Some(error) = hook.codex_failure() {
-                    let text = if error.uncertain {
-                        mode = Some("diagnostic");
+            "PostToolUse" if hook.tool_name == "Bash" && !hook.is_interrupt => {
+                let failure = (args.harness == Harness::Codex)
+                    .then(|| hook.codex_failure())
+                    .flatten();
+                let known_failure = failure.as_ref().is_some_and(|error| !error.uncertain);
+                let uncertain = args.harness == Harness::Codex && hook.exit_code().is_none();
+                let reader =
+                    reads_file_content(hook.tool_input["command"].as_str().unwrap_or_default());
+                if known_failure || !reader {
+                    let text = if let Some(error) = failure {
+                        error.text
+                    } else if uncertain {
+                        String::new()
+                    } else {
+                        hook.response_text()
+                            .lines()
+                            .rev()
+                            .take(200)
+                            .filter(|line| error_line(line))
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                            .rev()
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    };
+                    let text = if !known_failure {
+                        mode = (!text.is_empty()).then_some(if uncertain {
+                            "diagnostic"
+                        } else {
+                            "output-diagnostic"
+                        });
                         fallback_lines = crate::codex_recall::pending(
                             db,
                             hook.session_id.as_deref().unwrap_or_default(),
-                            &error.text,
+                            &text,
                             args.explain,
                         )?;
                         fallback_lines
@@ -465,7 +540,7 @@ fn decide(root: &Path, db: &Connection, hook: &Hook, args: &Args) -> Result<Opti
                             .join("\n")
                     } else {
                         mode = Some("error");
-                        error.text
+                        text
                     };
                     windows = error_windows(&text, &crate::home());
                     candidates = error_candidates(db, args, &mut windows)?;
@@ -518,12 +593,19 @@ fn decide(root: &Path, db: &Connection, hook: &Hook, args: &Args) -> Result<Opti
         format!(
             "claude-wiki: pages that may explain this shell diagnostic (exit status unavailable): {pages}. Read one if relevant; otherwise ignore this note and do not reply to it."
         )
+    } else if mode == Some("output-diagnostic") {
+        format!(
+            "claude-wiki: pages that may explain an error line in this shell output: {pages}. Read one if relevant; otherwise ignore this note and do not reply to it."
+        )
     } else {
         format!(
             "claude-wiki: pages that may explain this {} failure: {pages}. Read one if it is relevant to what you are about to do; otherwise ignore this note and do not reply to it.",
             hook.tool_name
         )
     };
+    let message = format!(
+        "{message} On an unfamiliar error, search the wiki with the exact error line: `claude-wiki search '<error line>'`."
+    );
     if !fallback_lines.is_empty() {
         crate::codex_recall::record(
             db,
@@ -553,7 +635,10 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
     if input.trim().is_empty() {
         return Ok(());
     }
-    let hook = serde_json::from_str(&input)?;
+    let mut hook: Hook = serde_json::from_str(&input)?;
+    if args.harness == Harness::Codex {
+        hook.normalize_shell();
+    }
     let root = root.canonicalize()?;
     if let Some(output) = decide(&root, db, &hook, args)? {
         println!("{output}");
@@ -657,6 +742,72 @@ mod tests {
             include_history: false,
             explain: false,
         }
+    }
+
+    #[test]
+    fn successful_output_uses_errors_only_and_skips_readers() -> Result<()> {
+        let wiki = Wiki::new()?;
+        wiki.page(
+            "target",
+            "",
+            "",
+            "ModuleNotFoundError: No module named tomlkit",
+        )?;
+        let mut h = hook(
+            "PostToolUse",
+            "Bash",
+            json!({"command":"python build.py | tail"}),
+        );
+        h.session_id = Some("success".into());
+        h.tool_response =
+            json!({"stdout":"ModuleNotFoundError: No module named tomlkit", "stderr":""});
+        assert!(decide(&wiki.root, &wiki.db, &h, &args())?.is_some());
+        assert!(decide(&wiki.root, &wiki.db, &h, &args())?.is_none());
+        for command in [
+            "rg error src",
+            "cat log | tail",
+            "cd 'some dir' && git -C . show HEAD",
+            "env KEY=value sed -n '1,20p' file",
+            "bat file",
+            "jq . file",
+        ] {
+            h.tool_input = json!({"command":command});
+            assert!(
+                wiki.explain(&h)?["selected"].as_array().unwrap().is_empty(),
+                "{command}"
+            );
+        }
+        h.tool_input = json!({"command":"echo ModuleNotFoundError: No module named tomlkit"});
+        h.tool_response = json!({"stdout":"ordinary text"});
+        assert!(wiki.explain(&h)?["selected"].as_array().unwrap().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn complete_unique_line_bypasses_common_tokens_and_severity() -> Result<()> {
+        let wiki = Wiki::new()?;
+        let line = "unable to open shared socket";
+        wiki.page("target", "", "", line)?;
+        for name in ["a", "b", "c", "d"] {
+            wiki.page(name, "", "", "shared unable socket to open")?;
+        }
+        let h = failure(json!(format!("error: {line}")));
+        assert_eq!(
+            wiki.explain(&h)?["selected"],
+            json!(["pages/knowledge/target.md"])
+        );
+        wiki.page("duplicate", "", "", line)?;
+        assert!(wiki.explain(&h)?["selected"].as_array().unwrap().is_empty());
+        for line in [
+            "TimeoutError: time exceeded",
+            "no module named flask",
+            "path does not exist",
+            "service not available",
+            "refusing stale worktree",
+        ] {
+            assert!(error_line(line), "{line}");
+        }
+        Ok(())
     }
 
     fn skill_args(cwd: &Path) -> SkillPagesArgs {
@@ -890,13 +1041,14 @@ mod tests {
                 .iter()
                 .map(|w| w.phrase.as_str())
                 .collect::<Vec<_>>(),
-            ["error it is not a valid", "it is not a valid option"]
+            ["it is not a valid option"]
         );
         for token in ["123", "１２３", "abc12def", "home", "example", "user"] {
             let windows = error_windows(&format!("error cannot open the {token} socket"), home);
-            assert_eq!(windows.len(), 1, "{token}");
-            assert_eq!(windows[0].phrase, "error cannot open the", "{token}");
+            assert_eq!(windows.len(), 2, "{token}");
+            assert_eq!(windows[0].phrase, "cannot open the", "{token}");
             assert!(windows[0].short);
+            assert!(windows[1].whole);
         }
         assert_eq!(
             error_windows("error cannot open the abcdefa socket", home).len(),
@@ -909,12 +1061,12 @@ mod tests {
                 .iter()
                 .map(|w| w.phrase.as_str())
                 .collect::<Vec<_>>(),
-            ["error one two", "fatal three four"]
+            Vec::<&str>::new()
         );
         assert!(windows.iter().all(|w| w.short));
         assert_eq!(
             error_windows("오류가 error 한글과 두 글자 이상의 단어", home).len(),
-            2
+            3
         );
     }
 
@@ -927,10 +1079,10 @@ mod tests {
         assert_eq!(
             windows
                 .iter()
+                .filter(|w| !w.whole)
                 .map(|w| (w.phrase.as_str(), w.short))
                 .collect::<Vec<_>>(),
             [
-                ("error one two", true),
                 ("three four five six", true),
                 ("seven eight nine ten eleven", true),
                 ("twelve thirteen fourteen fifteen sixteen seventeen", false),
@@ -940,27 +1092,35 @@ mod tests {
                 ),
             ]
         );
-        assert!(error_windows("error one 123 two three", Path::new("/home/test")).is_empty());
+        assert!(
+            error_windows("error one 123 two three", Path::new("/home/test"))
+                .iter()
+                .all(|w| w.whole)
+        );
     }
 
     #[test]
     fn short_phrases_require_rare_tokens_and_score_two() -> Result<()> {
         let wiki = Wiki::new()?;
         wiki.page("ssh", "", "", "Permission denied (publickey).")?;
-        wiki.page("common", "", "", "error connection refused")?;
+        wiki.page("common", "", "", "error connection was refused")?;
         for name in ["noise-one", "noise-two", "noise-three", "noise-four"] {
             wiki.page(
                 name,
                 "",
                 "",
-                "permission error denied connection was refused; fatal shared quux",
+                "permission error denied connection refused was; fatal shared quux failed",
             )?;
         }
         for (error, df, reason) in [
             ("Permission denied (publickey).", 1, None),
-            ("error connection refused", 1, Some("no rare token")),
-            ("fatal shared quux", 4, Some("shared by too many pages")),
-            ("error missing diagnostic", 0, Some("no matches")),
+            ("error connection was refused", 1, Some("no rare token")),
+            (
+                "fatal shared quux failed",
+                4,
+                Some("shared by too many pages"),
+            ),
+            ("error missing diagnostic value", 0, Some("no matches")),
         ] {
             let h = failure(json!(error));
             let output = wiki.explain(&h)?;
@@ -1145,7 +1305,7 @@ mod tests {
             "one-window",
             "",
             "",
-            "error building bubblewrap command cannot establish",
+            "error building bubblewrap command cannot establish app",
         )?;
         wiki.page("blocked", "", "", ERROR)?;
         wiki.page("history", "", "", ERROR)?;
@@ -1192,12 +1352,15 @@ mod tests {
     fn single_or_common_windows_do_not_qualify() -> Result<()> {
         let wiki = Wiki::new()?;
         wiki.page("one", "", "", ERROR)?;
-        let h = failure(json!("error building bubblewrap command cannot establish"));
+        wiki.page("two", "", "", ERROR)?;
+        let h = failure(json!(
+            "error building bubblewrap command cannot establish app"
+        ));
         assert!(decide(&wiki.root, &wiki.db, &h, &args())?.is_none());
         let mut opts = args();
         opts.min_windows = 1;
         assert!(decide(&wiki.root, &wiki.db, &h, &opts)?.is_some());
-        for name in ["two", "three", "four"] {
+        for name in ["three", "four"] {
             wiki.page(name, "", "", ERROR)?;
         }
         let output = wiki.explain(&failure(json!(ERROR)))?;

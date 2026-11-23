@@ -38,7 +38,8 @@ pub fn wiki_paths(root: &Path, paths: &[String]) -> Result<Vec<String>> {
         .map(|p| {
             // Accept the `type/slug` form that links and `links` output use, so a
             // path copied from there works for sync and check as well.
-            let p = pages::link_path(p).unwrap_or_else(|| p.to_owned());
+            let p = pages::link_path(p.strip_suffix(".md").unwrap_or(p))
+                .unwrap_or_else(|| p.to_owned());
             let path = expand_home(Path::new(&p));
             let path = resolve(&if path.is_absolute() {
                 path
@@ -71,6 +72,10 @@ fn validate(root: &Path, rel: &str, text: &str, page: &pages::Page) -> i32 {
         code = 2;
     }
     for finding in broken_links(root, page) {
+        eprintln!("warning: {rel}: {finding}");
+        code = code.max(1);
+    }
+    for finding in pages::error_quote_problems(page) {
         eprintln!("warning: {rel}: {finding}");
         code = code.max(1);
     }
@@ -498,6 +503,40 @@ fn untagged_skills<'a>(page: &pages::Page, names: &'a [String]) -> Vec<&'a str> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sync_accepts_a_slug_with_the_markdown_extension() -> Result<()> {
+        let mut wiki = crate::usage::tests::Wiki::new()?;
+        git(&wiki.root, &["config", "user.name", "Test"])?;
+        git(&wiki.root, &["config", "user.email", "test@example.com"])?;
+        wiki.page(
+            "pages/knowledge/example.md",
+            "---\ntitle: Example\ncreated: 2026-01-01\n---\n본문\n",
+        )?;
+        for name in [
+            "knowledge/example",
+            "knowledge/example.md",
+            "pages/knowledge/example.md",
+        ] {
+            assert_eq!(
+                wiki_paths(&wiki.root, &[name.into()])?,
+                ["pages/knowledge/example.md"]
+            );
+        }
+        assert!(
+            sync(
+                &wiki.root,
+                &wiki.index,
+                &["knowledge/example.md".into()],
+                None
+            )? < 2
+        );
+        assert_eq!(
+            git(&wiki.root, &["ls-tree", "--name-only", "-r", "HEAD"])?.trim(),
+            "pages/knowledge/example.md"
+        );
+        Ok(())
+    }
 
     #[test]
     fn frontmatter_errors_block_check_and_sync_without_a_commit() -> Result<()> {

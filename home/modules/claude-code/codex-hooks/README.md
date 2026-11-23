@@ -62,16 +62,22 @@ looking at the transcript cannot reliably recover this call's status.
 
 Recall first honors structured `exit_code` (including `metadata.exit_code`) or
 the exact header lines `Exit code: N` / `Process exited with code N` before
-`Output:`. Zero is always silent. Without status, it considers only anchored
+`Output:`. Successful output can also trigger recall when it contains error
+lines. Commands that read file contents (including grep, cat, sed -n, jq,
+and git log/show/diff) are excluded from successful/unknown-status recall; a
+build piped into tail is still eligible. Without status, it considers only anchored
 diagnostic lines such as `error: ...`, `fatal: ...`, `RuntimeError: ...`, or
-`bash: cannot ...`, then applies the existing rare-error-phrase matching.
+`bash: cannot ...`, then applies the same error matcher used for Claude and known-status output.
+That matcher includes Error/Exception suffixes, strips leading error/fatal, and
+accepts a unique complete diagnostic of at least four words without a rare token.
 Code snippets, quoted strings, prose mentioning errors, and filename/line-number
 grep matches are excluded. ANSI colors are stripped.
 
 This fallback can still misidentify successful output that reproduces an actual
 diagnostic. Its message explicitly says **exit status unavailable**. A normalized
 line can cause at most one emitted fallback recall per session, and a session
-can receive at most **three** fallback recalls total. Missing session IDs disable
+can receive at most **three** diagnostic recalls total, including successful
+output recalls. Claude successful-output recall uses the same limiter. Missing session IDs disable
 the fallback. Normalization folds case, whitespace, and numeric IDs; the database
 stores only deduplication hashes, not diagnostic text. Known-status failures retain
 the existing page deduplication behavior and do not consume the fallback budget.

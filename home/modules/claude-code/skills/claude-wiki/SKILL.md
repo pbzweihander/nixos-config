@@ -40,9 +40,11 @@ search by meaning. `check`, `sync`, and `lint` flag pages whose prose is not Kor
 
 - **knowledge**: a problem's symptom, cause, and fix; a tool or environment quirk;
   how something works; the reason behind a decision. One topic per page, edited in
-  place whenever it changes. Include the **exact error message** or identifiers so a
-  search on them hits, how you confirmed the cause, the commands of the fix, and the
-  conditions under which it applies (versions, machines). When a finding changes,
+  place whenever it changes. Quote the **exact error line verbatim in the body**,
+  never paraphrased or shortened with `...`, and never only in `queries:` (which
+  is not indexed), so search and recall can find it. Include identifiers, how you
+  confirmed the cause, the commands of the fix, and the conditions under which it
+  applies (versions, machines). When a finding changes,
   rewrite the page to state what is true now; do not append dated "Update ..."
   paragraphs. Say how each claim that matters was established (see "Provenance"
   below), and keep the wrong conclusions that were tempting (see "Corrections").
@@ -95,6 +97,8 @@ claude-wiki tags                                                                
   results are shown with a stderr note:
   `note: no keyword match; these results match by meaning only. If none fits, try claude-wiki sessions <terms>.`
   No keyword-miss note appears with `--no-semantic` or no hits.
+- On an unfamiliar error, search with the exact error line:
+  `claude-wiki search '<error line>'`, even when no recall note appeared.
 - Quote a multi-word argument to also match it as an exact phrase; pages containing
   the phrase rank higher: `claude-wiki search "readonly database" nix sandbox`.
 - Search with Korean keywords, the bare noun or stem without a particle (`재시작`,
@@ -385,6 +389,11 @@ Do not evade a finding by obfuscating the same content.
 
 ## Writing guidance
 
+Quote complete error lines verbatim in the body, including their punctuation and
+identifiers. Never shorten them with `...` or paraphrase them; `queries:` alone is
+not enough because it is not indexed. `lint` reports `error-quotes`, and `check`
+and `sync` warn about missing body quotes or abbreviated quoted diagnostics.
+
 - Write entries as declarative facts rather than instructions.
 - Do not capture transient environment failures or negative claims about a tool
   based on a single failure. Record verified causes and the conditions of a fix.
@@ -555,6 +564,8 @@ truncation. Categories are:
 - `orphans`: knowledge with neither backlinks nor outgoing links.
 - `frontmatter` and `broken-links`: the same findings as `check`.
 - `missing-queries`: knowledge without queries.
+- `error-quotes`: an error-like query absent verbatim from the body, or a quoted
+  error line abbreviated with `...`, in a knowledge page.
 - `singleton-tags`: tags used by exactly one unblocked page.
 - `unread`: pages older than 14 days never read, included only after a usage scan
   with the current scan format; oldest first using `created`, falling back to mtime.
