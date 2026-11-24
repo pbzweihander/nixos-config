@@ -41,6 +41,7 @@
       kubectl-node-shell
       kubectl-view-allocations
       kubectx
+      kubelogin-oidc
       kubernetes-helm
       yaml-language-server
 
