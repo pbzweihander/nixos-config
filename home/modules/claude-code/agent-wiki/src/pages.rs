@@ -29,6 +29,8 @@ pub struct Page {
     pub tags: String,
     pub project: String,
     pub created: String,
+    /// Validated `summary:` frontmatter value; empty when absent or invalid.
+    pub summary: String,
     pub body: String,
     pub queries: Vec<String>,
     pub problems: Vec<String>,
@@ -369,6 +371,14 @@ pub fn parse(text: &str, rel: &str) -> Page {
                 .push("queries must be a list of strings".into()),
         }
     }
+    if let Some(value) = meta.get(Value::String("summary".into())) {
+        match value.as_str().filter(|s| !s.trim().is_empty()) {
+            Some(summary) => page.summary = summary.to_owned(),
+            None => page
+                .problems
+                .push("summary must be a non-empty string".into()),
+        }
+    }
     if !page.status.is_empty() && !["open", "done"].contains(&page.status.as_str()) {
         page.problems.push(format!(
             "has status '{}'; use one of open, done",
@@ -405,6 +415,101 @@ pub fn parse(text: &str, rel: &str) -> Page {
     page.created = get("created");
     page.links = parse_links(&page.body, rel);
     page
+}
+
+/// Longest one-line summary, in characters, that [`summary`] returns.
+pub const SUMMARY_CHARS: usize = 200;
+
+/// One line describing the page: its `summary:` frontmatter value, otherwise the
+/// first prose paragraph or list item of the body, skipping headings, rules and
+/// code blocks. Whitespace runs collapse to one space, and a longer text is cut to
+/// [`SUMMARY_CHARS`] characters ending in `…`. Empty when the body has no prose.
+pub fn summary(page: &Page) -> String {
+    let text = if page.summary.is_empty() {
+        first_paragraph(&page.body)
+    } else {
+        page.summary.clone()
+    };
+    truncate(&one_line(&text), SUMMARY_CHARS)
+}
+
+pub fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `text` when it has at most `max` characters, otherwise its first characters
+/// followed by `…`, `max` characters in all. Cuts only at character boundaries.
+pub fn truncate(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    let Some(keep) = max.checked_sub(1) else {
+        return String::new();
+    };
+    let mut cut: String = text.chars().take(keep).collect();
+    cut.truncate(cut.trim_end().len());
+    cut.push('…');
+    cut
+}
+
+fn first_paragraph(body: &str) -> String {
+    static ATX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\A#{1,6}(?:\s|\z)").unwrap());
+    static RULE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\A(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|=+)\z").unwrap()
+    });
+    static SETEXT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\A(?:=+|-+)\z").unwrap());
+    static ITEM: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\A(?:[-*+]|\d{1,9}[.)])(?:\s+|\z)(?:\[[ xX]\](?:\s+|\z))?").unwrap()
+    });
+    let mut lines: Vec<&str> = vec![];
+    let mut fence: Option<(u8, usize)> = None;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        let marker = trimmed.as_bytes().first().copied().unwrap_or_default();
+        let run = trimmed.bytes().take_while(|b| *b == marker).count();
+        if let Some((opening, length)) = fence {
+            if marker == opening && run >= length && trimmed[run..].trim().is_empty() {
+                fence = None;
+            }
+            continue;
+        }
+        if matches!(marker, b'`' | b'~') && run >= 3 {
+            if !lines.is_empty() {
+                break;
+            }
+            fence = Some((marker, run));
+            continue;
+        }
+        let mut text = trimmed;
+        while let Some(rest) = text.strip_prefix('>') {
+            text = rest.trim_start();
+        }
+        if !lines.is_empty() && SETEXT.is_match(text) {
+            // The paragraph so far was a setext heading, not prose.
+            lines.clear();
+            continue;
+        }
+        let item = ITEM.find(text).filter(|_| !RULE.is_match(text));
+        if text.is_empty()
+            || ATX.is_match(text)
+            || RULE.is_match(text)
+            || text.starts_with("<!--")
+            || (item.is_some() && !lines.is_empty())
+        {
+            if lines.is_empty() {
+                continue;
+            }
+            break;
+        }
+        let text = item.map_or(text, |m| &text[m.end()..]);
+        if text.is_empty() {
+            continue;
+        }
+        // A list item is a unit of its own: the next item ends it, while its
+        // continuation lines join it.
+        lines.push(text);
+    }
+    lines.join(" ")
 }
 
 pub fn read(path: &Path) -> Result<String> {
@@ -617,5 +722,93 @@ mod tests {
             parse("---\n[]\n---\nbody", "x.md").problems,
             ["has frontmatter that is not a YAML mapping"]
         );
+    }
+
+    fn summary_of(text: &str) -> String {
+        summary(&parse(text, "pages/knowledge/notice.md"))
+    }
+
+    #[test]
+    fn summary_frontmatter_is_an_optional_nonempty_string() {
+        let text = "---\ntitle: T\ncreated: 2026-11-26\nsummary: \"워크트리를\n  쓰세요.  지금\"\n---\n본문 첫 문단\n";
+        let page = parse(text, "pages/knowledge/notice.md");
+        assert!(page.problems.is_empty(), "{:?}", page.problems);
+        assert_eq!(summary(&page), "워크트리를 쓰세요. 지금");
+        for yaml in ["''", "'   '", "null", "", "[a]", "{a: b}", "5", "true"] {
+            let page = parse(
+                &format!("---\ntitle: T\ncreated: 2026-11-26\nsummary: {yaml}\n---\nBody line\n"),
+                "pages/knowledge/notice.md",
+            );
+            assert_eq!(
+                page.problems,
+                ["summary must be a non-empty string"],
+                "{yaml}"
+            );
+            // An invalid value falls back to the body.
+            assert_eq!(summary(&page), "Body line", "{yaml}");
+        }
+    }
+
+    #[test]
+    fn summary_falls_back_to_the_first_prose_paragraph() {
+        let fm = "---\ntitle: T\ncreated: 2026-11-26\n---\n";
+        for (body, expected) in [
+            ("", ""),
+            ("\n\n# Heading only\n\n## Another\n", ""),
+            (
+                "# Title\n\nFirst line\nsecond  line\n\nNext paragraph\n",
+                "First line second line",
+            ),
+            (
+                "```sh\necho code\n```\n\n~~~~\n```\n~~~~\nAfter code\n",
+                "After code",
+            ),
+            ("````\nunclosed fence\n", ""),
+            (
+                "---\n\n* * *\n\n- 첫 항목\n  이어지는 줄\n- 둘째 항목\n",
+                "첫 항목 이어지는 줄",
+            ),
+            ("1. ordered item\n2. next\n", "ordered item"),
+            ("- [ ] todo item\n", "todo item"),
+            ("- \n-\n\n+ real item\n", "real item"),
+            ("> quoted\n> > nested line\n\nlater\n", "quoted nested line"),
+            ("<!-- comment -->\nprose\n", "prose"),
+            ("prose ends\n# at a heading\n", "prose ends"),
+            ("prose ends\n```\ncode\n```\n", "prose ends"),
+            ("prose ends\n- at a list\n", "prose ends"),
+            ("Setext heading\n===\n\nbody\n", "body"),
+            ("Setext\ntwo\n---\nbody\n", "body"),
+            ("paragraph\n* * *\nafter\n", "paragraph"),
+            ("#hashtag is prose\n", "#hashtag is prose"),
+            ("  \t indented\tprose  \n", "indented prose"),
+        ] {
+            assert_eq!(summary_of(&format!("{fm}{body}")), expected, "{body:?}");
+        }
+        // A page without frontmatter still has a body summary.
+        assert_eq!(summary_of("Just text\n"), "Just text");
+    }
+
+    #[test]
+    fn summary_is_cut_at_character_boundaries() {
+        assert_eq!(truncate("abc", 3), "abc");
+        assert_eq!(truncate("abcd", 3), "ab…");
+        assert_eq!(truncate("ab  cd", 4), "ab…");
+        assert_eq!(truncate("abcd", 1), "…");
+        assert_eq!(truncate("abcd", 0), "");
+        assert_eq!(truncate("", 0), "");
+        let korean = "가나다라마바사😀".repeat(40);
+        let cut = summary_of(&format!(
+            "---\ntitle: T\ncreated: 2026-11-26\n---\n{korean}\n"
+        ));
+        assert_eq!(cut.chars().count(), SUMMARY_CHARS);
+        assert!(cut.ends_with('…'));
+        assert!(korean.starts_with(cut.trim_end_matches('…')));
+        let exact = "한".repeat(SUMMARY_CHARS);
+        let text = format!("---\ntitle: T\ncreated: 2026-11-26\nsummary: {exact}\n---\nx\n");
+        assert_eq!(summary_of(&text), exact);
+        let text = format!("---\ntitle: T\ncreated: 2026-11-26\nsummary: {exact}한\n---\nx\n");
+        let cut = summary_of(&text);
+        assert_eq!(cut.chars().count(), SUMMARY_CHARS);
+        assert_eq!(cut, format!("{}…", "한".repeat(SUMMARY_CHARS - 1)));
     }
 }

@@ -37,6 +37,9 @@ pub struct Notice {
     pub title: String,
     pub mtime: i64,
     pub seen: Option<i64>,
+    /// One-line summary from [`load_summaries`]; empty until loaded or when the page
+    /// has no prose.
+    pub summary: String,
 }
 
 impl Notice {
@@ -162,6 +165,7 @@ pub fn notices(index: &Connection, seen: Option<(&Connection, &str)>) -> Result<
                 title: r.get(1)?,
                 mtime: r.get(2)?,
                 seen: None,
+                summary: String::new(),
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -176,6 +180,27 @@ pub fn notices(index: &Connection, seen: Option<(&Connection, &str)>) -> Result<
         }
     }
     Ok(notices)
+}
+
+/// The page's summary as it is on disk now. Empty when the file is unreadable or
+/// now holds something the scanner blocks: the index may predate the latest edit,
+/// and a summary must never show what a blocked page would hide.
+fn summary(root: &Path, rel: &str) -> String {
+    let Ok(text) = crate::pages::read(&root.join(rel)) else {
+        return String::new();
+    };
+    if !crate::scan::scan(&text).is_empty() {
+        return String::new();
+    }
+    crate::pages::summary(&crate::pages::parse(&text, rel))
+}
+
+/// Reads each page's summary from disk. Callers pass only the pages they show, so
+/// a turn without unseen notices reads no page file at all.
+pub fn load_summaries(root: &Path, notices: &mut [Notice]) {
+    for notice in notices {
+        notice.summary = summary(root, &notice.path);
+    }
 }
 
 pub fn mark_seen(db: &Connection, key: &str, notices: &[Notice]) -> Result<()> {
@@ -209,6 +234,8 @@ pub const MAX_PAGES: usize = 10;
 /// capped at this.
 pub const MAX_CHARS: usize = 1500;
 const TITLE_CHARS: usize = 120;
+/// A first page's summary cut shorter than this is dropped instead.
+const SUMMARY_MIN_CHARS: usize = 20;
 const HEAD: &str = "agent-wiki bulletin: updated notice(s) since your last check: ";
 const TAIL: &str = ". Read and apply any changes that affect your work or SOP; do not reply to this note directly.";
 
@@ -222,9 +249,60 @@ pub struct Note {
     pub delivered: usize,
 }
 
+/// `{path} ({title} — {stamp}): {summary}`, leaving out an empty title or summary.
+fn entry(path: &str, title: &str, stamp: &str, summary: &str) -> String {
+    let head = if title.is_empty() {
+        format!("{path} ({stamp})")
+    } else {
+        format!("{path} ({title} — {stamp})")
+    };
+    if summary.is_empty() {
+        head
+    } else {
+        format!("{head}: {summary}")
+    }
+}
+
+/// The notice's entry in at most `room` characters. Only the first page of a note
+/// (`shrink`) gives up summary and then title text to fit, since it must arrive
+/// somehow; a later page that does not fit whole waits for the next note, where it
+/// comes first, rather than being marked seen without its summary.
+fn fit(root: &Path, n: &Notice, room: usize, shrink: bool) -> Option<String> {
+    let path = root.join(&n.path).display().to_string();
+    let stamp = format!("updated {}", updated(n.mtime));
+    let title: String = n.title.chars().take(TITLE_CHARS).collect();
+    let full = entry(&path, &title, &stamp, &n.summary);
+    if full.chars().count() <= room {
+        return Some(full);
+    }
+    if !shrink {
+        return None;
+    }
+    let head = entry(&path, &title, &stamp, "");
+    // `{head}: {summary}` adds the summary plus two characters.
+    if let Some(left) = room.checked_sub(head.chars().count() + 2) {
+        return Some(if left >= SUMMARY_MIN_CHARS {
+            entry(
+                &path,
+                &title,
+                &stamp,
+                &crate::pages::truncate(&n.summary, left),
+            )
+        } else {
+            head
+        });
+    }
+    let bare = entry(&path, "", &stamp, "");
+    // `{path} ({title} — {stamp})` adds the title plus three characters.
+    let title_room = room.checked_sub(bare.chars().count())?.saturating_sub(3);
+    let title: String = title.chars().take(title_room).collect();
+    Some(entry(&path, &title, &stamp, ""))
+}
+
 /// Packs as many leading notices as fit into `budget` characters (and at most
-/// [`MAX_PAGES`]), shortening or dropping a title before giving up on a page, and
-/// appends `+N more` for the rest. `None` when not even one page fits.
+/// [`MAX_PAGES`]), each with its title and summary; see [`fit`] for what gives way
+/// when they do not fit. Appends `+N more` for the rest. `None` when not even one
+/// page fits.
 pub fn message(root: &Path, notices: &[Notice], budget: usize) -> Option<Note> {
     let fixed = HEAD.chars().count() + TAIL.chars().count();
     let mut text = String::new();
@@ -241,21 +319,8 @@ pub fn message(root: &Path, notices: &[Notice], budget: usize) -> Option<Note> {
         let Some(room) = budget.checked_sub(used + sep + reserve) else {
             break;
         };
-        let path = root.join(&n.path).display().to_string();
-        let stamp = format!("updated {}", updated(n.mtime));
-        let bare = format!("{path} ({stamp})");
-        let bare_len = bare.chars().count();
-        let entry = if bare_len > room {
+        let Some(entry) = fit(root, n, room, delivered == 0) else {
             break;
-        } else {
-            // `{path} ({title} — {stamp})` adds the title plus three characters.
-            let title_room = (room - bare_len).saturating_sub(3).min(TITLE_CHARS);
-            let title: String = n.title.chars().take(title_room).collect();
-            if title.is_empty() {
-                bare
-            } else {
-                format!("{path} ({title} — {stamp})")
-            }
         };
         if sep > 0 {
             text.push_str("; ");
@@ -310,10 +375,12 @@ fn hook_with(
             return Ok(None);
         }
         let db = open_seen(root)?;
-        let unseen: Vec<_> = notices(index, Some((&db, &key)))?
+        let mut unseen: Vec<_> = notices(index, Some((&db, &key)))?
             .into_iter()
             .filter(Notice::unseen)
             .collect();
+        let shown = unseen.len().min(MAX_PAGES);
+        load_summaries(root, &mut unseen[..shown]);
         let root = root.canonicalize()?;
         let Some(note) = message(&root, &unseen, budget) else {
             return Ok(None);
@@ -339,6 +406,7 @@ struct PageJson<'a> {
     updated: String,
     seen_mtime_ns: Option<i64>,
     status: &'static str,
+    summary: &'a str,
 }
 
 #[derive(Serialize)]
@@ -364,7 +432,8 @@ pub fn run(root: &Path, index: &Connection, args: &Args) -> Result<()> {
         );
     }
     let db = key.as_ref().map(|_| open_seen(root)).transpose()?;
-    let notices = notices(index, db.as_ref().zip(key.as_deref()))?;
+    let mut notices = notices(index, db.as_ref().zip(key.as_deref()))?;
+    load_summaries(root, &mut notices);
     let marked = match (&db, &key) {
         (Some(db), Some(key)) if args.mark_seen => {
             let unseen: Vec<_> = notices.iter().filter(|n| n.unseen()).cloned().collect();
@@ -385,6 +454,7 @@ pub fn run(root: &Path, index: &Connection, args: &Args) -> Result<()> {
                 updated: updated(n.mtime),
                 seen_mtime_ns: n.seen,
                 status: n.status(key.is_some()),
+                summary: &n.summary,
             })
             .collect();
         let report = Report {
@@ -404,12 +474,12 @@ pub fn run(root: &Path, index: &Connection, args: &Args) -> Result<()> {
         println!("no pages tagged `{TAG}`");
     }
     for n in &notices {
+        let stamp = format!("updated {}", updated(n.mtime));
+        let path = root.join(&n.path).display().to_string();
         println!(
-            "{:<8} {} ({} — updated {})",
+            "{:<8} {}",
             n.status(key.is_some()),
-            root.join(&n.path).display(),
-            n.title,
-            updated(n.mtime)
+            entry(&path, &n.title, &stamp, &n.summary)
         );
     }
     if args.mark_seen {
@@ -462,6 +532,7 @@ mod tests {
             title: title.into(),
             mtime,
             seen: None,
+            summary: String::new(),
         }
     }
 
@@ -799,5 +870,138 @@ mod tests {
         assert_eq!(n.status(true), "seen");
         n.seen = Some(6);
         assert!(n.unseen());
+    }
+
+    #[test]
+    fn notes_carry_each_page_summary() -> Result<()> {
+        let mut wiki = Wiki::new()?;
+        wiki.page(
+            "pages/knowledge/fm.md",
+            "---\ntitle: FM\ncreated: 2026-11-26\ntags: [bulletin]\nsummary: |\n  워크트리를\n  꼭 쓰세요.\n---\n# 제목\n\n본문은 요약이 아님\n",
+        )?;
+        touch(&mut wiki, "pages/knowledge/fm.md", 2_000)?;
+        wiki.page(
+            "pages/knowledge/body.md",
+            "---\ntitle: Body\ncreated: 2026-11-26\ntags: [bulletin]\n---\n# 공지\n\n```sh\nignored code\n```\n\n- 첫 항목은\n  두 줄이다\n- 둘째\n",
+        )?;
+        touch(&mut wiki, "pages/knowledge/body.md", 1_000)?;
+        let note = check(&wiki, "s1").expect("announced");
+        assert!(note.contains("fm.md (FM — updated "), "{note}");
+        assert!(note.contains("): 워크트리를 꼭 쓰세요.; "), "{note}");
+        assert!(
+            note.contains(&format!("): 첫 항목은 두 줄이다{TAIL}")),
+            "{note}"
+        );
+        assert!(
+            !note.contains("본문은") && !note.contains("ignored"),
+            "{note}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn summaries_of_unindexed_secrets_and_missing_files_are_left_out() -> Result<()> {
+        let mut wiki = Wiki::new()?;
+        wiki.page("pages/knowledge/notice.md", BULLETIN)?;
+        wiki.page("pages/knowledge/gone.md", BULLETIN)?;
+        // Edited on disk after indexing: the index still says unblocked.
+        fs::write(
+            wiki.root.join("pages/knowledge/notice.md"),
+            format!("{BULLETIN}\nAKIA{}\n", "ABCDEFGHIJKLMNOP"),
+        )?;
+        fs::remove_file(wiki.root.join("pages/knowledge/gone.md"))?;
+        let mut all = notices(&wiki.index, None)?;
+        assert_eq!(all.len(), 2);
+        load_summaries(&wiki.root, &mut all);
+        assert!(all.iter().all(|n| n.summary.is_empty()), "{all:?}");
+        let note = message(&wiki.root, &all, MAX_CHARS).expect("fits");
+        assert!(!note.text.contains("AKIA") && !note.text.contains("body"));
+        assert!(note.text.contains("(Team notice — updated "));
+        Ok(())
+    }
+
+    #[test]
+    fn summaries_fit_the_budget_and_later_pages_wait_rather_than_lose_them() {
+        let root = Path::new("/wiki");
+        let summary = format!(
+            "{}…",
+            "요약 내용😀 "
+                .repeat(40)
+                .chars()
+                .take(199)
+                .collect::<String>()
+        );
+        assert_eq!(summary.chars().count(), crate::pages::SUMMARY_CHARS);
+        let pages: Vec<_> = (0..30)
+            .map(|i| Notice {
+                summary: summary.clone(),
+                ..notice(
+                    &format!("pages/knowledge/n{i:02}.md"),
+                    &format!("제목 {i}"),
+                    1_000_000_000_000,
+                )
+            })
+            .collect();
+        let whole = |i: usize, text: &str| {
+            text.contains(&format!("n{i:02}.md (제목 {i} — updated "))
+                && text.contains(&format!("): {summary}"))
+        };
+        for budget in [0, 100, 250, 300, 400, 600, 1200, MAX_CHARS, 100_000] {
+            let Some(note) = message(root, &pages, budget) else {
+                assert!(budget < 250, "budget {budget} fits one page");
+                continue;
+            };
+            assert!(note.text.chars().count() <= budget, "budget {budget}");
+            assert!(note.delivered >= 1 && note.delivered <= MAX_PAGES);
+            assert!(
+                note.text
+                    .contains(&format!(" +{} more (run", 30 - note.delivered))
+            );
+            // Every page after the first arrives whole.
+            let entries: Vec<_> = note.text[HEAD.len()..].split("; /wiki/").collect();
+            assert_eq!(entries.len(), note.delivered, "budget {budget}");
+            for (i, entry) in entries.iter().enumerate().skip(1) {
+                assert!(whole(i, entry), "page {i} at budget {budget}");
+            }
+        }
+        // A short budget cuts the first page's summary at a character boundary.
+        let note = message(root, &pages, 400).expect("fits");
+        assert_eq!(note.delivered, 1);
+        assert!(note.text.contains("(제목 0 — updated "));
+        assert!(note.text.contains("): 요약 내용"));
+        assert!(note.text.contains("… +29 more"), "{}", note.text);
+        assert!(!note.text.contains(&summary));
+        // Less room than SUMMARY_MIN_CHARS for the summary: title only.
+        let fixed = HEAD.chars().count() + TAIL.chars().count();
+        let stamp = format!("updated {}", updated(pages[0].mtime));
+        let head = entry("/wiki/pages/knowledge/n00.md", "제목 0", &stamp, "");
+        let budget = fixed + more(29).chars().count() + head.chars().count() + 2;
+        let note = message(root, &pages, budget + SUMMARY_MIN_CHARS - 1).expect("fits");
+        assert!(
+            note.text.contains(&format!("{head} +29 more")),
+            "{}",
+            note.text
+        );
+        let note = message(root, &pages, budget + SUMMARY_MIN_CHARS).expect("fits");
+        let cut = crate::pages::truncate(&summary, SUMMARY_MIN_CHARS);
+        assert!(
+            note.text.contains(&format!("{head}: {cut} +29 more")),
+            "{}",
+            note.text
+        );
+        // A large budget delivers MAX_PAGES whole pages.
+        let note = message(root, &pages, 100_000).expect("fits");
+        assert_eq!(note.delivered, MAX_PAGES);
+        assert_eq!(note.text.matches(&summary).count(), MAX_PAGES);
+        // The second page would fit only without its summary: it waits.
+        let first = message(root, &pages[..1], 100_000).expect("fits").text;
+        let second = message(root, &pages[1..2], 100_000).expect("fits").text;
+        let both = first.chars().count() + second.chars().count() - fixed + 2;
+        let note = message(root, &pages[..2], both).expect("fits");
+        assert_eq!(note.delivered, 2, "{}", note.text);
+        assert_eq!(note.text.chars().count(), both);
+        let note = message(root, &pages[..2], both - 1).expect("fits");
+        assert_eq!(note.delivered, 1, "{}", note.text);
+        assert!(whole(0, &note.text) && note.text.contains(" +1 more"));
     }
 }

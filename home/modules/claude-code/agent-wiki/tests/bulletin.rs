@@ -378,3 +378,98 @@ fn cli_mark_seen_errors_and_pre_mark_statuses() {
         ""
     );
 }
+
+#[test]
+fn notes_and_listings_carry_summaries() {
+    let fixture = Fixture::new();
+    let summarized = fixture.write(
+        "summarized",
+        "---\ntitle: 요약 공지\ncreated: 2026-11-26\ntags: [bulletin]\nsummary: \"리뷰 전에\n  머지하지 마세요.\"\n---\n# 제목\n\n본문\n",
+    );
+    set_mtime(&summarized, 50);
+    let long = fixture.write(
+        "long",
+        &format!(
+            "---\ntitle: 긴 공지\ncreated: 2026-11-26\ntags: [bulletin]\n---\n# 제목\n\n```\ncode\n```\n{}\n",
+            "가나다라마 ".repeat(100)
+        ),
+    );
+    set_mtime(&long, 40);
+    set_mtime(&fixture.0.join("wiki/pages/knowledge/notice.md"), 30);
+    let project = fixture.0.join("project");
+    let out = fixture.run(&REMIND, prompt("s1", &project));
+    assert!(out.contains("summarized.md (요약 공지 — updated "), "{out}");
+    assert!(out.contains("): 리뷰 전에 머지하지 마세요.; "), "{out}");
+    let cut = format!(
+        "{}…",
+        "가나다라마 "
+            .repeat(40)
+            .chars()
+            .take(199)
+            .collect::<String>()
+            .trim_end()
+    );
+    assert!(out.contains("long.md (긴 공지 — updated "), "{out}");
+    assert!(out.contains(&format!("): {cut}; ")), "{out}");
+    assert!(
+        out.contains("notice.md (Team SOP notice — updated "),
+        "{out}"
+    );
+    assert!(out.contains("): Use worktrees."), "{out}");
+    assert!(out.trim_end().chars().count() <= 1500);
+
+    let listing: Value = serde_json::from_str(
+        &fixture.run(&["bulletin", "--consumer", "session:s1", "--json"], None),
+    )
+    .unwrap();
+    let summaries: Vec<_> = listing["pages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| (p["path"].as_str().unwrap(), p["summary"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        summaries,
+        [
+            (
+                "pages/knowledge/summarized.md",
+                "리뷰 전에 머지하지 마세요."
+            ),
+            ("pages/knowledge/long.md", cut.as_str()),
+            ("pages/knowledge/notice.md", "Use worktrees."),
+        ]
+    );
+    let text = fixture.run(&["bulletin", "--consumer", "session:s1"], None);
+    assert!(
+        text.lines().any(|l| l.starts_with("seen ")
+            && l.contains("summarized.md (요약 공지 — updated ")
+            && l.ends_with("): 리뷰 전에 머지하지 마세요.")),
+        "{text}"
+    );
+}
+
+#[test]
+fn check_rejects_an_empty_or_non_string_summary() {
+    let fixture = Fixture::new();
+    for yaml in ["''", "[a, b]", "null"] {
+        fixture.write(
+            "bad",
+            &format!("---\ntitle: Bad\ncreated: 2026-11-26\ntags: [bulletin]\nsummary: {yaml}\n---\nBody.\n"),
+        );
+        let output = fixture.output(&["check", "knowledge/bad"], None, None);
+        assert_eq!(output.status.code(), Some(2), "{yaml}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("summary must be a non-empty string"),
+            "{output:?}"
+        );
+    }
+    fixture.write(
+        "bad",
+        "---\ntitle: Bad\ncreated: 2026-11-26\ntags: [bulletin]\nsummary: 좋은 요약\n---\nBody.\n",
+    );
+    let output = fixture.output(&["check", "knowledge/bad"], None, None);
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("summary"),
+        "{output:?}"
+    );
+}
