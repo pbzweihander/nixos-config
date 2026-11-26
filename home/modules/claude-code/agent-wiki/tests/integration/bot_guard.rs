@@ -897,6 +897,11 @@ fn tokens_glued_to_a_letter_are_never_reported_but_word_sk_is() {
         "AKIA1234567890ABCDEF".into(),
         format!("github_pat_{}", "b".repeat(22)),
         "xoxb-1234567890".into(),
+        format!("sk-ant-AAAsk-{}", "B1".repeat(24)),
+        format!("xsk-proj-AAAsk-{}", "B1".repeat(24)),
+        format!("xoxb-AAAsk-{}", "B1".repeat(24)),
+        format!("SK-ANT-AAASK-{}", "B1".repeat(24)),
+        format!("disk-sk-{}", "B1".repeat(24)),
     ]
     .into_iter()
     .enumerate()

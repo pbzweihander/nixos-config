@@ -39,7 +39,7 @@ fn detached_hook(legacy: bool) {
         fs::create_dir_all(&state).unwrap();
     }
     let transcript = tmp.0.join("session.jsonl");
-    fs::write(&transcript, include_str!("fixtures/record-codex.jsonl")).unwrap();
+    fs::write(&transcript, include_str!("../fixtures/record-codex.jsonl")).unwrap();
     // A regular file makes any attempt to initialize/lock this wiki fail.
     let wiki = tmp.0.join("wiki");
     fs::write(&wiki, "untouched").unwrap();
@@ -103,7 +103,7 @@ fn backfill_includes_orca_and_exec_and_reports_exclusion_reasons() {
     let claude_dir = tmp.0.join("claude/project");
     fs::create_dir_all(&codex_dir).unwrap();
     fs::create_dir_all(&claude_dir).unwrap();
-    let fixture = include_str!("fixtures/record-orca.jsonl");
+    let fixture = include_str!("../fixtures/record-orca.jsonl");
     for (name, source, originator) in [
         ("orca", serde_json::json!("vscode"), "orca_desktop"),
         ("exec", serde_json::json!("exec"), "codex_exec"),

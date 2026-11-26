@@ -635,19 +635,13 @@ fn listings_and_notes_never_show_a_summary_that_decodes_into_blocked_text() {
         "pages/knowledge/stale.md".to_owned(),
         "깨끗한 요약".to_owned(),
     )];
-    for (name, ..) in &hidden {
-        expected.push((format!("pages/knowledge/{name}.md"), String::new()));
-    }
     expected.push(("pages/knowledge/notice.md".into(), "Use worktrees.".into()));
     assert_eq!(listed(), expected);
     let text = fixture.run(&["bulletin", "--consumer", "session:cli"], None);
     clean(&text);
     for (name, ..) in &hidden {
         let head = format!("{name}.md ({name} 공지 — updated ");
-        assert!(
-            text.lines().any(|l| l.contains(&head) && l.ends_with(')')),
-            "{name}: {text}"
-        );
+        assert!(!text.lines().any(|l| l.contains(&head)), "{name}: {text}");
     }
     assert!(text.contains("): 깨끗한 요약"), "{text}");
     // Hook paths: SessionStart context and the per-prompt reminder.
@@ -658,7 +652,7 @@ fn listings_and_notes_never_show_a_summary_that_decodes_into_blocked_text() {
     let out = reminded("s2");
     for (name, ..) in &hidden {
         assert!(
-            out.contains(&format!("{name}.md ({name} 공지 — updated ")),
+            !out.contains(&format!("{name}.md ({name} 공지 — updated ")),
             "{name}: {out}"
         );
     }
@@ -670,12 +664,12 @@ fn listings_and_notes_never_show_a_summary_that_decodes_into_blocked_text() {
     set_mtime(&stale, 6_000);
     let out = fixture.run(&["context"], start("s1", &project));
     clean(&out);
-    assert!(out.contains("stale.md (stale 공지 — updated "), "{out}");
+    assert!(!out.contains("stale.md (stale 공지 — updated "), "{out}");
     assert!(!out.contains("깨끗한 요약"), "{out}");
     let out = reminded("s2");
-    assert!(out.contains("stale.md (stale 공지 — updated "), "{out}");
+    assert!(!out.contains("stale.md (stale 공지 — updated "), "{out}");
     assert!(!out.contains("깨끗한 요약"), "{out}");
-    expected[0].1.clear();
+    expected.remove(0);
     assert_eq!(listed(), expected);
     clean(&fixture.run(&["bulletin", "--consumer", "session:cli"], None));
 }
@@ -869,7 +863,7 @@ fn file_names_and_titles_cannot_inject_into_context_or_bulletin() {
         .iter()
         .map(|page| page["title"].as_str().unwrap().to_owned())
         .collect();
-    assert_eq!(titles.len(), 4, "{report}");
+    assert_eq!(titles.len(), 3, "{report}");
     for output in [
         fixture.run(&["context"], start("names-1", &repo)),
         fixture.run(&REMIND, prompt("names-2", &repo)),
@@ -890,12 +884,17 @@ fn file_names_and_titles_cannot_inject_into_context_or_bulletin() {
     let text = fixture.run(&["context"], start("names-3", &repo));
     assert!(text.contains("[BLOCKED: injection]"), "{text}");
     assert!(text.contains("bidiname.md"), "{text}");
-    assert!(text.contains("[REDACTED]"), "{text}");
+    assert!(text.contains("[BLOCKED: secret;"), "{text}");
 }
 
 /// Synthetic credentials of every format the scanner knows.
 fn tokens() -> Vec<String> {
     vec![
+        format!("sk-ant-AAAsk-{}", "B1".repeat(24)),
+        format!("xsk-proj-AAAsk-{}", "B1".repeat(24)),
+        format!("xoxb-AAAsk-{}", "B1".repeat(24)),
+        format!("SK-ANT-AAASK-{}", "B1".repeat(24)),
+        format!("disk-sk-{}", "B1".repeat(24)),
         format!("ghp_{}", "A".repeat(36)),
         format!("github_pat_{}", "b".repeat(22)),
         "AKIA1234567890ABCDEF".into(),
@@ -934,7 +933,11 @@ fn tokens_glued_to_a_letter_are_redacted_but_word_sk_is_kept() {
         }
     }
     let listing = &outputs[2];
-    assert_eq!(listing.matches("[REDACTED]").count(), 5, "{listing}");
+    assert_eq!(
+        listing.matches("[REDACTED]").count(),
+        tokens().len(),
+        "{listing}"
+    );
     assert!(
         listing.contains("pages/knowledge/fenix-disk-usage-cargo-targets-and-worktrees.md"),
         "{listing}"

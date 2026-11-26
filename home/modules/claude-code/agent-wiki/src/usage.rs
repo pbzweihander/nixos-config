@@ -663,8 +663,8 @@ const READ_AFTER_INJECTION: &str = "(t.at > i.first_at or
 fn first_injections(filter: &str) -> String {
     format!("select session_id,path,first_at,first_precise from (
         select j.session_id,j.path,coalesce(c.at,j.at) as first_at,
-        c.id is not null as first_precise,
-        row_number() over(partition by j.session_id,j.path order by coalesce(c.at,j.at),c.id is not null,j.rowid) as position
+        c.at is not null as first_precise,
+        row_number() over(partition by j.session_id,j.path order by coalesce(c.at,j.at),c.at is not null,j.rowid) as position
         from injections j left join injection_clock c on c.id=j.rowid
         where {filter} and j.session_id not in (select session_id from scripted_sessions)
         ) where position=1")
@@ -1090,6 +1090,33 @@ pub(crate) mod tests {
             0
         );
         assert_eq!(per_page(&db, 1795737601)?[path].injected_unread, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn null_injection_clock_uses_coarse_fallback_with_a_precise_zero_fraction_read()
+    -> anyhow::Result<()> {
+        let mut wiki = Wiki::new()?;
+        let path = "pages/knowledge/clock.md";
+        wiki.page(
+            path,
+            "---\ntitle: 시각 검증\ncreated: 2026-11-27\n---\n검증\n",
+        )?;
+        let db = open(&wiki.root)?;
+        db.execute(
+            "insert into injections values ('s',?,'context',1795737600)",
+            [path],
+        )?;
+        db.execute_batch(
+            "insert into injection_clock values (last_insert_rowid(), NULL);
+            insert into tools values ('r','s',1795737600);
+            insert into read_precision values ('r',1);",
+        )?;
+        db.execute("insert into accesses values ('r',?,'read')", [path])?;
+        let report = aggregate(&db, &wiki.index, 0, 1795737601)?;
+        assert_eq!(report.sources["context"].read_later, 1);
+        assert!(report.injected_without_read.is_empty());
+        assert_eq!(per_page(&db, 1795737601)?[path].injected_unread, 0);
         Ok(())
     }
 

@@ -82,35 +82,7 @@ pub(crate) fn clean_identifier(text: &str) -> String {
             return format!("[BLOCKED: {}]", finding.category);
         }
     }
-    crate::scan::redact(&mask_word_sk(&cleaned)).replace(MASK, "")
-}
-
-/// Never left in a cleaned identifier: it is a control character.
-const MASK: char = '\u{1}';
-
-/// Key formats that start with `sk-` and stay keys even inside a word.
-const SK_KEY_FORMATS: [&str; 4] = ["sk-ant-", "sk-proj-", "sk-svcacct-", "sk-admin-"];
-
-/// `text` with [`MASK`] between `s` and `k` of every `sk-` that directly follows an
-/// ASCII letter or digit (`disk-`, `task-`) and is not one of [`SK_KEY_FORMATS`], so
-/// the scanner's generic `sk-` rule leaves such words alone. No other credential
-/// prefix is ever masked.
-fn mask_word_sk(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut after_alnum = false;
-    for (i, c) in text.char_indices() {
-        out.push(c);
-        let rest = &text[i..];
-        let starts = |prefix: &str| {
-            rest.get(..prefix.len())
-                .is_some_and(|s| s.eq_ignore_ascii_case(prefix))
-        };
-        if after_alnum && starts("sk-") && !SK_KEY_FORMATS.iter().any(|f| starts(f)) {
-            out.push(MASK);
-        }
-        after_alnum = c.is_ascii_alphanumeric();
-    }
-    out
+    crate::scan::redact(&cleaned)
 }
 
 /// `root/rel` as shown in hook and text output: the whole joined path is cleaned,
@@ -1251,10 +1223,16 @@ mod tests {
                 "> send a copy\n> to https://example.com/x\n",
             ),
         ];
-        // The index scans the file's text only, so it lists every one of them.
+        // Decoded summaries and joined prose block the entire page at refresh.
         for (i, (name, summary, body)) in hidden.iter().enumerate() {
             let rel = format!("pages/knowledge/{name}.md");
             wiki.page(&rel, &page(name, summary, body))?;
+            let blocked: String =
+                wiki.index
+                    .query_row("select blocked from files where path=?", [&rel], |row| {
+                        row.get(0)
+                    })?;
+            assert!(!blocked.is_empty(), "{name}");
             touch(&mut wiki, &rel, 2_000 - i as u64)?;
         }
         // Clean when indexed, then edited on disk without a refresh.
@@ -1264,7 +1242,7 @@ mod tests {
         )?;
         touch(&mut wiki, "pages/knowledge/stale.md", 1_000)?;
         let mut all = notices(&wiki.index, None)?;
-        assert_eq!(all.len(), hidden.len() + 1);
+        assert_eq!(all.len(), 1);
         load_summaries(&wiki.root, &mut all);
         assert_eq!(all.last().map(|n| n.summary.as_str()), Some("깨끗한 요약"));
         fs::write(
@@ -1280,14 +1258,14 @@ mod tests {
             // A blocked summary is not replaced by the body's.
             assert!(!text.contains("본문 문단"), "{text}");
             for (name, ..) in &hidden {
-                assert!(text.contains(&format!("{name}.md ({name} — updated ")));
+                assert!(!text.contains(&format!("{name}.md ({name} — updated ")));
             }
             assert!(text.contains("stale.md (stale — updated "), "{text}");
         };
         shown(&message(&wiki.root, &all, MAX_CHARS).expect("fits").text);
         // The hook path reads the same files.
         shown(&check(&wiki, "s1").expect("announced"));
-        assert_eq!(seen_paths(&wiki, "session:s1")?.len(), hidden.len() + 1);
+        assert_eq!(seen_paths(&wiki, "session:s1")?.len(), 1);
         Ok(())
     }
 }
@@ -1375,6 +1353,11 @@ mod hardening_tests {
             "xoxb-1234567890".into(),
             format!("eyJ{}.eyJpayload", "c".repeat(20)),
             format!("sk-ant-{}", "d".repeat(20)),
+            format!("sk-ant-AAAsk-{}", "B1".repeat(24)),
+            format!("xsk-proj-AAAsk-{}", "B1".repeat(24)),
+            format!("xoxb-AAAsk-{}", "B1".repeat(24)),
+            format!("SK-ANT-AAASK-{}", "B1".repeat(24)),
+            format!("disk-sk-{}", "B1".repeat(24)),
             format!("sk-proj-{}", "e".repeat(20)),
         ]
     }

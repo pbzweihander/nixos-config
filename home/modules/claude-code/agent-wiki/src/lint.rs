@@ -730,7 +730,7 @@ mod tests {
             "pages/knowledge/decoded.md",
             &format!("---\ntitle: {escaped}\ncreated: 2020-01-01\nqueries: [why]\n---\n[[knowledge/summary]]\n"),
         )?;
-        // A blocked summary is a problem of the page, which stays in the index.
+        // A decoded summary blocks the whole page under A1.
         wiki.page(
             "pages/knowledge/summary.md",
             &format!(
@@ -748,19 +748,10 @@ mod tests {
             [
                 ("pages/knowledge/2020-01-01-blocked.md", "secret"),
                 ("pages/knowledge/decoded.md", "secret"),
+                ("pages/knowledge/summary.md", "secret"),
             ]
         );
-        assert_eq!(
-            report
-                .frontmatter
-                .iter()
-                .map(|f| (f.path.as_str(), f.detail.as_str()))
-                .collect::<Vec<_>>(),
-            [(
-                "pages/knowledge/summary.md",
-                "has a summary the scanner blocks: secret: AKIAAB…"
-            )]
-        );
+        assert!(report.frontmatter.is_empty());
         for (category, count) in [
             ("broken-links", report.broken_links.len()),
             ("error-quotes", report.error_quotes.len()),

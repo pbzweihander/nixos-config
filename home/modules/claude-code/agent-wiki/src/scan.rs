@@ -19,8 +19,7 @@ const SECRETS: &[&str] = &[
     concat!(
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
         r"(?:(?s:.*?)-----END [A-Z ]*PRIVATE KEY-----",
-        r"|(?:(?:[ \t]|\\t)*(?:\\[nr]|[\r\n])(?:[ \t\r\n]|\\[nrt])*",
-        r"(?:[A-Za-z0-9-]+:[^\r\n\\]*|[A-Za-z0-9+/=]+))*)",
+        r"|)",
     ),
     // A JWT with its payload and, when it has one, its signature.
     r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)?",
@@ -105,9 +104,69 @@ fn secret_ranges(text: &str) -> Vec<(usize, usize)> {
         PATTERNS
             .iter()
             .filter(|(c, _)| *c == "secret")
-            .flat_map(|(_, re)| re.find_iter(text).map(|m| (m.start(), m.end())))
+            .flat_map(|(_, re)| {
+                re.find_iter(text)
+                    .filter(|m| !ordinary_word(re, text, m))
+                    .map(|m| (m.start(), secret_end(text, m.start(), m.end())))
+            })
             .collect(),
     )
+}
+
+fn ordinary_word(re: &Regex, text: &str, m: &regex::Match<'_>) -> bool {
+    re.as_str() == SECRETS[2]
+        && m.start() > 0
+        && text.as_bytes()[m.start() - 1].is_ascii_alphanumeric()
+        && !m
+            .as_str()
+            .bytes()
+            .any(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+        && !["sk-ant-", "sk-proj-", "sk-svcacct-", "sk-admin-"]
+            .iter()
+            .any(|prefix| m.as_str().starts_with(prefix))
+}
+
+// Extend a truncated PEM only through complete base64 or supported metadata
+// lines. Inspect separators without consuming the following ordinary prose.
+fn secret_end(text: &str, start: usize, end: usize) -> usize {
+    let header = text[start..end].to_ascii_uppercase();
+    if !header.starts_with("-----BEGIN ") || header.contains("-----END ") {
+        return end;
+    }
+    static BREAK: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\r\n|\n|\r|\\r\\n|\\n|\\r").unwrap());
+    let mut cursor = end;
+    let mut accepted = end;
+    while let Some(separator) = BREAK.find(&text[cursor..]) {
+        if !text[cursor..cursor + separator.start()]
+            .replace("\\t", "")
+            .trim_matches([' ', '\t'])
+            .is_empty()
+        {
+            break;
+        }
+        let begin = cursor + separator.end();
+        let finish = BREAK
+            .find(&text[begin..])
+            .map_or(text.len(), |m| begin + m.start());
+        let finish = text[begin..finish].find('"').map_or(finish, |i| begin + i);
+        let line = text[begin..finish].replace("\\t", "\t");
+        let line = line.trim_matches([' ', '\t']);
+        let material = !line.is_empty()
+            && (line
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b))
+                || line.starts_with("Proc-Type:")
+                || line.starts_with("DEK-Info:"));
+        if !line.is_empty() && !material {
+            break;
+        }
+        if material {
+            accepted = finish;
+        }
+        cursor = finish;
+    }
+    accepted
 }
 
 /// `text[from..to]` with every part of it that lies in one of `secrets` replaced.
@@ -130,6 +189,48 @@ fn masked(text: &str, from: usize, to: usize, secrets: &[(usize, usize)]) -> Str
 
 pub fn redact(text: &str) -> String {
     masked(text, 0, text.len(), &secret_ranges(text))
+}
+
+#[cfg(test)]
+mod boundary_tests {
+    use super::*;
+
+    #[test]
+    fn truncated_pem_preserves_complete_following_prose() {
+        for prose in ["This is ordinary prose.", "Note: this is ordinary prose."] {
+            for headers in [
+                "",
+                "Proc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,0123456789ABCDEF\n",
+            ] {
+                for separator in ["\n", "\\n", "\\r\\n"] {
+                    let input = format!("-----BEGIN PRIVATE KEY-----\n{headers}QUJDREVGR0g= \n \t\nSUpLTE1OT1A=\n{prose}").replace('\n', separator);
+                    assert_eq!(redact(&input), format!("[REDACTED]{separator}{prose}"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn embedded_credentials_remain_whole_and_words_are_unchanged() {
+        for name in [
+            "pages/knowledge/fenix-disk-usage-cargo-targets-and-worktrees.md",
+            "fenix-disk-usage-2026-11-27.md",
+        ] {
+            assert_eq!(redact(name), name);
+            assert!(scan(name).is_empty());
+        }
+        for prefix in [
+            "sk-ant-AAAsk-",
+            "xsk-proj-AAAsk-",
+            "xoxb-AAAsk-",
+            "SK-ANT-AAASK-",
+            "disk-sk-",
+        ] {
+            let key = format!("{prefix}{}", "B1".repeat(24));
+            assert!(!redact(&key).contains("B1"), "{key}");
+            assert!(scan(&key).iter().any(|f| f.category == "secret"));
+        }
+    }
 }
 
 /// The match with ten characters of context on each side, on one line, at most
@@ -177,7 +278,18 @@ pub fn scan_spans(text: &str) -> Vec<Span> {
         .flat_map(|(category, regex)| {
             regex
                 .find_iter(text)
-                .map(|m| (*category, m.start(), m.end()))
+                .filter(|m| !ordinary_word(regex, text, m))
+                .map(|m| {
+                    (
+                        *category,
+                        m.start(),
+                        if *category == "secret" {
+                            secret_end(text, m.start(), m.end())
+                        } else {
+                            m.end()
+                        },
+                    )
+                })
         })
         .collect();
     let secrets = merge(
@@ -380,7 +492,7 @@ mod tests {
         );
         assert_eq!(
             redact(&format!("{cut}\nplain English prose stays readable\n")),
-            "[REDACTED] English prose stays readable\n"
+            "[REDACTED]\nplain English prose stays readable\n"
         );
         let escaped = cut.replace('\n', "\\n");
         let redacted = redact(&format!("\"{escaped}\""));
@@ -436,11 +548,11 @@ mod tests {
         let cut = format!("{BEGIN}\nQUJDREVGR0g= \n \t\nSUpLTE1OT1A=");
         assert_eq!(
             redact(&format!("{cut} \n \n다음 문단은 남는다.\n")),
-            "[REDACTED] \n \n다음 문단은 남는다.\n"
+            "[REDACTED]\n \n다음 문단은 남는다.\n"
         );
         assert_eq!(
-            redact(&format!("{cut}\t(끝이 잘린 키)")),
-            "[REDACTED]\t(끝이 잘린 키)"
+            redact(&format!("{cut}\n(끝이 잘린 키)")),
+            "[REDACTED]\n(끝이 잘린 키)"
         );
         assert_eq!(redact(&format!("{cut}\\n\"}}")), "[REDACTED]\\n\"}");
     }

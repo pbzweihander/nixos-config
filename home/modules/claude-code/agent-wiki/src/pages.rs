@@ -52,11 +52,7 @@ pub struct Page {
     /// A frontmatter value decodes to text the scanner blocks. Such a page has no
     /// summary at all, not even one taken from its body.
     pub summary_blocked: bool,
-    /// Category of the first scanner finding in a decoded frontmatter value that
-    /// the index stores or shows: title, project, status, created, tags, queries.
-    /// The scan of the file's text sees `"\x41..."` and folded lines as written,
-    /// not the value they decode to. A finding in `summary:` alone is a problem of
-    /// the page but does not set this: the summary is never indexed.
+    /// First scanner category in raw text, decoded metadata, or joined prose.
     pub blocked: Option<&'static str>,
     pub body: String,
     pub queries: Vec<String>,
@@ -395,6 +391,18 @@ fn scan_field(page: &mut Page, field: &str, value: &str) -> bool {
     !findings.is_empty()
 }
 
+fn decoded_finding(value: &Value) -> Option<scan::Finding> {
+    match value {
+        Value::String(text) => text_findings(text).into_iter().next(),
+        Value::Sequence(values) => values.iter().find_map(decoded_finding),
+        Value::Mapping(values) => values
+            .iter()
+            .find_map(|(key, value)| decoded_finding(key).or_else(|| decoded_finding(value))),
+        Value::Tagged(value) => decoded_finding(&value.value),
+        _ => None,
+    }
+}
+
 /// The first `# ` heading of the body outside code, for a page without a title.
 fn first_heading(body: &str) -> Option<String> {
     let mut blocks = Blocks::default();
@@ -494,6 +502,7 @@ pub fn parse(text: &str, rel: &str) -> Page {
                     page.summary_blocked = true;
                 }
                 for finding in findings {
+                    page.blocked.get_or_insert(finding.category);
                     page.problems.push(format!(
                         "has a summary the scanner blocks: {}: {}",
                         finding.category, finding.excerpt
@@ -601,22 +610,24 @@ pub fn parse(text: &str, rel: &str) -> Page {
         page.project = stem.to_string();
     }
     for finding in prose_findings(&page.body) {
+        page.blocked.get_or_insert(finding.category);
         page.problems.push(format!(
             "has body lines that join into text the scanner blocks: {}: {}",
             finding.category, finding.excerpt
         ));
     }
     page.links = parse_links(&page.body, rel);
+    if let Some(finding) = decoded_finding(&Value::Mapping(meta)) {
+        page.blocked.get_or_insert(finding.category);
+    }
+    if let Some(finding) = scan::scan(text).first() {
+        page.blocked.get_or_insert(finding.category);
+    }
     page
 }
 
-/// What blocks the page in the index: the scanner's findings in the file's text
-/// as written, and one more when a decoded frontmatter value that the index stores
-/// is blocked ([`Page::blocked`]). `check`, `sync` and the index all decide by
-/// this list, so a page that passes one cannot be blocked by another. Findings in
-/// `summary:` alone or in body lines joined into one are problems of the page
-/// (`Page::problems`), which `check` and `sync` refuse, but they leave the page in
-/// the index: neither text is stored there.
+/// Block the whole page for raw, decoded frontmatter, or joined prose findings.
+/// Rendering also rescans fresh bytes to protect against edits after indexing.
 pub fn scan_page(raw_text: &str, page: &Page) -> Vec<scan::Finding> {
     let mut findings = scan::scan(raw_text);
     if let Some(category) = page.blocked {
@@ -678,7 +689,7 @@ pub const SUMMARY_CHARS: usize = 200;
 /// when the scanner blocks the whole text or its one-line form: a summary is shown
 /// to other sessions, so it is scanned as it would be read, before any cut.
 pub fn summary(page: &Page) -> String {
-    if page.summary_blocked {
+    if page.summary_blocked || page.blocked.is_some() {
         return String::new();
     }
     let text = if page.summary.is_empty() {
@@ -1370,7 +1381,7 @@ mod tests {
             ("- [ ] todo item\n", "todo item"),
             ("- \n-\n\n+ real item\n", "real item"),
             ("> quoted\n> > nested line\n\nlater\n", "quoted nested line"),
-            ("<!-- comment -->\nprose\n", "prose"),
+            ("<!-- comment -->\nprose\n", ""),
             ("prose ends\n# at a heading\n", "prose ends"),
             ("prose ends\n```\ncode\n```\n", "prose ends"),
             ("prose ends\n- at a list\n", "prose ends"),
@@ -1736,9 +1747,8 @@ mod tests {
     }
 
     #[test]
-    fn a_blocked_summary_or_joined_body_is_a_problem_but_not_an_index_block() {
-        // The summary is never indexed and the body's lines are indexed as written,
-        // so the page stays listed; check and sync refuse it through its problems.
+    fn a_blocked_summary_or_joined_body_blocks_the_whole_page() {
+        // A decoded summary or joined paragraph blocks the entire page.
         let summary_only = format!(
             "---\ntitle: T\ncreated: 2026-11-27\nsummary: \"\\x41KIA{KEY}\"\n---\n본문 문단\n"
         );
@@ -1757,8 +1767,8 @@ mod tests {
             let page = parse(text, "pages/knowledge/notice.md");
             assert_eq!(page.problems.len(), 1, "{:?}", page.problems);
             assert!(page.problems[0].starts_with(problem), "{:?}", page.problems);
-            assert_eq!(page.blocked, None);
-            assert!(scan_page(text, &page).is_empty());
+            assert!(page.blocked.is_some());
+            assert!(!scan_page(text, &page).is_empty());
             assert_eq!(summary(&page), "");
         }
         // A value blocked in the file's text as written is blocked there as before.
