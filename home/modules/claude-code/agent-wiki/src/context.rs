@@ -327,6 +327,7 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
             db,
             v["cwd"].as_str(),
             session.as_deref().unwrap_or_default(),
+            (args.budget / 5).min(crate::bulletin::MAX_CHARS),
         )
     {
         pinned += &format!("\n{note}\n");

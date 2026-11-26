@@ -112,9 +112,15 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
     crate::recall::mark_seen(db, session, &paths)?;
     // Unlike the semantic lookup, bulletins are checked for every prompt, including
     // `<`-wrapped ones such as Orca's `<USER_REQUEST>`: each change is announced once.
-    let mut messages: Vec<_> = crate::bulletin::hook(root, db, hook.cwd.as_deref(), session)
-        .into_iter()
-        .collect();
+    let mut messages: Vec<_> = crate::bulletin::hook(
+        root,
+        db,
+        hook.cwd.as_deref(),
+        session,
+        crate::bulletin::MAX_CHARS,
+    )
+    .into_iter()
+    .collect();
     if !selected.is_empty() {
         let root = root.canonicalize()?;
         let pages = selected
