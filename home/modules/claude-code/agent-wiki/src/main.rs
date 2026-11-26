@@ -1,4 +1,5 @@
 //! Shared markdown wiki, indexed incrementally and serialized across sessions.
+mod antigravity;
 mod codex_recall;
 mod compat;
 mod context;
@@ -288,6 +289,12 @@ fn run_locked(root: &Path, command: &Commands) -> Result<i32> {
 }
 
 fn main() {
+    let argv: Vec<_> = env::args().collect();
+    let antigravity = argv
+        .get(1)
+        .is_some_and(|s| matches!(s.as_str(), "context" | "recall" | "remind" | "record"))
+        && (argv.windows(2).any(|s| s == ["--harness", "antigravity"])
+            || argv.iter().any(|s| s == "--harness=antigravity"));
     // Even malformed hook arguments must not interrupt a session.
     let is_hook = env::args_os().nth(1).is_some_and(|s| {
         s == "remind"
@@ -296,6 +303,9 @@ fn main() {
             || (s == "record" && !env::args_os().any(|s| s == "--backfill" || s == "--wait"))
     });
     let cli = Cli::try_parse().unwrap_or_else(|e| {
+        if antigravity {
+            println!("{{}}");
+        }
         if is_hook {
             eprintln!("{e}");
         } else {
@@ -303,6 +313,30 @@ fn main() {
         }
         std::process::exit(if is_hook { 0 } else { e.exit_code() });
     });
+    if antigravity {
+        // One JSON reply on every path, including malformed payloads, busy locks
+        // and panics. Stop acknowledges before transcript IO or detached work.
+        let record = matches!(cli.command, Commands::Record(_));
+        if record {
+            use std::io::Write;
+            println!("{{}}");
+            let _ = io::stdout().flush();
+        }
+        let result = std::panic::catch_unwind(|| match &cli.command {
+            Commands::Record(args) => records::run(args).map(|_| serde_json::json!({})),
+            command => antigravity::run(command),
+        })
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("Antigravity hook failed")));
+        let failed = result.is_err();
+        let output = result.unwrap_or_else(|e| {
+            eprintln!("agent-wiki: {e:#}");
+            serde_json::json!({})
+        });
+        if !record {
+            println!("{output}");
+        }
+        std::process::exit(if is_hook || !failed { 0 } else { 1 });
+    }
     let result = if is_hook {
         std::panic::catch_unwind(|| run(&cli.command))
             .unwrap_or_else(|_| Err(anyhow::anyhow!("hook failed")))

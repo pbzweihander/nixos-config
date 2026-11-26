@@ -100,6 +100,14 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
     } else {
         serde_json::from_str(&input)?
     };
+    let text = messages(root, db, args, hook)?;
+    if !text.is_empty() {
+        println!("{}", args.harness.context("UserPromptSubmit", &text));
+    }
+    Ok(())
+}
+
+pub(crate) fn messages(root: &Path, db: &Connection, args: &Args, hook: Hook) -> Result<String> {
     let prompt = hook.prompt.as_deref().unwrap_or_default();
     let session = hook.session_id.as_deref().unwrap_or_default();
     let seen = crate::recall::transcript_seen(db, session, hook.transcript_path.as_deref())?;
@@ -132,14 +140,7 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
     if let Some(message) = update(db, hook, args.interval)? {
         messages.push(message);
     }
-    if !messages.is_empty() {
-        println!(
-            "{}",
-            args.harness
-                .context("UserPromptSubmit", &messages.join("\n"))
-        );
-    }
-    Ok(())
+    Ok(messages.join("\n"))
 }
 
 #[cfg(test)]

@@ -21,6 +21,8 @@ use std::{
 
 #[derive(ClapArgs)]
 pub struct Args {
+    #[arg(long, value_enum, default_value = "claude")]
+    pub harness: crate::hook_payload::Harness,
     /// Read configured Claude and Codex transcript directories
     #[arg(long, conflicts_with_all = ["transcript_path", "session_id", "wait"])]
     pub backfill: bool,
@@ -42,6 +44,8 @@ pub struct Args {
 
 #[derive(Default, Deserialize)]
 struct Hook {
+    #[serde(skip)]
+    antigravity: bool,
     session_id: String,
     transcript_path: PathBuf,
     #[serde(default)]
@@ -314,6 +318,9 @@ fn extract_explained(
     hook: &Hook,
     skip_reason: &mut &'static str,
 ) -> Result<Option<Record>> {
+    if hook.antigravity {
+        return extract_antigravity(path, hook);
+    }
     let codex = transcript::Codex::open(path)?;
     if let Some(reason) = transcript::exclusion(path, codex.as_ref())? {
         *skip_reason = reason;
@@ -477,6 +484,104 @@ fn extract_explained(
     Ok(Some(record))
 }
 
+// Observed transcript.jsonl schema: USER_INPUT/PLANNER_RESPONSE/GENERIC rows,
+// snake_case metadata, planner tool_calls with name/args and no call IDs.
+// Generic results cannot reliably be paired with parallel planner calls: retain
+// prompts/counts/explicit failures, but do not invent successful writes or commits.
+fn extract_antigravity(path: &Path, hook: &Hook) -> Result<Option<Record>> {
+    if hook.session_id.is_empty() || transcript::curator_reason(&hook.cwd, "").is_some() {
+        return Ok(None);
+    }
+    anyhow::ensure!(
+        fs::metadata(path)?.is_file(),
+        "Antigravity transcript must be a regular file"
+    );
+    let mut record = Record {
+        session_id: hook.session_id.clone(),
+        harness: "antigravity".into(),
+        cwd: hook.cwd.clone(),
+        reason: hook.reason.clone(),
+        transcript_path: path.to_string_lossy().into(),
+        ..Record::default()
+    };
+    let mut seen = BTreeSet::new();
+    let mut excluded = false;
+    sessions::complete_lines(File::open(path)?, 0, |line| {
+        let Ok(row) = serde_json::from_slice::<Value>(line) else {
+            return Ok(());
+        };
+        let Some(step) = row["step_index"].as_u64() else {
+            return Ok(());
+        };
+        if row["status"] != "DONE" && row["status"] != "ERROR" {
+            return Ok(());
+        }
+        if !seen.insert(step) {
+            return Ok(());
+        }
+        if let Some(at) = row["created_at"].as_str()
+            && let Ok(at) = DateTime::parse_from_rfc3339(at)
+        {
+            let at = at.with_timezone(&Utc).to_rfc3339();
+            if record.started.is_empty() || at < record.started {
+                record.started = at.clone();
+            }
+            if at > record.ended {
+                record.ended = at;
+            }
+        }
+        let text = row["content"].as_str().unwrap_or_default();
+        match row["type"].as_str() {
+            Some("USER_INPUT") if !text.trim().is_empty() => {
+                if record.first_prompt.is_empty() {
+                    excluded = transcript::curator_reason(&hook.cwd, text).is_some();
+                    record.first_prompt = clean(text, 1000);
+                }
+                record.last_prompt = clean(text, 1000);
+            }
+            Some("PLANNER_RESPONSE") => {
+                if let Some(calls) = row["tool_calls"].as_array() {
+                    for call in calls {
+                        if let Some(name) = call["name"].as_str() {
+                            *record.tool_calls.entry(clean(name, 100)).or_default() += 1;
+                        }
+                    }
+                }
+            }
+            Some("GENERIC")
+                if row["status"] == "ERROR"
+                    || crate::antigravity::command_exit(text).is_some_and(|code| code != 0) =>
+            {
+                let error = row["error"].as_str().unwrap_or_default();
+                record.failures.insert(Failure {
+                    command: "[Antigravity tool result; command association unavailable]".into(),
+                    errors: [error, text]
+                        .join("\n")
+                        .lines()
+                        .filter(|line| ERROR_LINE.is_match(line))
+                        .take(12)
+                        .map(|line| clean(line, 500))
+                        .collect(),
+                });
+            }
+            _ => {}
+        }
+        Ok(())
+    })?;
+    if excluded || (record.first_prompt.is_empty() && record.tool_calls.is_empty()) {
+        return Ok(None);
+    }
+    record.project = sessions::project(&record.cwd);
+    record.cwd_class = transcript::cwd_class(&record.cwd).into();
+    if let (Ok(start), Ok(end)) = (
+        DateTime::parse_from_rfc3339(&record.started),
+        DateTime::parse_from_rfc3339(&record.ended),
+    ) {
+        record.duration_seconds = (end - start).num_seconds().max(0);
+    }
+    Ok(Some(record))
+}
+
 fn state_dir() -> PathBuf {
     crate::compat::directory(
         &env_path("XDG_STATE_HOME").unwrap_or_else(|| home().join(".local/state")),
@@ -567,15 +672,32 @@ fn save(db: &mut Connection, record: &Record) -> Result<()> {
 }
 
 pub fn run(args: &Args) -> Result<()> {
+    let antigravity = args.harness == crate::hook_payload::Harness::Antigravity;
     if args.backfill {
+        if antigravity {
+            bail!("Antigravity records require a hook transcriptPath; backfill is not supported");
+        }
         return backfill(args.days);
     }
     let hook = if let Some(path) = &args.transcript_path {
         Hook {
+            antigravity,
             transcript_path: path.clone(),
             session_id: args.session_id.clone().unwrap_or_default(),
             cwd: args.cwd.clone().unwrap_or_default(),
             reason: args.reason.clone().unwrap_or_default(),
+        }
+    } else if antigravity {
+        let payload = crate::antigravity::read_payload()?;
+        Hook {
+            antigravity: true,
+            cwd: payload.cwd().into(),
+            session_id: payload.conversation_id,
+            transcript_path: payload
+                .transcript_path
+                .context("missing transcriptPath")?
+                .into(),
+            reason: payload.termination_reason,
         }
     } else {
         let mut text = String::new();
@@ -598,6 +720,11 @@ pub fn run(args: &Args) -> Result<()> {
                 "--reason",
                 &hook.reason,
             ])
+            .args(if antigravity {
+                vec!["--harness", "antigravity"]
+            } else {
+                vec![]
+            })
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

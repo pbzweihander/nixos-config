@@ -274,7 +274,7 @@ fn scan(path: Option<&str>, mut offset: u64) -> Result<(u64, bool, bool)> {
     }
 }
 
-fn decide(db: &Connection, hook: &Hook, failures: u32) -> Result<Option<String>> {
+pub(crate) fn decide(db: &Connection, hook: &Hook, failures: u32) -> Result<Option<String>> {
     if hook
         .session_id
         .as_deref()

@@ -13,6 +13,16 @@ description: Search and write the shared markdown wiki at ~/.local/share/agent-w
 
 # Agent wiki
 
+Antigravity also uses this wiki through `--harness antigravity` hooks managed by
+Home Manager in `~/.gemini/config/hooks.json`. SessionStart injects context;
+PreInvocation handles each new prompt once; PostToolUse stages skill/error and
+event notes for PostInvocation or the next PreInvocation. Stop saves a private
+record without requesting continuation. Search those records with
+`agent-wiki sessions --records --harness antigravity`. Their observed transcript
+schema has no tool/result IDs, so successful file/commit associations are omitted.
+See `home/modules/claude-code/agent-wiki/antigravity-hooks.md` in nixos-config for
+the wire contract, deduplication and delivery limits.
+
 `claude-wiki` remains a binary alias. Every `AGENT_WIKI_*` setting
 accepts the corresponding `CLAUDE_WIKI_*` fallback; the new name wins when both
 are set (including an empty socket setting). Home Manager moves data/state/runtime

@@ -95,6 +95,13 @@ let
     ".pcodex"
   ];
   codexHookPython = pkgs.python3.withPackages (ps: [ ps.tomlkit ]);
+  antigravityHookMerge =
+    pkgs.runCommand "agent-wiki-antigravity-hooks" { nativeBuildInputs = [ pkgs.python3 ]; }
+      ''
+        cp ${./antigravity-hooks}/*.py .
+        python3 -m unittest discover -v
+        install -Dm644 merge.py $out/libexec/merge.py
+      '';
   sharedDirs = [
     "projects"
     "skills"
@@ -274,6 +281,7 @@ in
       lib.mapAttrs' (path: source: lib.nameValuePair ".claude/${path}" { inherit source; }) claudeFiles
       // {
         ".agents/skills/agent-wiki".source = ./skills/agent-wiki;
+        ".gemini/config/skills/agent-wiki".source = ./skills/agent-wiki;
       }
       // lib.listToAttrs (
         lib.concatMap (
@@ -293,6 +301,13 @@ in
     # directory, so the link can take its place. Anything that would collide stays,
     # and checkLinkTargets then moves the directory aside with the backup extension.
     activation = {
+      # Antigravity owns this mutable file. Replace only our named hook entry.
+      antigravityWikiHooks = lib.hm.dag.entryAfter [ "linkGeneration" ] ''
+        run ${lib.getExe pkgs.python3} ${antigravityHookMerge}/libexec/merge.py \
+          --wiki ${lib.getExe' agent-wiki "agent-wiki"} \
+          ${lib.escapeShellArg "${homeDir}/.gemini/config/hooks.json"}
+      '';
+
       claudeCodeSharedSkills = lib.hm.dag.entryBefore [ "checkLinkTargets" ] ''
         shared=${lib.escapeShellArg "${homeDir}/.claude/skills"}
         for skills in ${lib.escapeShellArgs (map (dir: "${homeDir}/${dir}/skills") extraConfigDirs)}; do

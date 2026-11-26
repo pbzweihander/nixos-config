@@ -10,6 +10,7 @@ pub enum Harness {
     #[default]
     Claude,
     Codex,
+    Antigravity,
 }
 
 impl Harness {
@@ -17,6 +18,7 @@ impl Harness {
         match self {
             Self::Claude => text.to_owned(),
             Self::Codex => additional_context(event, text).to_string(),
+            Self::Antigravity => crate::antigravity::output(event, text).to_string(),
         }
     }
 }
@@ -154,6 +156,16 @@ pub fn ran_sync(line: &[u8]) -> bool {
     let Ok(v) = serde_json::from_slice::<Value>(line) else {
         return false;
     };
+    if v["type"] == "PLANNER_RESPONSE" {
+        return v["tool_calls"].as_array().is_some_and(|calls| {
+            calls.iter().any(|call| {
+                call["name"] == "run_command"
+                    && call["args"]["CommandLine"]
+                        .as_str()
+                        .is_some_and(crate::compat::sync_command)
+            })
+        });
+    }
     if v["type"] == "assistant" {
         return v["message"]["content"].as_array().is_some_and(|parts| {
             parts.iter().any(|p| {

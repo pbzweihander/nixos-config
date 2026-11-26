@@ -37,7 +37,7 @@ pub struct Args {
     /// Search deterministic local session records instead of message text
     #[arg(long, conflicts_with_all = ["role", "context", "reindex"])]
     pub records: bool,
-    #[arg(long, value_parser = ["claude", "codex"])]
+    #[arg(long, value_parser = ["claude", "codex", "antigravity"])]
     pub harness: Option<String>,
 }
 

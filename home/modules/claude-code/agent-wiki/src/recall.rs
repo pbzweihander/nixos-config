@@ -48,7 +48,7 @@ fn reads_file_content(command: &str) -> bool {
 #[derive(ClapArgs)]
 pub struct Args {
     #[arg(long, value_enum, default_value = "claude")]
-    harness: Harness,
+    pub harness: Harness,
     /// Minimum match score: each six-word window counts 1, each gated 3–5-word
     /// phrase or unique whole error line (at least four words) counts 2.
     /// Default 2 means seven consecutive matching words
@@ -435,6 +435,18 @@ pub fn transcript_seen(
                         let Ok(value) = serde_json::from_slice::<Value>(line) else {
                             return Ok(());
                         };
+                        if value["type"] == "PLANNER_RESPONSE"
+                            && let Some(calls) = value["tool_calls"].as_array()
+                        {
+                            for call in calls {
+                                for m in PAGE_PATH.find_iter(&call["args"].to_string()) {
+                                    let rel = m.as_str();
+                                    if paths.contains(rel) && seen.insert(rel.to_owned()) {
+                                        added.push(rel.to_owned());
+                                    }
+                                }
+                            }
+                        }
                         if value["type"] == "assistant"
                             && let Some(parts) = value["message"]["content"].as_array()
                         {
@@ -466,7 +478,12 @@ pub fn transcript_seen(
     Ok(seen)
 }
 
-fn decide(root: &Path, db: &Connection, hook: &Hook, args: &Args) -> Result<Option<Value>> {
+pub(crate) fn decide(
+    root: &Path,
+    db: &Connection,
+    hook: &Hook,
+    args: &Args,
+) -> Result<Option<Value>> {
     let seen = if args.explain {
         HashSet::new()
     } else {
@@ -502,11 +519,12 @@ fn decide(root: &Path, db: &Connection, hook: &Hook, args: &Args) -> Result<Opti
                 candidates = error_candidates(db, args, &mut windows)?;
             }
             "PostToolUse" if hook.tool_name == "Bash" && !hook.is_interrupt => {
-                let failure = (args.harness == Harness::Codex)
+                let failure = matches!(args.harness, Harness::Codex | Harness::Antigravity)
                     .then(|| hook.codex_failure())
                     .flatten();
                 let known_failure = failure.as_ref().is_some_and(|error| !error.uncertain);
-                let uncertain = args.harness == Harness::Codex && hook.exit_code().is_none();
+                let uncertain = matches!(args.harness, Harness::Codex | Harness::Antigravity)
+                    && hook.exit_code().is_none();
                 let reader =
                     reads_file_content(hook.tool_input["command"].as_str().unwrap_or_default());
                 if known_failure || !reader {
@@ -619,20 +637,25 @@ fn decide(root: &Path, db: &Connection, hook: &Hook, args: &Args) -> Result<Opti
         )?;
     }
     mark_seen(db, hook.session_id.as_deref().unwrap_or_default(), &paths)?;
-    crate::usage::log(
-        root,
-        hook.session_id.as_deref().unwrap_or_default(),
-        if mode == Some("skill") {
-            "recall-skill"
-        } else {
-            "recall-failure"
-        },
-        &paths,
-    );
-    Ok(Some(crate::hook_payload::additional_context(
-        &hook.hook_event_name,
-        &message,
-    )))
+    let source = if mode == Some("skill") {
+        "recall-skill"
+    } else {
+        "recall-failure"
+    };
+    let mut output = crate::hook_payload::additional_context(&hook.hook_event_name, &message);
+    if args.harness == Harness::Antigravity {
+        // Internal queue metadata, never emitted in the Antigravity wire reply.
+        output["pages"] = json!(paths);
+        output["source"] = json!(source);
+    } else {
+        crate::usage::log(
+            root,
+            hook.session_id.as_deref().unwrap_or_default(),
+            source,
+            &paths,
+        );
+    }
+    Ok(Some(output))
 }
 
 pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {

@@ -182,6 +182,18 @@ fn session_id() -> Option<String> {
 
 pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
     let session = session_id();
+    let text = render(root, db, args, session.as_deref(), Path::new("."))?;
+    print!("{}", args.harness.context("SessionStart", &text));
+    Ok(())
+}
+
+pub(crate) fn render(
+    root: &Path,
+    db: &Connection,
+    args: &Args,
+    session: Option<&str>,
+    cwd: &Path,
+) -> Result<String> {
     let mut injected = vec![];
     let mut listed = std::collections::HashMap::new();
     let total: i64 = db.query_row("select count(*) from files", [], |r| r.get(0))?;
@@ -189,7 +201,7 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
         "Shared wiki: {total} pages under {}/. Search it with `agent-wiki search <terms>` before non-trivial work; load the agent-wiki skill before writing to it.\n",
         root.display()
     );
-    let project = current_project(Path::new("."));
+    let project = current_project(cwd);
     let overview = format!("pages/projects/{}.md", project.as_deref().unwrap_or("None"));
     let mut queries: Vec<(&str, String, String, Vec<Value>)> = vec![];
     if let Some(project) = &project {
@@ -325,16 +337,15 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
             args.budget
         );
     }
-    print!("{}", args.harness.context("SessionStart", &text));
     if let Some(session) = session {
         for section in &sections {
             if let Some(paths) = listed.get(section.name) {
                 injected.extend(paths.iter().take(section.items.len()).cloned());
             }
         }
-        crate::usage::log(root, &session, "context", &injected);
+        crate::usage::log(root, session, "context", &injected);
     }
-    Ok(())
+    Ok(text)
 }
 
 #[cfg(test)]
