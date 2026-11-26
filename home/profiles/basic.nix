@@ -1,3 +1,4 @@
+{ config, ... }:
 {
   imports = [
     ../modules/claude-code
@@ -14,6 +15,10 @@
     stateVersion = "26.05";
     username = "pbzweihander";
     homeDirectory = "/home/pbzweihander";
+    # The nodejs prefix is in the read-only Nix store, so `npm i -g` installs into
+    # ~/.local instead (~/.local/bin is already on PATH). npm-installed CLIs such as
+    # gemini-cli then update themselves, like the native Claude Code build.
+    sessionVariables.NPM_CONFIG_PREFIX = "${config.home.homeDirectory}/.local";
   };
 
   fonts.fontconfig = {
