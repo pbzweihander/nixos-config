@@ -12,12 +12,15 @@ const SECRETS: &[&str] = &[
     r"xox[abprs]-[A-Za-z0-9-]{10,}",
     // A private key block through its END line. A block cut off before that line
     // runs on through the lines that still look like key material: base64 lines
-    // and `Proc-Type:`-style headers, separated by line breaks or, as inside a
-    // JSON string, by a literal `\n`.
+    // and `Proc-Type:`-style headers. What separates two of them is any whitespace
+    // with a line break in it, real or, as inside a JSON string, a literal `\n`:
+    // spaces after a line, indentation, and blank lines that hold spaces or tabs
+    // do not end the block, or the lines after them would stay readable.
     concat!(
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
         r"(?:(?s:.*?)-----END [A-Z ]*PRIVATE KEY-----",
-        r"|(?:(?:\\[nr]|[\r\n])+[ \t]*(?:[A-Za-z0-9-]+:[^\r\n\\]*|[A-Za-z0-9+/=]+))*)",
+        r"|(?:(?:[ \t]|\\t)*(?:\\[nr]|[\r\n])(?:[ \t\r\n]|\\[nrt])*",
+        r"(?:[A-Za-z0-9-]+:[^\r\n\\]*|[A-Za-z0-9+/=]+))*)",
     ),
     // A JWT with its payload and, when it has one, its signature.
     r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)?",
@@ -388,6 +391,58 @@ mod tests {
         let encrypted = "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n\
             DEK-Info: AES-128-CBC,0123456789ABCDEF\n\nMIIEvQIBADANBgkq\nhkiG9w0BAQEFAASC";
         assert_eq!(redact(encrypted), "[REDACTED]");
+    }
+
+    #[test]
+    fn whitespace_inside_a_cut_off_private_key_does_not_end_the_block() {
+        const BEGIN: &str = "-----BEGIN PRIVATE KEY-----";
+        for key in [
+            // A blank line that holds a space and a tab.
+            format!("{BEGIN}\nQUJDREVGR0g=\n \t\nSUpLTE1OT1A="),
+            // Spaces or tabs after a line, the BEGIN line included.
+            format!("{BEGIN}\nQUJDREVGR0g= \nSUpLTE1OT1A="),
+            format!("{BEGIN} \t\nQUJDREVGR0g=\t \n\tSUpLTE1OT1A=\nUVJTVFVWV1g="),
+            // Carriage returns, with both.
+            format!("{BEGIN}\r\nQUJDREVGR0g= \r\n \r\n\r\n  SUpLTE1OT1A="),
+            // Headers of an encrypted key.
+            format!(
+                "{BEGIN}\nProc-Type: 4,ENCRYPTED \nDEK-Info: AES-128-CBC,0123456789ABCDEF\t\n \
+                 \t\nQUJDREVGR0g= \nSUpLTE1OT1A="
+            ),
+        ] {
+            assert_eq!(redact(&key), "[REDACTED]", "{key:?}");
+            // Inside a JSON string every line break and tab is an escape.
+            let json = key
+                .replace('\r', "\\r")
+                .replace('\n', "\\n")
+                .replace('\t', "\\t");
+            assert_eq!(redact(&format!("\"{json}\"")), "\"[REDACTED]\"", "{json}");
+            let findings = scan(&key);
+            assert_eq!(findings.len(), 1, "{key:?}");
+            assert_eq!(findings[0].excerpt, "-----B…");
+        }
+        // However long the block is, no line of it stays.
+        let lines: Vec<String> = (0..200)
+            .map(|i| {
+                format!("MIIEvQIBADANBgkqhkiG9w0BAQEFAASC{i:03}KcwggSjAgEAAoIBAQC7VJTUt9Us8cK")
+            })
+            .collect();
+        for separator in [" \n", "\n \n", "\t\r\n\t", "\n\n\t \n  "] {
+            let redacted = redact(&format!("{BEGIN}\n{}", lines.join(separator)));
+            assert_eq!(redacted, "[REDACTED]", "{separator:?}");
+        }
+        // The block still ends at text that is not key material, and whitespace
+        // before that text is not part of it.
+        let cut = format!("{BEGIN}\nQUJDREVGR0g= \n \t\nSUpLTE1OT1A=");
+        assert_eq!(
+            redact(&format!("{cut} \n \n다음 문단은 남는다.\n")),
+            "[REDACTED] \n \n다음 문단은 남는다.\n"
+        );
+        assert_eq!(
+            redact(&format!("{cut}\t(끝이 잘린 키)")),
+            "[REDACTED]\t(끝이 잘린 키)"
+        );
+        assert_eq!(redact(&format!("{cut}\\n\"}}")), "[REDACTED]\\n\"}");
     }
 
     #[test]

@@ -218,11 +218,11 @@ fn duplicate_note(root: &Path, db: &Connection, rel: &str, text: &str) -> Result
 }
 
 /// How a page in the working tree relates to the copy in HEAD.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Head {
     /// HEAD has no such page: it is new.
     Absent,
-    /// HEAD has the page and nothing says it differs.
+    /// HEAD has the page with exactly this content.
     Same,
     Changed,
 }
@@ -233,17 +233,111 @@ impl Head {
     }
 }
 
-/// The pages in HEAD with the byte size of each, from one git process for the
-/// whole wiki rather than one per page. Empty before the first commit.
-fn head_pages(root: &Path) -> HashMap<String, u64> {
+/// SHA-1 of `parts` one after the other. It only tells whether a file is the blob
+/// that HEAD names; nothing is protected by it.
+fn sha1(parts: &[&[u8]]) -> [u8; 20] {
+    let mut message = parts.concat();
+    let bits = u64::try_from(message.len())
+        .expect("a length fits in 64 bits")
+        .wrapping_mul(8);
+    message.push(0x80);
+    while message.len() % 64 != 56 {
+        message.push(0);
+    }
+    message.extend_from_slice(&bits.to_be_bytes());
+    let mut state: [u32; 5] = [
+        0x6745_2301,
+        0xEFCD_AB89,
+        0x98BA_DCFE,
+        0x1032_5476,
+        0xC3D2_E1F0,
+    ];
+    for block in message.chunks_exact(64) {
+        let mut words = [0u32; 80];
+        for (word, bytes) in words.iter_mut().zip(block.chunks_exact(4)) {
+            *word = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        }
+        for i in 16..80 {
+            words[i] = (words[i - 3] ^ words[i - 8] ^ words[i - 14] ^ words[i - 16]).rotate_left(1);
+        }
+        let [mut a, mut b, mut c, mut d, mut e] = state;
+        for (i, word) in words.iter().enumerate() {
+            let (mix, constant): (u32, u32) = match i {
+                0..20 => ((b & c) | (!b & d), 0x5A82_7999),
+                20..40 => (b ^ c ^ d, 0x6ED9_EBA1),
+                40..60 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
+                _ => (b ^ c ^ d, 0xCA62_C1D6),
+            };
+            let next = a
+                .rotate_left(5)
+                .wrapping_add(mix)
+                .wrapping_add(e)
+                .wrapping_add(constant)
+                .wrapping_add(*word);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = next;
+        }
+        for (sum, value) in state.iter_mut().zip([a, b, c, d, e]) {
+            *sum = sum.wrapping_add(value);
+        }
+    }
+    let mut digest = [0; 20];
+    for (bytes, value) in digest.chunks_exact_mut(4).zip(state) {
+        bytes.copy_from_slice(&value.to_be_bytes());
+    }
+    digest
+}
+
+/// The id that git gives a blob with this content in a SHA-1 repository.
+fn blob_id(content: &[u8]) -> String {
+    let header = format!("blob {}\0", content.len());
+    sha1(&[header.as_bytes(), content])
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// A page as HEAD holds it.
+#[derive(Debug, PartialEq)]
+struct Blob {
+    id: String,
+    size: u64,
+}
+
+impl Blob {
+    /// Whether the file `rel` with this `content` differs from the blob. The size
+    /// alone does not say: text of the same byte length can be other text, and
+    /// much shorter in characters. The id does, without a git process or a blob
+    /// read per page.
+    fn differs(&self, root: &Path, rel: &str, content: &[u8]) -> bool {
+        if u64::try_from(content.len()).is_ok_and(|size| size != self.size) {
+            return true;
+        }
+        if self.id.len() == 40 {
+            return self.id != blob_id(content);
+        }
+        // Another object format (SHA-256): let git produce the content.
+        git(root, &["show", &format!("HEAD:{rel}")])
+            .map_or(true, |old| old != String::from_utf8_lossy(content))
+    }
+}
+
+/// The pages in HEAD with the blob id and byte size of each, from one git process
+/// for the whole wiki rather than one per page. Empty before the first commit.
+fn head_pages(root: &Path) -> HashMap<String, Blob> {
     git(root, &["ls-tree", "-r", "-l", "-z", "HEAD", "--", "pages"])
         .unwrap_or_default()
         .split('\0')
         .filter_map(|entry| {
             // `<mode> <type> <object> <size>\t<path>`
             let (meta, path) = entry.split_once('\t')?;
-            let size = meta.split_whitespace().nth(3)?.parse().ok()?;
-            Some((path.to_owned(), size))
+            let mut fields = meta.split_whitespace().skip(2);
+            let id = fields.next()?.to_owned();
+            let size = fields.next()?.parse().ok()?;
+            Some((path.to_owned(), Blob { id, size }))
         })
         .collect()
 }
@@ -404,34 +498,37 @@ pub fn check(
     }
     selected.sort();
     selected.dedup();
-    // One listing of HEAD tells a new page from a committed one, and by its size a
-    // rewritten page from an untouched one: no git process or blob per page.
+    // One listing of HEAD tells a new page from a committed one, and by its blob id
+    // a rewritten page from an untouched one: no git process or blob per page.
     let head = head_pages(root);
     let mut probes = Probe::default();
     for path in selected {
         let rel = path.strip_prefix(root)?.to_string_lossy();
-        let (text, size) =
-            match pages::read(&path).and_then(|text| Ok((text, path.metadata()?.len()))) {
-                Ok(read) => read,
-                Err(e) => {
-                    eprintln!("error: {rel}: {e:#}");
-                    code = 2;
-                    continue;
-                }
-            };
+        let bytes = match pages::read_bytes(&path) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                eprintln!("error: {rel}: {e:#}");
+                code = 2;
+                continue;
+            }
+        };
+        // Compared as the bytes of the file, which is what HEAD holds.
+        let state = match head.get(rel.as_ref()) {
+            None => Head::Absent,
+            Some(blob) if blob.differs(root, &rel, &bytes) => Head::Changed,
+            Some(_) => Head::Same,
+        };
+        let text = pages::decode(bytes);
         let page = pages::parse(&text, &rel);
         let validation = validate(root, &rel, &text, &page);
         code = code.max(validation);
         if validation != 2 {
-            let state = match head.get(rel.as_ref()) {
-                None => Head::Absent,
-                Some(committed) if *committed == size => Head::Same,
-                Some(_) => Head::Changed,
-            };
             code = code.max(written_page(root, db, &rel, &text, &page, state)?);
             if probe {
-                // With `--probe`, a page about to be written gets what `sync` will
-                // say about it. Without it, check does not ask for questions.
+                // Check asks for questions only with `--probe`, and then only of a
+                // page about to be written, which gets what `sync` will say about
+                // it. Plain check never does, and an untouched page is not asked
+                // again every time the whole wiki is probed.
                 if state.written() {
                     code = code.max(missing_queries(&rel, &page));
                 }
@@ -1093,9 +1190,10 @@ mod tests {
         assert_eq!(check(&wiki.root, &wiki.index, &one(rel), true, 3)?, 1);
         assert_eq!(sync(&wiki.root, &wiki.index, &one(rel), None)?, 1);
         let size = fs::metadata(wiki.root.join(rel))?.len();
+        let id = git(&wiki.root, &["hash-object", rel])?.trim().to_owned();
         assert_eq!(
             head_pages(&wiki.root),
-            HashMap::from([(rel.to_owned(), size)])
+            HashMap::from([(rel.to_owned(), Blob { id, size })])
         );
         // Committed and untouched: nothing is being written.
         for probe in [false, true] {
@@ -1109,6 +1207,151 @@ mod tests {
         wiki.page(rel, &page(&format!("{long}한 줄을 더했다.")))?;
         assert_eq!(check(&wiki.root, &wiki.index, &one(rel), false, 3)?, 0);
         assert_eq!(check(&wiki.root, &wiki.index, &one(rel), true, 3)?, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn blob_ids_are_the_ids_git_gives() -> Result<()> {
+        assert_eq!(blob_id(b""), "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391");
+        let wiki = committer()?;
+        let file = wiki.root.join("content");
+        // Around the block and padding boundaries of the hash, and far past them.
+        for length in [1, 48, 49, 50, 55, 56, 57, 63, 64, 65, 119, 120, 121, 5000] {
+            let content: Vec<u8> = "한글 text\n\0\u{ff}".bytes().cycle().take(length).collect();
+            fs::write(&file, &content)?;
+            assert_eq!(
+                blob_id(&content),
+                git(&wiki.root, &["hash-object", "content"])?.trim(),
+                "{length}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Commits a page of 6,000 digits and rewrites it as 2,000 Hangul syllables: the
+    /// same number of bytes, a third of the characters.
+    fn same_size_rewrite(wiki: &mut crate::usage::tests::Wiki, rel: &str) -> Result<String> {
+        let digits = page(&"1".repeat(6000));
+        wiki.page(rel, &digits)?;
+        assert_eq!(sync(&wiki.root, &wiki.index, &one(rel), None)?, 1);
+        let rewrite = page(&"가".repeat(2000));
+        assert_eq!(rewrite.len(), digits.len());
+        assert_eq!(shrink(&digits, &rewrite), Some((6039, 2039)));
+        wiki.page(rel, &rewrite)?;
+        Ok(rewrite)
+    }
+
+    #[test]
+    fn a_rewrite_of_the_same_byte_size_is_still_a_changed_page() -> Result<()> {
+        let mut wiki = committer()?;
+        let rel = "pages/knowledge/t.md";
+        // Two thirds of the characters gone in the same number of bytes.
+        let rewrite = same_size_rewrite(&mut wiki, rel)?;
+        let head = head_pages(&wiki.root);
+        assert_eq!(u64::try_from(rewrite.len())?, head[rel].size);
+        assert!(head[rel].differs(&wiki.root, rel, rewrite.as_bytes()));
+        let parsed = pages::parse(&rewrite, rel);
+        assert_eq!(
+            written_page(
+                &wiki.root,
+                &wiki.index,
+                rel,
+                &rewrite,
+                &parsed,
+                Head::Changed
+            )?,
+            1
+        );
+        for paths in [vec![], one(rel)] {
+            assert_eq!(check(&wiki.root, &wiki.index, &paths, false, 3)?, 1);
+        }
+        // Check said what sync says, and the committed rewrite is untouched again.
+        assert_eq!(sync(&wiki.root, &wiki.index, &one(rel), None)?, 1);
+        assert!(!head_pages(&wiki.root)[rel].differs(&wiki.root, rel, rewrite.as_bytes()));
+        for probe in [false, true] {
+            assert_eq!(check(&wiki.root, &wiki.index, &[], probe, 3)?, 0);
+        }
+        // One character replaced by another: nothing shrank, but it is an edit, so
+        // check with --probe asks for the questions that sync will ask for.
+        let edited = page(&format!("나{}", "가".repeat(1999)));
+        assert_eq!(edited.len(), rewrite.len());
+        wiki.page(rel, &edited)?;
+        assert_eq!(check(&wiki.root, &wiki.index, &one(rel), false, 3)?, 0);
+        assert_eq!(check(&wiki.root, &wiki.index, &one(rel), true, 3)?, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn a_page_is_compared_with_head_in_a_sha256_repository_too() -> Result<()> {
+        let mut wiki = committer()?;
+        fs::remove_dir_all(wiki.root.join(".git"))?;
+        if git(&wiki.root, &["init", "-q", "--object-format=sha256"]).is_err() {
+            // This git cannot make such a repository.
+            return Ok(());
+        }
+        git(&wiki.root, &["config", "user.name", "Test"])?;
+        git(&wiki.root, &["config", "user.email", "test@example.com"])?;
+        let rel = "pages/knowledge/t.md";
+        let rewrite = same_size_rewrite(&mut wiki, rel)?;
+        let head = head_pages(&wiki.root);
+        assert_eq!(head[rel].id.len(), 64);
+        assert!(head[rel].differs(&wiki.root, rel, rewrite.as_bytes()));
+        assert_eq!(check(&wiki.root, &wiki.index, &[], false, 3)?, 1);
+        assert_eq!(sync(&wiki.root, &wiki.index, &one(rel), None)?, 1);
+        assert!(!head_pages(&wiki.root)[rel].differs(&wiki.root, rel, rewrite.as_bytes()));
+        assert_eq!(check(&wiki.root, &wiki.index, &[], true, 3)?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn check_asks_for_queries_only_with_probe_and_only_of_a_page_being_written() -> Result<()> {
+        let mut wiki = committer()?;
+        let bare = "pages/knowledge/bare.md";
+        let asked = "pages/knowledge/asked.md";
+        let body = "캐시 복구 절차를 적는다. ".repeat(40);
+        wiki.page(bare, &page(&body))?;
+        wiki.page(
+            asked,
+            "---\ntitle: 색인\ncreated: 2026-11-27\nqueries: [색인 재구축 순서]\n---\n\
+             색인 재구축 순서를 적는다.\n",
+        )?;
+        // New pages. Plain check does not ask for questions; with --probe the page
+        // without any is told what sync will tell it, the other one is probed.
+        assert_eq!(check(&wiki.root, &wiki.index, &[], false, 3)?, 0);
+        assert_eq!(check(&wiki.root, &wiki.index, &one(bare), false, 3)?, 0);
+        assert_eq!(check(&wiki.root, &wiki.index, &one(bare), true, 3)?, 1);
+        assert_eq!(check(&wiki.root, &wiki.index, &one(asked), true, 3)?, 0);
+        assert_eq!(check(&wiki.root, &wiki.index, &[], true, 3)?, 1);
+        assert_eq!(sync(&wiki.root, &wiki.index, &[], None)?, 1);
+        // Committed and untouched: probing the whole wiki does not ask again.
+        for (paths, probe) in [
+            (vec![], false),
+            (vec![], true),
+            (one(bare), false),
+            (one(bare), true),
+        ] {
+            assert_eq!(
+                check(&wiki.root, &wiki.index, &paths, probe, 3)?,
+                0,
+                "{paths:?} {probe}"
+            );
+        }
+        // Edited, in the same number of bytes or not: asked again, with --probe only.
+        for edit in [
+            "캐시 복원 절차를 적는다. ",
+            "캐시를 복구하는 절차를 적는다. ",
+        ] {
+            wiki.page(
+                bare,
+                &page(&format!("{edit}{}", "캐시 복구 절차를 적는다. ".repeat(39))),
+            )?;
+            assert_eq!(check(&wiki.root, &wiki.index, &one(bare), false, 3)?, 0);
+            assert_eq!(check(&wiki.root, &wiki.index, &[], false, 3)?, 0);
+            assert_eq!(check(&wiki.root, &wiki.index, &one(bare), true, 3)?, 1);
+            assert_eq!(check(&wiki.root, &wiki.index, &[], true, 3)?, 1);
+        }
+        assert_eq!(sync(&wiki.root, &wiki.index, &one(bare), None)?, 1);
+        assert_eq!(check(&wiki.root, &wiki.index, &[], true, 3)?, 0);
         Ok(())
     }
 
