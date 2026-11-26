@@ -1,11 +1,11 @@
 {
-  "version": "1.4.271",
+  "version": "1.4.277",
   "x86_64-linux": {
-    "url": "https://github.com/stablyai/orca/releases/download/v1.4.271/orca-ide_1.4.271_amd64.deb",
-    "hash": "sha512-TgkoYKgbPgnC0SK4w12CpD527EuMo6wE9Xer1LNL/17BHg5pWXQy+Uf8IJT719Y8IJU190vSuieopNDKtHMI3A=="
+    "url": "https://github.com/stablyai/orca/releases/download/v1.4.277/orca-ide_1.4.277_amd64.deb",
+    "hash": "sha512-eMoHt3k8mduhyRXCTbWKW2PQhpZ1HpGbfZMKkJj3y1E0jxLUMi0M9Tiiejnq7PkuONCweIjVZFqvcPQJsd+1Tw=="
   },
   "aarch64-linux": {
-    "url": "https://github.com/stablyai/orca/releases/download/v1.4.271/orca-ide_1.4.271_arm64.deb",
-    "hash": "sha512-bVLNroT1OW7of1IZsbiA51ogmVvVO0ybbBHSrei/NGkafdYy6+pL/lVl4ETHujJW0jg7WshrHWlxYCKGKGRjzw=="
+    "url": "https://github.com/stablyai/orca/releases/download/v1.4.277/orca-ide_1.4.277_arm64.deb",
+    "hash": "sha512-78T7D+oHgmTy00AQQnHvwiaDa8B8WPzrVQOVGfEVdT00lwCTAhksBV1g86ufQiEtWTRLH4EtYA0/wVLDv+y1Ug=="
   }
 }
