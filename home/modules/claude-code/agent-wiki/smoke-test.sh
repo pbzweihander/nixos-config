@@ -578,4 +578,31 @@ expect_code 2 "$wiki" sync pages/knowledge/invalid-title.md
 check "title hint" 'quote the title: title: "broken: title"' echo "$out"
 [ "$(git -C "$AGENT_WIKI_DIR" rev-parse HEAD)" = "$before" ] || fail "invalid YAML changed HEAD" sync "$out"
 
+
+# Transcript-derived databases remain private even after repairing old modes.
+for db in "$AGENT_WIKI_DIR/sessions.sqlite" "$AGENT_WIKI_DIR/usage.sqlite"; do
+  test "$(stat -c %a "$db")" = 600
+  chmod 644 "$db"
+done
+"$wiki" sessions orbital > /dev/null
+"$wiki" stats --json > /dev/null
+for db in "$AGENT_WIKI_DIR/sessions.sqlite" "$AGENT_WIKI_DIR/usage.sqlite"; do
+  test "$(stat -c %a "$db")" = 600
+done
+
+# Exercise active account discovery through the installed wrapper as well as the
+# raw executable. Explicit source lists must continue to override custom homes.
+mkdir -p "$HOME/custom-claude/projects/demo" "$HOME/custom-codex/sessions"
+cp "$fixtures/session.jsonl" "$HOME/custom-claude/projects/demo/custom.jsonl"
+cp "$fixtures/record-codex.jsonl" "$HOME/custom-codex/sessions/rollout-custom.jsonl"
+check "active Claude home" "session " env -u AGENT_WIKI_SESSIONS_DIRS -u CLAUDE_WIKI_SESSIONS_DIRS \
+  AGENT_WIKI_DIR="$HOME/custom-wiki" CLAUDE_CONFIG_DIR="$HOME/custom-claude" \
+  "$wiki" sessions orbital
+check "active Codex home" "record-codex" env -u AGENT_WIKI_CODEX_SESSIONS_DIRS -u CLAUDE_WIKI_CODEX_SESSIONS_DIRS \
+  AGENT_WIKI_DIR="$HOME/custom-wiki" CODEX_HOME="$HOME/custom-codex" \
+  "$wiki" sessions aurora
+check "explicit source override" "no sessions match" env \
+  AGENT_WIKI_DIR="$HOME/override-wiki" AGENT_WIKI_SESSIONS_DIRS=:: CLAUDE_CONFIG_DIR="$HOME/custom-claude" \
+  "$wiki" sessions orbital
+
 echo "agent-wiki smoke test passed"

@@ -422,3 +422,52 @@ fn legacy_dirs_setting_is_a_fallback() {
     assert_eq!(sessions(&out).len(), 2, "{out}");
     assert!(!out.contains("conv-legacy"), "{out}");
 }
+
+#[test]
+fn cross_harness_usage_scans_and_orders_subsecond_reads() {
+    let env = Env::new();
+    let home = &env.tmp.0;
+    env.run(&["lattice"], &[]);
+    let page = home.join("wiki/pages/knowledge/usage.md");
+    fs::write(
+        &page,
+        "---\ntitle: 사용량 검증\ncreated: 2026-11-27\n---\n검증 페이지\n",
+    )
+    .unwrap();
+    let ag = home
+        .join(".gemini/antigravity-cli/brain/conv-orca/.system_generated/logs/transcript.jsonl");
+    fs::write(&ag, format!("{}\n", json!({"step_index":0,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-27T00:00:00.100Z","tool_calls":[{"name":"read_file","args":{"Path":page}}]}))).unwrap();
+    fs::create_dir_all(home.join("codex")).unwrap();
+    fs::write(home.join("codex/rollout-usage.jsonl"), format!("{}\n{}\n", json!({"type":"session_meta","payload":{"id":"cx","cwd":"/repo"}}), json!({"type":"response_item","timestamp":"2026-11-27T00:00:00.100Z","payload":{"type":"function_call","name":"exec_command","call_id":"r","arguments":json!({"cmd":format!("cat {}", page.display())}).to_string()}}))).unwrap();
+    let stats = || {
+        let out = Command::new(env!("CARGO_BIN_EXE_agent-wiki"))
+            .args(["stats", "--json"])
+            .env("HOME", home)
+            .env("AGENT_WIKI_DIR", home.join("wiki"))
+            .env("AGENT_WIKI_SESSIONS_DIRS", "::")
+            .env("AGENT_WIKI_CODEX_SESSIONS_DIRS", home.join("codex"))
+            .env(
+                "AGENT_WIKI_ANTIGRAVITY_SESSIONS_DIRS",
+                home.join(".gemini/antigravity-cli/brain"),
+            )
+            .env("AGENT_WIKI_SOCKET", "")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()
+    };
+    stats();
+    let db = rusqlite::Connection::open(home.join("wiki/usage.sqlite")).unwrap();
+    for session in ["cx", "conv-orca"] {
+        db.execute(
+            "insert into injections values (?, 'pages/knowledge/usage.md', 'context', 1795737600)",
+            [session],
+        )
+        .unwrap();
+    }
+    assert_eq!(stats()["sources"]["context"]["read_later"], 2);
+    // A precise injection after the read in the same second must remain unread.
+    db.execute_batch("insert into injection_clock select rowid, 1795737600.200 from injections;")
+        .unwrap();
+    assert_eq!(stats()["sources"]["context"]["read_later"], 0);
+}

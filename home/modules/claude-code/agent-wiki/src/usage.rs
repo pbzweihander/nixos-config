@@ -8,7 +8,6 @@ use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashSet, VecDeque},
     fs::{self, File},
-    hash::{DefaultHasher, Hash, Hasher},
     io::{Read, Seek, SeekFrom},
     path::{Component, Path, PathBuf},
     time::Duration,
@@ -22,6 +21,7 @@ pub struct Args {
     pub json: bool,
 }
 
+// v4 table shapes stay compatible; versioned fingerprints rescan old cursors.
 const SCAN_FORMAT: i64 = 4;
 
 fn transcript_tables(db: &Connection) -> Result<()> {
@@ -35,11 +35,12 @@ fn transcript_tables(db: &Connection) -> Result<()> {
 }
 
 pub fn open(root: &Path) -> Result<Connection> {
-    let db = Connection::open(root.join("usage.sqlite"))?;
+    let db = sessions::private_db(&root.join("usage.sqlite"))?;
     db.busy_timeout(Duration::from_millis(50))?;
     db.execute_batch("create table if not exists injections(session_id text, path text, source text, at integer);
         create index if not exists injections_session on injections(session_id, path, at);
-        create table if not exists state(key text primary key, value integer);")?;
+        create table if not exists injection_clock(id integer primary key, at real);
+        create trigger if not exists injections_clock_delete after delete on injections begin delete from injection_clock where id=old.rowid; end; create table if not exists state(key text primary key, value integer);")?;
     transcript_tables(&db)?;
     Ok(db)
 }
@@ -85,9 +86,17 @@ pub fn log(root: &Path, session: &str, source: &str, paths: &[String]) {
         let mut db = open(root)?;
         let tx = db.transaction()?;
         for path in paths {
+            let now = Utc::now();
             tx.execute(
                 "insert into injections values (?, ?, ?, ?)",
-                params![session, path, source, Utc::now().timestamp()],
+                params![session, path, source, now.timestamp()],
+            )?;
+            tx.execute(
+                "insert into injection_clock values (?,?)",
+                params![
+                    tx.last_insert_rowid(),
+                    now.timestamp_millis() as f64 / 1000.0
+                ],
             )?;
         }
         tx.commit()?;
@@ -369,13 +378,13 @@ struct Access {
     id: String,
     session: String,
     accesses: Vec<(String, &'static str)>,
-    at: i64,
+    at: f64,
 }
 
-fn timestamp(value: &Value) -> Option<i64> {
+fn timestamp(value: &Value) -> Option<f64> {
     DateTime::parse_from_rfc3339(value.as_str()?)
         .ok()
-        .map(|t| t.timestamp())
+        .map(|t| t.timestamp_millis() as f64 / 1000.0)
 }
 
 fn parse(root: &Path, value: &Value) -> Vec<Access> {
@@ -431,6 +440,13 @@ fn parse(root: &Path, value: &Value) -> Vec<Access> {
 }
 
 fn record(db: &Connection, access: Access) -> Result<()> {
+    // Upgrade second-rounded observations when a v4 cursor is replayed. Keep
+    // historical accesses even when the original transcript was rewritten.
+    db.execute(
+        "update tools set at=? where tool_use_id=? and session_id=? and at=cast(? as integer)",
+        params![access.at, access.id, access.session, access.at],
+    )?;
+    db.execute("insert into sessions values (?, ?, ?) on conflict(session_id) do update set first_at=min(first_at,excluded.first_at), last_at=max(last_at,excluded.last_at)", params![access.session, access.at as i64, access.at as i64])?;
     if db.execute(
         "insert or ignore into tools values (?, ?, ?)",
         params![access.id, access.session, access.at],
@@ -475,21 +491,47 @@ fn transcript_paths(dirs: &[PathBuf]) -> Result<Vec<PathBuf>> {
 }
 
 // Check the beginning and the last consumed bytes even when a rewritten file grew.
-fn fingerprint(file: &mut File, offset: u64) -> Result<String> {
-    let mut hash = DefaultHasher::new();
-    for start in [0, offset.saturating_sub(512)] {
+pub(crate) fn fingerprint(file: &mut File, offset: u64) -> Result<String> {
+    let mut hash = 0xcbf29ce484222325u64;
+    for start in [0, offset.saturating_sub(4096)] {
         file.seek(SeekFrom::Start(start))?;
-        let mut bytes = vec![0; (offset - start).min(512) as usize];
+        let mut bytes = vec![0; (offset - start).min(4096) as usize];
         file.read_exact(&mut bytes)?;
-        bytes.hash(&mut hash);
+        for byte in bytes {
+            hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+        }
     }
-    Ok(hash.finish().to_string())
+    Ok(format!("fnv4k-v1:{hash:016x}"))
 }
 
+#[cfg(test)]
 fn scan(root: &Path, db: &mut Connection, dirs: &[PathBuf]) -> Result<()> {
+    scan_sources(root, db, dirs, &[], &[])
+}
+
+fn scan_sources(
+    root: &Path,
+    db: &mut Connection,
+    dirs: &[PathBuf],
+    codex_dirs: &[PathBuf],
+    ag_dirs: &[PathBuf],
+) -> Result<()> {
     let tx = db.transaction()?;
     prepare_scan(&tx)?;
-    for path in transcript_paths(dirs)? {
+    let mut paths = transcript_paths(dirs)?;
+    let mut ag = BTreeMap::new();
+    for dir in codex_dirs {
+        paths.extend(sessions::codex_paths(dir)?);
+    }
+    for dir in ag_dirs {
+        for (path, meta) in sessions::antigravity_paths(dir)? {
+            paths.push(path.clone());
+            ag.insert(path, meta);
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    for path in paths {
         let mut file = match File::open(&path) {
             Ok(file) => file,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
@@ -506,13 +548,15 @@ fn scan(root: &Path, db: &mut Connection, dirs: &[PathBuf]) -> Result<()> {
             .optional()?;
         let mut offset = 0;
         if let Some((previous, old_size, old_mtime, old_hash)) = old {
-            if size == old_size && mtime == old_mtime {
+            if size == old_size && mtime == old_mtime && old_hash.starts_with("fnv4k-v1:") {
                 continue;
             }
             if size > old_size && fingerprint(&mut file, previous as u64)? == old_hash {
                 offset = previous as u64;
             }
         }
+        let codex = crate::transcript::Codex::open(&path)?;
+        let mut position = offset;
         let offset = sessions::complete_lines(file.try_clone()?, offset, |line| {
             if let Ok(value) = serde_json::from_slice::<Value>(line) {
                 if value["entrypoint"] == "sdk-cli"
@@ -526,12 +570,33 @@ fn scan(root: &Path, db: &mut Connection, dirs: &[PathBuf]) -> Result<()> {
                 if let (Some(session), Some(at)) =
                     (value["sessionId"].as_str(), timestamp(&value["timestamp"]))
                 {
-                    tx.execute("insert into sessions values (?, ?, ?) on conflict(session_id) do update set first_at = min(first_at, excluded.first_at), last_at = max(last_at, excluded.last_at)", params![session, at, at])?;
+                    tx.execute("insert into sessions values (?, ?, ?) on conflict(session_id) do update set first_at = min(first_at, excluded.first_at), last_at = max(last_at, excluded.last_at)", params![session, at as i64, at as i64])?;
                 }
-                for access in parse(root, &value) {
+                let mut accesses = parse(root, &value);
+                if let Some(meta) = &codex {
+                    accesses.extend(parse_other(
+                        root,
+                        &value,
+                        &meta.session,
+                        &meta.cwd,
+                        position,
+                        false,
+                    ));
+                } else if let Some(meta) = ag.get(&path) {
+                    accesses.extend(parse_other(
+                        root,
+                        &value,
+                        &meta.conversation,
+                        &meta.cwd,
+                        position,
+                        true,
+                    ));
+                }
+                for access in accesses {
                     record(&tx, access)?;
                 }
             }
+            position += line.len() as u64;
             Ok(())
         })?;
         let hash = fingerprint(&mut file, offset)?;
@@ -581,7 +646,7 @@ pub fn per_page(db: &Connection, now: i64) -> Result<BTreeMap<String, PageUsage>
             PageUsage {
                 reads: r.get(1)?,
                 read_sessions: r.get(2)?,
-                last_read: r.get(3)?,
+                last_read: r.get::<_, Option<f64>>(3)?.map(|v| v as i64),
                 ..PageUsage::default()
             },
         ))
@@ -594,7 +659,7 @@ pub fn per_page(db: &Connection, now: i64) -> Result<BTreeMap<String, PageUsage>
     let mut stmt = db.prepare(
         "select i.path, sum(not exists(select 1 from accesses a join tools t using(tool_use_id)
          where a.path=i.path and t.session_id=i.session_id and a.kind='read' and t.at>i.first_at))
-         from (select session_id, path, min(at) as first_at from injections
+         from (select session_id, path, min(coalesce((select c.at from injection_clock c where c.id=injections.rowid), at)) as first_at from injections
          where session_id not in (select session_id from scripted_sessions) group by session_id, path) i
          group by i.path",
     )?;
@@ -615,7 +680,13 @@ pub fn per_page(db: &Connection, now: i64) -> Result<BTreeMap<String, PageUsage>
 
 pub fn refresh(root: &Path) -> Result<Connection> {
     let mut db = open(root)?;
-    scan(root, &mut db, &sessions::source_dirs()?)?;
+    scan_sources(
+        root,
+        &mut db,
+        &sessions::source_dirs()?,
+        &sessions::codex_source_dirs()?,
+        &sessions::antigravity_source_dirs()?,
+    )?;
     Ok(db)
 }
 
@@ -681,7 +752,7 @@ fn aggregate(db: &Connection, index: &Connection, since: i64, now: i64) -> Resul
         .collect::<rusqlite::Result<HashSet<_>>>()?;
     source_names.extend(["remind", "recall-skill", "recall-failure", "context"].map(String::from));
     for source in source_names {
-        let rows = db.prepare("select i.session_id, i.path, exists(select 1 from accesses a join tools t using(tool_use_id) where a.path=i.path and t.session_id=i.session_id and a.kind='read' and t.at>i.first_at) from (select session_id, path, min(at) as first_at from injections where source=? and at>=? and session_id not in (select session_id from scripted_sessions) group by session_id, path) i")?
+        let rows = db.prepare("select i.session_id, i.path, exists(select 1 from accesses a join tools t using(tool_use_id) where a.path=i.path and t.session_id=i.session_id and a.kind='read' and t.at>i.first_at) from (select session_id, path, min(coalesce((select c.at from injection_clock c where c.id=injections.rowid), at)) as first_at from injections where source=? and at>=? and session_id not in (select session_id from scripted_sessions) group by session_id, path) i")?
             .query_map(params![source, since], |r| Ok((r.get::<_, String>(1)?, r.get::<_, bool>(2)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let read = rows.iter().filter(|(_, read)| *read).count();
@@ -699,7 +770,7 @@ fn aggregate(db: &Connection, index: &Connection, since: i64, now: i64) -> Resul
         );
     }
     // Count distinct session/page suggestions across all sources for the top list.
-    let rows = db.prepare("select path, count(*) from (select i.session_id, i.path, min(i.at) as first_at from injections i where i.at>=? and i.session_id not in (select session_id from scripted_sessions) group by i.session_id,i.path) i where not exists(select 1 from accesses a join tools t using(tool_use_id) where a.path=i.path and t.session_id=i.session_id and a.kind='read' and t.at>i.first_at) group by path")?
+    let rows = db.prepare("select path, count(*) from (select i.session_id, i.path, min(coalesce((select c.at from injection_clock c where c.id=i.rowid), i.at)) as first_at from injections i where i.at>=? and i.session_id not in (select session_id from scripted_sessions) group by i.session_id,i.path) i where not exists(select 1 from accesses a join tools t using(tool_use_id) where a.path=i.path and t.session_id=i.session_id and a.kind='read' and t.at>i.first_at) group by path")?
         .query_map([since], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
     ignored.extend(rows);
     let read = read_pages(db, since)?;
@@ -821,8 +892,173 @@ pub fn run(root: &Path, index: &Connection, args: &Args) -> Result<()> {
     Ok(())
 }
 
+fn parse_other(
+    root: &Path,
+    value: &Value,
+    session: &str,
+    cwd: &str,
+    position: u64,
+    ag: bool,
+) -> Vec<Access> {
+    let Some(at) = timestamp(&value[if ag { "created_at" } else { "timestamp" }]) else {
+        return vec![];
+    };
+    let payload = if ag { value } else { &value["payload"] };
+    let calls = if ag {
+        if let Some(calls) = value["tool_calls"].as_array() {
+            calls.clone()
+        } else if value["status"] == "DONE" {
+            vec![value.clone()]
+        } else {
+            vec![]
+        }
+    } else if payload["type"] == "function_call" {
+        vec![payload.clone()]
+    } else {
+        vec![]
+    };
+    calls
+        .iter()
+        .enumerate()
+        .filter_map(|(i, call)| {
+            let name = call["name"].as_str().or_else(|| call["type"].as_str())?;
+            let input = call
+                .get("args")
+                .or_else(|| call.get("arguments"))
+                .or_else(|| call.get("viewFile"))
+                .or_else(|| call.get("writeFile"))
+                .or_else(|| call.get("codeAction"))
+                .or_else(|| call.get("runCommand"))
+                .unwrap_or(call);
+            let input = if let Some(s) = input.as_str() {
+                serde_json::from_str(s).ok()?
+            } else {
+                input.clone()
+            };
+            let cwd = Path::new(
+                input["cwd"]
+                    .as_str()
+                    .or_else(|| input["workdir"].as_str())
+                    .unwrap_or(cwd),
+            );
+            let accesses = match name {
+                "exec_command"
+                | "shell_command"
+                | "shell"
+                | "run_command"
+                | "CORTEX_STEP_TYPE_RUN_COMMAND" => {
+                    let value = ["cmd", "command", "CommandLine", "commandLine"]
+                        .iter()
+                        .find_map(|k| input.get(*k))?;
+                    let command = if let Some(text) = value.as_str() {
+                        text.to_owned()
+                    } else {
+                        let args = value
+                            .as_array()?
+                            .iter()
+                            .map(Value::as_str)
+                            .collect::<Option<Vec<_>>>()?;
+                        if args.len() == 3
+                            && matches!(args[1], "-c" | "-lc")
+                            && matches!(
+                                Path::new(args[0]).file_name()?.to_str()?,
+                                "bash" | "sh" | "zsh"
+                            )
+                        {
+                            args[2].to_owned()
+                        } else {
+                            args.iter()
+                                .map(|s| format!("'{}'", s.replace('\'', "'\\''")))
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        }
+                    };
+                    bash_accesses(root, &command, cwd)
+                }
+                "read_file"
+                | "write_file"
+                | "edit_file"
+                | "CORTEX_STEP_TYPE_VIEW_FILE"
+                | "CORTEX_STEP_TYPE_WRITE_FILE"
+                | "CORTEX_STEP_TYPE_CODE_ACTION" => {
+                    let path = [
+                        "Path",
+                        "TargetFile",
+                        "AbsolutePath",
+                        "file_path",
+                        "path",
+                        "absolutePath",
+                        "targetFile",
+                    ]
+                    .iter()
+                    .find_map(|k| input[*k].as_str())?;
+                    page_path(root, path, cwd)
+                        .map(|path| {
+                            (
+                                path,
+                                if matches!(name, "read_file" | "CORTEX_STEP_TYPE_VIEW_FILE") {
+                                    "read"
+                                } else {
+                                    "write"
+                                },
+                            )
+                        })
+                        .into_iter()
+                        .collect()
+                }
+                _ => return None,
+            };
+            if accesses.is_empty() {
+                return None;
+            }
+            Some(Access {
+                id: format!(
+                    "{}:{session}:{}:{i}",
+                    if ag { "ag" } else { "codex" },
+                    call["call_id"]
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| position.to_string())
+                ),
+                session: session.into(),
+                accesses,
+                at,
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn cross_harness_accesses_keep_subsecond_order() {
+        use serde_json::json;
+        let root = std::path::Path::new("/wiki");
+        let codex = json!({"timestamp":"2026-11-27T00:00:00.100Z", "payload":{"type":"function_call", "name":"exec_command", "call_id":"a", "arguments":"{\"cmd\":\"cat /wiki/pages/knowledge/a.md\"}"}});
+        let result = super::parse_other(root, &codex, "session", "/", 0, false);
+        assert_eq!(
+            result[0].accesses,
+            vec![("pages/knowledge/a.md".into(), "read")]
+        );
+        assert!(result[0].at > 1795737600.0);
+        let shell = json!({"timestamp":"2026-11-27T00:00:00.100Z", "payload":{"type":"function_call", "name":"shell", "call_id":"b", "arguments":{"command":["bash","-lc","cat /wiki/pages/knowledge/a.md"]}}});
+        assert_eq!(
+            super::parse_other(root, &shell, "session", "/", 0, false)[0].accesses[0].1,
+            "read"
+        );
+        let cortex = json!({"created_at":"2026-11-27T00:00:00.100Z", "status":"DONE", "type":"CORTEX_STEP_TYPE_VIEW_FILE", "viewFile":{"absolutePath":"/wiki/pages/knowledge/a.md"}});
+        assert_eq!(
+            super::parse_other(root, &cortex, "ag", "/", 0, true)[0].accesses[0].1,
+            "read"
+        );
+        for name in ["read_file", "CORTEX_STEP_TYPE_VIEW_FILE"] {
+            let ag = json!({"created_at":"2026-11-27T00:00:00.050Z", "status":"DONE", "tool_calls":[{"name":name,"args":{"Path":"/wiki/pages/knowledge/a.md"}}]});
+            let result = super::parse_other(root, &ag, "ag", "/", 0, true);
+            assert_eq!(result[0].accesses[0].1, "read");
+            assert!(result[0].at < 1795737600.1);
+        }
+    }
+
     use super::*;
     use serde_json::json;
     use std::{

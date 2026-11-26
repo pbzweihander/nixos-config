@@ -41,7 +41,7 @@ pub struct Args {
     pub harness: Option<String>,
 }
 
-const INDEX_FORMAT: i64 = 5;
+const INDEX_FORMAT: i64 = 6;
 
 pub fn codex_source_dirs() -> Result<Vec<PathBuf>> {
     let fallback = env_path("CODEX_HOME")
@@ -358,6 +358,26 @@ struct Message {
 }
 
 pub fn project(cwd: &str) -> String {
+    if let Some((_, rest)) = cwd.split_once("/orca/workspaces/") {
+        return rest.split('/').next().unwrap_or_default().to_owned();
+    }
+    for ancestor in Path::new(cwd).ancestors() {
+        if let Ok(git) = fs::read_to_string(ancestor.join(".git"))
+            && let Some(dir) = git.trim().strip_prefix("gitdir: ")
+        {
+            let dir = ancestor.join(dir);
+            if let Some(repo) = dir
+                .parent()
+                .filter(|p| p.ends_with("worktrees"))
+                .and_then(Path::parent)
+                .filter(|p| p.ends_with(".git"))
+                .and_then(Path::parent)
+                .and_then(Path::file_name)
+            {
+                return repo.to_string_lossy().into_owned();
+            }
+        }
+    }
     let main = cwd.split("/.claude/worktrees/").next().unwrap_or(cwd);
     Path::new(main)
         .file_name()
@@ -477,7 +497,7 @@ fn only_injected(text: &str) -> bool {
 /// inside the request is stripped. Without a closing tag (a truncated step) the whole
 /// remainder is kept. A step without the envelope keeps everything before its
 /// trailing run of injected blocks.
-fn antigravity_prompt(content: &str) -> String {
+pub(crate) fn antigravity_prompt(content: &str) -> String {
     let content = skip_injected(content);
     let text = if let Some(body) = content.strip_prefix(REQUEST_OPEN) {
         body.rmatch_indices(REQUEST_CLOSE)
@@ -577,7 +597,7 @@ enum Format<'a> {
 }
 
 fn initialize(db: &Connection) -> Result<()> {
-    db.execute_batch("create table if not exists state(key text primary key, value integer);
+    db.execute_batch("create table if not exists fingerprints(path text primary key, hash text); create table if not exists state(key text primary key, value integer);
         create table if not exists transcripts(path text primary key, offset integer, size integer, mtime_ns integer);
         create table if not exists messages(id integer primary key, session_id text, uuid text, ts text, role text, project text, branch text, path text, text text);
         create index if not exists messages_session_ts on messages(session_id, ts, id);
@@ -679,7 +699,42 @@ fn refresh_sources(
             Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
         })?
         .collect::<rusqlite::Result<_>>()?;
+    // Validate consumed bytes before deciding that a file can be resumed. A
+    // destructive change rebuilds all owners in this transaction, including
+    // unchanged copies whose UUID insert previously lost to the deleted owner.
+    let mut rebuild = indexed.keys().any(|p| !on_disk.contains(p));
+    for (path, source) in &paths {
+        if let Some(old) = indexed.get(path.to_string_lossy().as_ref()) {
+            let workspace = match source {
+                Source::Transcript => "",
+                Source::Antigravity(m) => &m.cwd,
+            };
+            if let Ok(mut file) = File::open(path) {
+                let size = file.metadata()?.len();
+                let previous: Option<String> = db
+                    .query_row(
+                        "select hash from fingerprints where path=?",
+                        [path.to_string_lossy().as_ref()],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if size < old.0 as u64
+                    || old.3 != workspace
+                    || previous.as_deref()
+                        != Some(&crate::usage::fingerprint(&mut file, old.0 as u64)?)
+                {
+                    rebuild = true;
+                }
+            }
+        }
+    }
+    let indexed = if rebuild { HashMap::new() } else { indexed };
     let tx = db.transaction()?;
+    if rebuild {
+        tx.execute_batch(
+            "delete from messages; delete from transcripts; delete from fingerprints;",
+        )?;
+    }
     for path in indexed.keys().filter(|p| !on_disk.contains(*p)) {
         tx.execute("delete from messages where path = ?", [path])?;
         tx.execute("delete from transcripts where path = ?", [path])?;
@@ -723,6 +778,13 @@ fn refresh_sources(
             Format::Claude => transcript::exclusion(path, None)?,
         };
         if excluded.is_some() {
+            tx.execute(
+                "insert or replace into fingerprints values (?,?)",
+                params![
+                    path_str.as_ref(),
+                    crate::usage::fingerprint(&mut file.try_clone()?, size as u64)?
+                ],
+            )?;
             tx.execute("delete from messages where path = ?", [path_str.as_ref()])?;
             tx.execute(
                 "insert or replace into transcripts(path, offset, size, mtime_ns, workspace) values (?,?,?,?,?)",
@@ -730,6 +792,7 @@ fn refresh_sources(
             )?;
             continue;
         }
+        let mut fingerprint_file = file.try_clone()?;
         let mut position = offset as u64;
         let offset = complete_lines(file, offset as u64, |line| {
             let message = match &format {
@@ -744,6 +807,13 @@ fn refresh_sources(
             }
             Ok(())
         })?;
+        tx.execute(
+            "insert or replace into fingerprints values (?,?)",
+            params![
+                path_str.as_ref(),
+                crate::usage::fingerprint(&mut fingerprint_file, offset)?
+            ],
+        )?;
         tx.execute("insert into transcripts(path, offset, size, mtime_ns, workspace) values (?,?,?,?,?) on conflict(path) do update set offset=excluded.offset, size=excluded.size, mtime_ns=excluded.mtime_ns, workspace=excluded.workspace", params![path_str.as_ref(), i64::try_from(offset)?, size, mtime, workspace])?;
     }
     tx.commit()?;
@@ -800,6 +870,30 @@ struct Hit {
     snippet: String,
 }
 
+fn group_hits(
+    hits: impl Iterator<Item = rusqlite::Result<Hit>>,
+    limit: usize,
+) -> Result<Vec<(String, Vec<Hit>)>> {
+    let mut groups: Vec<(String, Vec<Hit>)> = vec![];
+    if limit == 0 {
+        return Ok(groups);
+    }
+    for hit in hits {
+        let hit = hit?;
+        if let Some((_, hits)) = groups.iter_mut().find(|(id, _)| *id == hit.session) {
+            if hits.len() < 3 {
+                hits.push(hit);
+            }
+        } else if groups.len() < limit {
+            groups.push((hit.session.clone(), vec![hit]));
+        }
+        if groups.len() == limit && groups.iter().all(|(_, hits)| hits.len() == 3) {
+            break;
+        }
+    }
+    Ok(groups)
+}
+
 pub fn run(root: &Path, args: &Args) -> Result<()> {
     if args.records {
         return records::search(args);
@@ -843,7 +937,7 @@ pub fn run(root: &Path, args: &Args) -> Result<()> {
     if args.reindex {
         index::remove_index(root, "sessions.sqlite")?;
     }
-    let mut db = Connection::open(root.join("sessions.sqlite"))?;
+    let mut db = private_db(&root.join("sessions.sqlite"))?;
     db.busy_timeout(StdDuration::from_secs(30))?;
     initialize(&db)?;
     refresh_sources(
@@ -863,17 +957,7 @@ pub fn run(root: &Path, args: &Args) -> Result<()> {
             snippet: r.get(4)?,
         })
     })?;
-    let mut groups: Vec<(String, Vec<Hit>)> = vec![];
-    for hit in hits {
-        let hit = hit?;
-        if let Some((_, hits)) = groups.iter_mut().find(|(id, _)| *id == hit.session) {
-            if hits.len() < 3 {
-                hits.push(hit);
-            }
-        } else if groups.len() < args.n {
-            groups.push((hit.session.clone(), vec![hit]));
-        }
-    }
+    let groups = group_hits(hits, args.n)?;
     if groups.is_empty() {
         let count: i64 = db.query_row("select count(*) from messages", [], |r| r.get(0))?;
         println!(
@@ -944,8 +1028,120 @@ pub fn run(root: &Path, args: &Args) -> Result<()> {
     Ok(())
 }
 
+// Precreate privately so SQLite never exposes transcript data under the umask.
+pub(crate) fn private_db(path: &Path) -> Result<Connection> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .open(path)?;
+    for suffix in ["", "-wal", "-shm", "-journal"] {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(suffix);
+        match fs::set_permissions(Path::new(&name), fs::Permissions::from_mode(0o600)) {
+            Ok(()) => (),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && !suffix.is_empty() => (),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(Connection::open(path)?)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn selected_groups_stop_consuming_ranked_rows() -> anyhow::Result<()> {
+        let mut count = 0;
+        let rows = (0..1000).map(|id| {
+            count += 1;
+            Ok(super::Hit {
+                id,
+                session: "s".into(),
+                role: "user".into(),
+                ts: String::new(),
+                snippet: String::new(),
+            })
+        });
+        assert_eq!(super::group_hits(rows, 1)?[0].1.len(), 3);
+        assert_eq!(count, 3);
+        Ok(())
+    }
+    #[test]
+    fn private_databases_repair_existing_sidecars() -> anyhow::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TestDir::new()?;
+        for name in ["sessions.sqlite", "usage.sqlite"] {
+            let path = tmp.0.join(name);
+            drop(super::private_db(&path)?);
+            for suffix in ["", "-wal", "-shm", "-journal"] {
+                let p = tmp.0.join(format!("{name}{suffix}"));
+                if !p.exists() {
+                    std::fs::write(&p, "")?;
+                }
+                std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o644))?;
+            }
+            let _db = super::private_db(&path)?;
+            for suffix in ["", "-wal", "-shm", "-journal"] {
+                let p = tmp.0.join(format!("{name}{suffix}"));
+                if let Ok(meta) = std::fs::metadata(p) {
+                    assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rewrites_and_deleted_duplicate_owners_recover() -> anyhow::Result<()> {
+        let tmp = TestDir::new()?;
+        let dir = tmp.0.join("project");
+        std::fs::create_dir(&dir)?;
+        let path = dir.join("a.jsonl");
+        let row = |word: &str| {
+            format!(
+                "{}\n",
+                serde_json::json!({"type":"user","sessionId":"s","uuid":"u","timestamp":"2026-11-27T00:00:00Z","message":{"content":word}})
+            )
+        };
+        std::fs::write(&path, row("oldword"))?;
+        let mut db = rusqlite::Connection::open_in_memory()?;
+        super::initialize(&db)?;
+        super::refresh(&mut db, std::slice::from_ref(&tmp.0))?;
+        for word in ["newword", "growing replacement"] {
+            std::fs::write(&path, row(word))?;
+            super::refresh(&mut db, std::slice::from_ref(&tmp.0))?;
+            assert_eq!(
+                db.query_row("select text from messages", [], |r| r.get::<_, String>(0))?,
+                word
+            );
+        }
+        std::fs::copy(&path, dir.join("b.jsonl"))?;
+        super::refresh(&mut db, std::slice::from_ref(&tmp.0))?;
+        std::fs::remove_file(&path)?;
+        super::refresh(&mut db, std::slice::from_ref(&tmp.0))?;
+        assert_eq!(
+            db.query_row("select count(*) from messages", [], |r| r.get::<_, i64>(0))?,
+            1
+        );
+        assert_eq!(
+            super::project("/home/u/orca/workspaces/repo/branch/src"),
+            "repo"
+        );
+        let worktree = tmp.0.join("linked");
+        std::fs::create_dir(&worktree)?;
+        std::fs::write(
+            worktree.join(".git"),
+            "gitdir: /repos/mainrepo/.git/worktrees/linked",
+        )?;
+        assert_eq!(
+            super::project(worktree.join("src").to_str().unwrap()),
+            "mainrepo"
+        );
+        Ok(())
+    }
+
     use super::*;
 
     struct TestDir(PathBuf);
