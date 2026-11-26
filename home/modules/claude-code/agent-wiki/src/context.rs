@@ -1,11 +1,22 @@
 use crate::{
+    bulletin::clean_identifier,
     index::{COLUMNS, JOIN, Row},
     pages, search,
 };
 use anyhow::Result;
 use clap::Args as ClapArgs;
 use rusqlite::{Connection, OptionalExtension, params_from_iter, types::Value};
-use std::{collections::HashSet, path::Path, process::Command};
+use std::{
+    collections::HashSet,
+    fs,
+    io::Read,
+    path::{Path, PathBuf},
+};
+
+/// Largest `.git` or `commondir` pointer file read while resolving the project.
+const POINTER_BYTES: u64 = 4096;
+/// Largest overview page rendered; a larger one is reported instead of read.
+const OVERVIEW_BYTES: u64 = 1024 * 1024;
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -26,24 +37,122 @@ pub fn overview_budget() -> usize {
         .unwrap_or(3000)
 }
 
+/// The repository name for `dir`: the directory holding the main `.git` of the
+/// repository that contains it, shared by all its worktrees, or a bare repository's
+/// name without `.git`. `None` outside a repository or for a missing directory.
+///
+/// Hooks call this at session start, so it reads the repository layout directly
+/// instead of spawning `git rev-parse --git-common-dir`, which can stall on a slow
+/// filesystem or configuration hook. Like that command it walks up from `dir`,
+/// follows a `gitdir:` file and `commondir`, and resolves symlinks; unlike it, it
+/// ignores `GIT_DIR` and other `GIT_*` overrides inherited from the caller.
 pub fn current_project(dir: &Path) -> Option<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
+    let start = fs::canonicalize(dir).ok()?;
+    if !start.is_dir() {
         return None;
     }
-    let common = String::from_utf8_lossy(&out.stdout);
-    let path = Path::new(common.trim());
-    if path.file_name()? == ".git" {
-        Some(path.parent()?.file_name()?.to_string_lossy().into_owned())
+    let common = start
+        .ancestors()
+        .find_map(git_dir_at)
+        .and_then(common_dir)?;
+    if common.file_name()? == ".git" {
+        Some(common.parent()?.file_name()?.to_string_lossy().into_owned())
     } else {
-        let name = path.file_name()?.to_string_lossy();
+        let name = common.file_name()?.to_string_lossy();
         Some(name.strip_suffix(".git").unwrap_or(&name).to_owned())
     }
+}
+
+/// Text of a small regular file (following symlinks); never opens a FIFO or device.
+fn pointer_file(path: &Path) -> Option<String> {
+    if !fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let mut text = String::new();
+    fs::File::open(path)
+        .ok()?
+        .take(POINTER_BYTES + 1)
+        .read_to_string(&mut text)
+        .ok()?;
+    (text.len() as u64 <= POINTER_BYTES).then_some(text)
+}
+
+/// Whether `path` looks like a git directory: a `HEAD` file and either its own
+/// object store or a `commondir` pointer (a linked worktree's git directory).
+fn is_git_dir(path: &Path) -> bool {
+    fs::metadata(path.join("HEAD")).is_ok_and(|m| m.is_file())
+        && (fs::metadata(path.join("commondir")).is_ok_and(|m| m.is_file())
+            || (path.join("objects").is_dir() && path.join("refs").is_dir()))
+}
+
+/// The git directory that `dir` belongs to directly: its `.git` directory, the
+/// target of its `.git` file, or `dir` itself when it is a git directory.
+fn git_dir_at(dir: &Path) -> Option<PathBuf> {
+    let dotgit = dir.join(".git");
+    match fs::metadata(&dotgit) {
+        Ok(meta) if meta.is_dir() => is_git_dir(&dotgit).then_some(dotgit),
+        Ok(meta) if meta.is_file() => {
+            let text = pointer_file(&dotgit)?;
+            let target = text.lines().next()?.strip_prefix("gitdir:")?.trim();
+            let gitdir = dir.join(target);
+            is_git_dir(&gitdir).then_some(gitdir)
+        }
+        _ => is_git_dir(dir).then(|| dir.to_path_buf()),
+    }
+}
+
+/// The common git directory of `gitdir`, resolved like `--path-format=absolute`.
+fn common_dir(gitdir: PathBuf) -> Option<PathBuf> {
+    let common = match pointer_file(&gitdir.join("commondir")) {
+        Some(text) => gitdir.join(text.lines().next()?.trim()),
+        None => gitdir,
+    };
+    fs::canonicalize(common).ok()
+}
+
+/// The overview page as it is on disk now, or the category that keeps it hidden.
+///
+/// The file must be a regular file of at most [`OVERVIEW_BYTES`]. The scan covers the
+/// text as written (what the index scans), the body joined into one line (a phrase
+/// split across lines), the decoded frontmatter values, and a `summary:` that
+/// decodes into blocked text.
+fn read_overview(path: &Path, rel: &str) -> std::result::Result<pages::Page, String> {
+    let meta = fs::symlink_metadata(path).map_err(|_| "unreadable".to_owned())?;
+    if !meta.is_file() {
+        return Err("not a regular file".into());
+    }
+    let mut bytes = vec![];
+    fs::File::open(path)
+        .and_then(|file| file.take(OVERVIEW_BYTES + 1).read_to_end(&mut bytes))
+        .map_err(|_| "unreadable".to_owned())?;
+    if bytes.len() as u64 > OVERVIEW_BYTES {
+        return Err("too large".into());
+    }
+    let raw = String::from_utf8_lossy(&bytes)
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
+    let page = pages::parse(&raw, rel);
+    let metadata = [page.title.as_str(), &page.status, &page.project, &page.tags].join("\n");
+    for text in [
+        raw.as_str(),
+        &pages::one_line(&page.body),
+        &metadata,
+        &pages::one_line(&metadata),
+    ] {
+        if let Some(finding) = crate::scan::scan(text).first() {
+            return Err(finding.category.into());
+        }
+    }
+    if page.summary_blocked {
+        let category = page
+            .problems
+            .iter()
+            .find_map(|p| p.split_once("the scanner blocks: "))
+            .and_then(|(_, rest)| rest.split_once(':'))
+            .map_or("summary", |(category, _)| category);
+        return Err(category.to_owned());
+    }
+    Ok(page)
 }
 
 pub fn number(n: usize) -> String {
@@ -199,7 +308,14 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
             session: v["session_id"].as_str(),
             cwd: v["cwd"].as_str(),
         });
-    let text = render(root, db, args, Path::new("."), hook)?;
+    // Resolve the project from the payload's cwd, as Antigravity does: the hook
+    // process may start in another directory than the session it serves.
+    let cwd = hook
+        .as_ref()
+        .and_then(|hook| hook.cwd)
+        .filter(|cwd| !cwd.is_empty())
+        .map_or(Path::new("."), Path::new);
+    let text = render(root, db, args, cwd, hook)?;
     print!("{}", args.harness.context("SessionStart", &text));
     Ok(())
 }
@@ -220,9 +336,13 @@ pub(crate) fn render(
     );
     let project = current_project(cwd);
     let overview = format!("pages/projects/{}.md", project.as_deref().unwrap_or("None"));
+    // The project is a directory name and the overview path derives from it: both
+    // are shown only as cleaned identifiers, never verbatim.
+    let shown_overview = clean_identifier(&overview);
     let mut queries: Vec<(&str, String, String, Vec<Value>)> = vec![];
     if let Some(project) = &project {
-        pinned += &format!("Current project: {project}\n");
+        let shown_project = clean_identifier(project);
+        pinned += &format!("Current project: {shown_project}\n");
         let row = db
             .query_row(
                 &format!("select {COLUMNS} {JOIN} where fts.path = ?"),
@@ -232,37 +352,46 @@ pub(crate) fn render(
             .optional()?;
         if let Some(row) = row {
             injected.push(overview.clone());
-            if !row.blocked.is_empty() {
-                pinned += &format!("\n{}\n", row.blocked_line(&overview));
+            // The index may predate the bytes on disk (an edit that kept size and
+            // mtime, or a write after the refresh): scan what is read now.
+            let current = if row.blocked.is_empty() {
+                read_overview(&root.join(&overview), &overview)
             } else {
-                let page = pages::parse(&pages::read(&root.join(&overview))?, &overview);
-                let (shown, remaining) = cap(page.body.trim(), args.overview_budget);
-                pinned += &format!(
-                    "\nProject overview ({overview}) [{}/{} chars]\n{shown}\n",
-                    number(shown.chars().count()),
-                    number(args.overview_budget)
-                );
-                if remaining > 0 {
+                Err(row.blocked.clone())
+            };
+            match current {
+                Err(category) => {
+                    pinned += &format!("\n{shown_overview}: [BLOCKED: {category}; fix the page]\n");
+                }
+                Ok(page) => {
+                    let (shown, remaining) = cap(page.body.trim(), args.overview_budget);
                     pinned += &format!(
-                        "[... {} more chars in the page; shorten the page to fit]\n",
-                        number(remaining)
+                        "\nProject overview ({shown_overview}) [{}/{} chars]\n{shown}\n",
+                        number(shown.chars().count()),
+                        number(args.overview_budget)
                     );
+                    if remaining > 0 {
+                        pinned += &format!(
+                            "[... {} more chars in the page; shorten the page to fit]\n",
+                            number(remaining)
+                        );
+                    }
                 }
             }
         } else {
             pinned += &format!(
-                "No overview page for {project} yet; write {overview} once you have explored the project.\n"
+                "No overview page for {shown_project} yet; write {shown_overview} once you have explored the project.\n"
             );
         }
         queries.push((
             "follow-ups",
-            format!("Open follow-ups for {project}:"),
+            format!("Open follow-ups for {shown_project}:"),
             "fts.type = 'followups' and fts.status = 'open' and fts.project = ?".into(),
             vec![project.clone().into()],
         ));
         queries.push((
             "knowledge",
-            format!("Knowledge pages for {project}:"),
+            format!("Knowledge pages for {shown_project}:"),
             "fts.type = 'knowledge' and fts.project = ?".into(),
             vec![project.clone().into()],
         ));
@@ -301,8 +430,9 @@ pub(crate) fn render(
                     .or_insert_with(Vec::new)
                     .push(row.path.clone());
             }
+            let path = clean_identifier(&row.path);
             if !row.blocked.is_empty() {
-                items.push(row.blocked_line(&row.path));
+                items.push(row.blocked_line(&path));
             } else {
                 let mut extra = String::new();
                 for x in [
@@ -314,16 +444,15 @@ pub(crate) fn render(
                     },
                 ] {
                     if !x.is_empty() {
-                        extra += &format!(", {x}");
+                        extra += &format!(", {}", clean_identifier(x));
                     }
                 }
                 if row.backlinks > 0 && matches!(row.kind.as_str(), "knowledge" | "followups") {
                     extra += &format!(", linked by {}", row.backlinks);
                 }
                 items.push(format!(
-                    "- {}: {} ({}, {}{extra})",
-                    row.path,
-                    row.title,
+                    "- {path}: {} ({}, {}{extra})",
+                    clean_identifier(&row.title),
                     row.kind,
                     search::updated(row.mtime)
                 ));
@@ -339,7 +468,7 @@ pub(crate) fn render(
     let items = search::tag_counts(db)?
         .into_iter()
         .take(30)
-        .map(|(tag, n)| format!("{tag} ({n})"))
+        .map(|(tag, n)| format!("{} ({n})", clean_identifier(&tag)))
         .collect::<Vec<_>>();
     sections.push(Section {
         name: "tags",
@@ -391,6 +520,137 @@ pub(crate) fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
+
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultBranch=main",
+            ])
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{args:?}: {out:?}");
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    }
+
+    /// The project name the previous implementation derived from git itself.
+    fn from_git(dir: &Path) -> Option<String> {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let common = PathBuf::from(String::from_utf8(out.stdout).ok()?.trim());
+        if common.file_name()? == ".git" {
+            Some(common.parent()?.file_name()?.to_string_lossy().into_owned())
+        } else {
+            let name = common.file_name()?.to_string_lossy();
+            Some(name.strip_suffix(".git").unwrap_or(&name).to_owned())
+        }
+    }
+
+    #[test]
+    fn current_project_matches_git_without_running_it() {
+        let root = Scratch(std::env::temp_dir().join(format!(
+            "cw-project-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        )));
+        let base = &root.0;
+        fs::create_dir_all(base.join("main/sub/deeper")).unwrap();
+        fs::create_dir_all(base.join("plain")).unwrap();
+        let main = base.join("main");
+        git(&main, &["init", "-q"]);
+        fs::write(main.join("file"), "x").unwrap();
+        git(&main, &["add", "file"]);
+        git(&main, &["commit", "-qm", "init"]);
+        let worktree = base.join("worktrees/feature-x");
+        git(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature-x",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        fs::create_dir_all(worktree.join("nested")).unwrap();
+        git(
+            base,
+            &["clone", "-q", "--bare", main.to_str().unwrap(), "bare.git"],
+        );
+        let bare_worktree = base.join("bare-wt");
+        git(
+            &base.join("bare.git"),
+            &["worktree", "add", "-q", bare_worktree.to_str().unwrap()],
+        );
+        std::os::unix::fs::symlink(&main, base.join("alias")).unwrap();
+        let cases = [
+            (main.clone(), Some("main")),
+            (main.join("sub/deeper"), Some("main")),
+            (main.join(".git"), Some("main")),
+            (main.join(".git/objects"), Some("main")),
+            (worktree.clone(), Some("main")),
+            (worktree.join("nested"), Some("main")),
+            (base.join("bare.git"), Some("bare")),
+            (bare_worktree.clone(), Some("bare")),
+            (base.join("alias/sub"), Some("main")),
+            (base.join("plain"), None),
+            (base.join("missing"), None),
+            (main.join("file"), None),
+        ];
+        for (dir, expected) in cases {
+            assert_eq!(current_project(&dir).as_deref(), expected, "{dir:?}");
+            assert_eq!(current_project(&dir), from_git(&dir), "{dir:?}");
+        }
+        // A FIFO in place of a `.git` file is skipped, never opened.
+        let fifo_dir = base.join("plain/fifo");
+        fs::create_dir(&fifo_dir).unwrap();
+        assert!(
+            Command::new("mkfifo")
+                .arg(fifo_dir.join(".git"))
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert_eq!(current_project(&fifo_dir), None);
+        // A broken `gitdir:` pointer is not a repository either.
+        let broken = base.join("plain/broken");
+        fs::create_dir(&broken).unwrap();
+        fs::write(broken.join(".git"), "gitdir: /nonexistent/x\n").unwrap();
+        assert_eq!(current_project(&broken), None);
+        assert_eq!(from_git(&broken), None);
+    }
+
     #[test]
     fn unicode_and_line_boundaries() {
         assert_eq!(cap("abc\ndefgh", 7), ("abc".into(), 6));

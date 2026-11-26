@@ -1,7 +1,7 @@
 use crate::{
     context,
     index::{COLUMNS, JOIN, Row},
-    pages, semantic, usage,
+    semantic, usage,
 };
 use anyhow::Result;
 use clap::Args as ClapArgs;
@@ -11,8 +11,16 @@ use std::{
     collections::HashSet,
     io::{self, Read},
     path::{Path, PathBuf},
-    time::Duration,
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
 };
+
+/// Most prompt bytes read from stdin.
+const MAX_INPUT: usize = 16 * 1024;
+/// Longest wait for stdin. A caller that leaves the pipe open must not hold the
+/// wiki lock: `--timeout-ms` bounds only the daemon request that follows.
+const STDIN_WAIT: Duration = Duration::from_millis(200);
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -50,7 +58,7 @@ fn select(root: &Path, db: &Connection, hits: Vec<semantic::Hit>, n: u8) -> Resu
     let mut selected = vec![];
     let mut seen = HashSet::new();
     for hit in hits {
-        let Some(rel) = pages::link_path(&hit.path) else {
+        let Some(semantic::Resolved { rel, section }) = semantic::resolve(db, hit)? else {
             continue;
         };
         if !seen.insert(rel.clone()) {
@@ -69,7 +77,7 @@ fn select(root: &Path, db: &Connection, hits: Vec<semantic::Hit>, n: u8) -> Resu
                 rel,
                 title: row.title,
                 kind: row.kind,
-                section: hit.section.map(Into::into),
+                section: section.map(Into::into),
             });
             if selected.len() == usize::from(n) {
                 break;
@@ -110,18 +118,59 @@ fn report(root: &Path, db: &Connection, args: &Args, hits: Vec<semantic::Hit>) -
     Ok(Report { pages, overview })
 }
 
-fn read_prompt(input: impl Read) -> io::Result<String> {
-    let mut bytes = vec![];
-    input.take(16 * 1024).read_to_end(&mut bytes)?;
-    // A byte cap may split a UTF-8 character; keep only the valid prefix in that case.
-    let end = std::str::from_utf8(&bytes)
+/// The valid UTF-8 prefix of `bytes`: a byte cap or a deadline may split a character.
+fn valid_prefix(bytes: &[u8]) -> String {
+    let end = std::str::from_utf8(bytes)
         .err()
         .map_or(bytes.len(), |e| e.valid_up_to());
-    Ok(String::from_utf8_lossy(&bytes[..end]).into_owned())
+    String::from_utf8_lossy(&bytes[..end]).into_owned()
+}
+
+#[cfg(test)]
+fn read_prompt(input: impl Read) -> io::Result<String> {
+    let mut bytes = vec![];
+    input.take(MAX_INPUT as u64).read_to_end(&mut bytes)?;
+    Ok(valid_prefix(&bytes))
+}
+
+/// Reads at most [`MAX_INPUT`] bytes until EOF or `wait` passes, whichever comes
+/// first, and keeps what arrived by then. The reader thread may stay blocked on an
+/// open pipe; the process exits soon after, and nothing else reads that input.
+fn read_prompt_until(input: impl Read + Send + 'static, wait: Duration) -> String {
+    let deadline = Instant::now() + wait;
+    let (send, receive) = mpsc::channel::<Vec<u8>>();
+    let started = thread::Builder::new()
+        .name("wiki-related-stdin".into())
+        .spawn(move || {
+            let mut input = input.take(MAX_INPUT as u64);
+            let mut buffer = [0; 4096];
+            loop {
+                match input.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if send.send(buffer[..n].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                    Err(_) => break,
+                }
+            }
+        });
+    if started.is_err() {
+        return String::new();
+    }
+    let mut bytes = vec![];
+    // Ends when the reader finishes (EOF, cap or error) or at the deadline.
+    while let Ok(chunk) = receive.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        bytes.extend_from_slice(&chunk);
+    }
+    bytes.truncate(MAX_INPUT);
+    valid_prefix(&bytes)
 }
 
 pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
-    let prompt = read_prompt(io::stdin().lock())?;
+    let prompt = read_prompt_until(io::stdin(), STDIN_WAIT);
     let hits = semantic::related_with_timeout(&prompt, Duration::from_millis(args.timeout_ms));
     let report = report(root, db, args, hits)?;
     if args.json {
@@ -169,7 +218,7 @@ mod tests {
         .into_iter()
         .map(|path| semantic::Hit {
             path: path.into(),
-            section: Some(("Details".into(), 1, 9)),
+            section: Some(("Details".into(), 5, 6)),
         })
         .collect()
     }
@@ -187,7 +236,7 @@ mod tests {
         ] {
             wiki.page(
                 &format!("pages/{name}.md"),
-                "---\ntitle: Test\ncreated: 2020-01-01\n---\nbody",
+                "---\ntitle: Test\ncreated: 2020-01-01\n---\n# Details\nbody\n",
             )?;
         }
         wiki.index.execute(
@@ -201,9 +250,23 @@ mod tests {
                 serde_json::to_value(&pages[0])?,
                 json!({
                     "path": wiki.root.join("pages/knowledge/a.md"), "rel": "pages/knowledge/a.md",
-                    "title": "Test", "type": "knowledge", "section": {"heading": "Details", "start": 1, "end": 9}
+                    "title": "Test", "type": "knowledge", "section": {"heading": "Details", "start": 5, "end": 6}
                 })
             );
+        }
+        // A section the current page no longer has is dropped; the page stays.
+        for stale in [("Details", 1, 9), ("Removed", 5, 6), ("Details", 900, 999)] {
+            let pages = select(
+                &wiki.root,
+                &wiki.index,
+                vec![semantic::Hit {
+                    path: "knowledge/a".into(),
+                    section: Some((stale.0.into(), stale.1, stale.2)),
+                }],
+                1,
+            )?;
+            assert_eq!(pages.len(), 1);
+            assert!(serde_json::to_value(&pages[0])?["section"].is_null());
         }
         let pages = select(
             &wiki.root,
@@ -333,6 +396,44 @@ mod tests {
         assert_eq!(args.n, 3);
         assert_eq!(args.timeout_ms, 1500);
         assert_eq!(args.cwd, Path::new("."));
+    }
+
+    #[test]
+    fn open_pipe_returns_partial_input_by_the_deadline() {
+        use std::{io::Write, os::unix::net::UnixStream};
+        let (reader, mut writer) = UnixStream::pair().unwrap();
+        // A partial UTF-8 character at the end is dropped, the rest kept.
+        writer.write_all("cache 한".as_bytes()).unwrap();
+        writer.write_all(&"글".as_bytes()[..2]).unwrap();
+        let start = Instant::now();
+        let prompt = read_prompt_until(reader, Duration::from_millis(50));
+        let elapsed = start.elapsed();
+        assert_eq!(prompt, "cache 한");
+        assert!(elapsed >= Duration::from_millis(50), "{elapsed:?}");
+        assert!(elapsed < Duration::from_millis(300), "{elapsed:?}");
+        drop(writer);
+
+        // Silence until the deadline gives empty input.
+        let (reader, writer) = UnixStream::pair().unwrap();
+        let start = Instant::now();
+        assert_eq!(read_prompt_until(reader, Duration::from_millis(30)), "");
+        assert!(start.elapsed() < Duration::from_millis(300));
+        drop(writer);
+
+        // A closed pipe returns at EOF, without waiting for the deadline.
+        let start = Instant::now();
+        assert_eq!(
+            read_prompt_until(io::Cursor::new(b"closed".to_vec()), Duration::from_secs(5)),
+            "closed"
+        );
+        assert!(start.elapsed() < Duration::from_secs(1));
+
+        // The byte cap still applies, without splitting a character.
+        let text = format!("{}한more", "a".repeat(MAX_INPUT - 1));
+        assert_eq!(
+            read_prompt_until(io::Cursor::new(text.into_bytes()), Duration::from_secs(5)),
+            "a".repeat(MAX_INPUT - 1)
+        );
     }
 
     #[test]

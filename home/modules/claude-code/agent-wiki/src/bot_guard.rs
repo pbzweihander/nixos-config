@@ -1,6 +1,6 @@
 //! Bot-only turn anchors and advisory worktree cleanup. Never removes anything.
 //! All scan/state I/O runs behind an 80 ms receive deadline; busy state fails open.
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::{
     fs,
     io::{BufRead, BufReader, ErrorKind, Read},
@@ -19,8 +19,16 @@ const ANCHOR: &str = "agent-wiki witch-anchor: 최종 응답(핸드오프 카드
 const PREFIX: &str = "agent-wiki witch-cleanup: 정리 대상 임시 워크트리가 남아 있습니다: ";
 const SUFFIX: &str =
     " 작업이 끝났다면 orca worktree rm --worktree path:<path> --delete-branch 로 정리하세요.";
-const SCAN_BUDGET: Duration = Duration::from_millis(70);
+/// Time for visiting worktrees. The rest of [`WAIT_BUDGET`] is left for recording
+/// where the scan stopped (one small SQLite transaction).
+const SCAN_BUDGET: Duration = Duration::from_millis(60);
 const WAIT_BUDGET: Duration = Duration::from_millis(80);
+/// Seconds between ordinary scans for one bot.
+const THROTTLE_SECS: i64 = 900;
+/// Seconds before retrying a scan that ran out of time.
+const RETRY_SECS: i64 = 60;
+/// Most leftovers named in one advisory.
+const MAX_LEFT_WORKTREES: usize = 5;
 
 fn bot_key(cwd: Option<&str>) -> Option<String> {
     let bot_home = std::env::var_os("ORCA_BOT_HOME").filter(|s| !s.is_empty());
@@ -95,10 +103,12 @@ fn cleanup(root: &Path, key: String, prompt: &str, budget: usize) -> Option<Stri
     let root = root.to_owned();
     let deadline = Instant::now() + SCAN_BUDGET;
     bounded(move || {
-        claim(&root, &key, bypass).ok().filter(|claimed| *claimed)?;
-        let leftovers = scan(&workspaces, deadline);
+        let claim = claim(&root, &key, bypass).ok().flatten()?;
+        let scan = scan(&workspaces, claim.cursor.as_deref(), deadline);
+        // Best effort: a busy database loses only the cursor or the shorter retry.
+        let _ = claim.finish(&key, &scan);
         let mut entries = vec![];
-        for entry in leftovers {
+        for entry in scan.found {
             let mut candidate = entries.clone();
             candidate.push(entry);
             if format!("{PREFIX}{}{SUFFIX}", candidate.join("; "))
@@ -131,22 +141,90 @@ fn bounded(work: impl FnOnce() -> Option<String> + Send + 'static) -> Option<Str
         .flatten()
 }
 
-fn claim(root: &Path, key: &str, bypass: bool) -> rusqlite::Result<bool> {
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_secs()).ok())
+        .unwrap_or_default()
+}
+
+/// A scan this process won the right to run, with where the last one stopped.
+struct Claim {
+    db: Connection,
+    cursor: Option<String>,
+}
+
+impl Claim {
+    /// Records the scan's end in at most one transaction, and none at all for the
+    /// common scan that visits every worktree in time without a saved cursor.
+    ///
+    /// A scan cut off by the deadline moves the throttle stamp back so the next
+    /// prompt after [`RETRY_SECS`] retries, instead of waiting the full
+    /// [`THROTTLE_SECS`]. A scan that did not visit every worktree remembers where
+    /// it stopped, so the next one continues there instead of revisiting the same
+    /// early entries. A failed write (busy database) only loses these refinements.
+    fn finish(&self, key: &str, scan: &Scan) -> rusqlite::Result<()> {
+        let cursor = match (&scan.last, scan.finished) {
+            (Some(last), false) => Some(Some(last)),
+            (_, true) if self.cursor.is_some() => Some(None),
+            _ => None,
+        };
+        if !scan.timed_out && cursor.is_none() {
+            return Ok(());
+        }
+        let tx = self.db.unchecked_transaction()?;
+        if scan.timed_out {
+            tx.execute(
+                "update bot_guard_state set last_worktree_check=? where consumer_key=?",
+                params![now_secs() - THROTTLE_SECS + RETRY_SECS, key],
+            )?;
+        }
+        match cursor {
+            Some(Some(last)) => {
+                tx.execute(
+                    "insert into bot_guard_cursor values (?,?) on conflict(consumer_key) do update set after=excluded.after",
+                    params![key, last],
+                )?;
+            }
+            Some(None) => {
+                tx.execute("delete from bot_guard_cursor where consumer_key=?", [key])?;
+            }
+            None => {}
+        }
+        tx.commit()
+    }
+}
+
+/// Claims this bot's scan, or `None` while another scan is throttled or in progress.
+fn claim(root: &Path, key: &str, bypass: bool) -> rusqlite::Result<Option<Claim>> {
     // Open directly: usage::open initializes unrelated transcript schemas and
     // permits a 50 ms busy wait per statement. This table is independently owned.
     let db = Connection::open(root.join("usage.sqlite"))?;
     db.busy_timeout(Duration::ZERO)?;
-    db.execute_batch("create table if not exists bot_guard_state(consumer_key text primary key, last_worktree_check integer not null);")?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
+    db.execute_batch(
+        "create table if not exists bot_guard_state(consumer_key text primary key, last_worktree_check integer not null);
+        create table if not exists bot_guard_cursor(consumer_key text primary key, after text not null);",
+    )?;
+    let now = now_secs();
     // One atomic statement claims the scan across concurrent sessions. Bypass
     // also updates the timestamp, so the next ordinary prompt stays throttled.
-    Ok(db.execute(
-        "insert into bot_guard_state values (?,?) on conflict(consumer_key) do update set last_worktree_check=excluded.last_worktree_check where ? or bot_guard_state.last_worktree_check <= ?-900 or bot_guard_state.last_worktree_check > ?",
-        params![key, now, bypass, now, now],
-    )? != 0)
+    // A scan that then runs out of time shortens this (Claim::finish).
+    let claimed = db.execute(
+        "insert into bot_guard_state values (?1,?2) on conflict(consumer_key) do update set last_worktree_check=excluded.last_worktree_check where ?3 or bot_guard_state.last_worktree_check <= ?2-?4 or bot_guard_state.last_worktree_check > ?2",
+        params![key, now, bypass, THROTTLE_SECS],
+    )? != 0;
+    if !claimed {
+        return Ok(None);
+    }
+    let cursor = db
+        .query_row(
+            "select after from bot_guard_cursor where consumer_key=?",
+            [key],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(Some(Claim { db, cursor }))
 }
 
 fn regular(path: &Path) -> Option<fs::File> {
@@ -386,27 +464,43 @@ fn candidate(path: &Path, deadline: Instant) -> Option<String> {
         return None;
     }
     let path = path.to_str()?;
-    // A filesystem name must never inject a second hook line or terminal control.
-    if path.chars().chain(head_ref.chars()).any(char::is_control) {
+    // A filesystem or branch name must never inject a hook line, terminal or bidi
+    // control, credential or instruction-like text: such a worktree is not named at
+    // all, since a rewritten path would no longer identify it for removal.
+    if !crate::bulletin::identifier_is_clean(path)
+        || !crate::bulletin::identifier_is_clean(head_ref)
+    {
         return None;
     }
     Some(format!("{path} ({head_ref}, {reason})"))
 }
 
-fn scan(root: &Path, deadline: Instant) -> Vec<String> {
-    let mut found = vec![];
+struct Scan {
+    found: Vec<String>,
+    /// Every candidate worktree was visited.
+    finished: bool,
+    /// The deadline ended the scan (or its listing) before it finished.
+    timed_out: bool,
+    /// Path of the last candidate visited in full.
+    last: Option<String>,
+}
+
+/// Worktree directories under `root` (`<repo>/<worktree>`), sorted by path, or
+/// `None` when the deadline passes while listing them.
+fn worktrees(root: &Path, deadline: Instant) -> Option<Vec<PathBuf>> {
+    let mut paths = vec![];
     if !directory(root) {
-        return found;
+        return Some(paths);
     }
     let Ok(root) = root.canonicalize() else {
-        return found;
+        return Some(paths);
     };
     let Ok(repos) = fs::read_dir(root) else {
-        return found;
+        return Some(paths);
     };
     for repo in repos.take(256).flatten() {
         if Instant::now() >= deadline {
-            break;
+            return None;
         }
         if !repo.file_type().is_ok_and(|kind| kind.is_dir()) {
             continue;
@@ -414,18 +508,61 @@ fn scan(root: &Path, deadline: Instant) -> Vec<String> {
         let Ok(children) = fs::read_dir(repo.path()) else {
             continue;
         };
-        for child in children.take(1024).flatten() {
-            if Instant::now() >= deadline || found.len() == 5 {
-                return found;
-            }
-            if child.file_type().is_ok_and(|kind| kind.is_dir())
-                && let Some(entry) = candidate(&child.path(), deadline)
-            {
-                found.push(entry);
-            }
-        }
+        paths.extend(
+            children
+                .take(1024)
+                .flatten()
+                .filter(|child| child.file_type().is_ok_and(|kind| kind.is_dir()))
+                .map(|child| child.path()),
+        );
     }
-    found
+    paths.sort();
+    Some(paths)
+}
+
+/// Visits worktrees in path order, starting after `cursor` (where the previous
+/// scan stopped) and wrapping around, until all are visited, the deadline passes
+/// or [`MAX_LEFT_WORKTREES`] leftovers are found. Starting after the cursor keeps
+/// slow or persistently reported early entries from hiding later ones forever.
+fn scan(root: &Path, cursor: Option<&str>, deadline: Instant) -> Scan {
+    let mut scan = Scan {
+        found: vec![],
+        finished: false,
+        timed_out: false,
+        last: None,
+    };
+    let Some(paths) = worktrees(root, deadline) else {
+        scan.timed_out = true;
+        return scan;
+    };
+    let start = cursor.map_or(0, |cursor| {
+        paths
+            .iter()
+            .position(|path| path.as_path() > Path::new(cursor))
+            .unwrap_or(0)
+    });
+    let mut visited = 0;
+    for path in paths[start..].iter().chain(&paths[..start]) {
+        if Instant::now() >= deadline {
+            scan.timed_out = true;
+            break;
+        }
+        if scan.found.len() == MAX_LEFT_WORKTREES {
+            break;
+        }
+        let entry = candidate(path, deadline);
+        // A leftover is only reported after all its checks ran; no leftover past the
+        // deadline may mean a check was cut off, so that worktree was not visited.
+        if entry.is_none() && Instant::now() >= deadline {
+            scan.timed_out = true;
+            break;
+        }
+        visited += 1;
+        scan.last = Some(path.to_string_lossy().into_owned());
+        scan.found.extend(entry);
+    }
+    scan.finished = visited == paths.len();
+    scan
 }
 
 #[cfg(test)]
