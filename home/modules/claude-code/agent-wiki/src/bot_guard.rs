@@ -3,9 +3,13 @@
 use rusqlite::{Connection, params};
 use std::{
     fs,
-    io::{BufRead, BufReader, Read},
+    io::{BufRead, BufReader, ErrorKind, Read},
+    os::{
+        fd::OwnedFd,
+        unix::{net::UnixStream, process::CommandExt},
+    },
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::mpsc,
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -219,11 +223,35 @@ fn reflog_entries(gitdir: &Path, deadline: Instant) -> Option<usize> {
     Some(count)
 }
 
+/// Own the whole subprocess group, including helpers which inherit stdout after
+/// git exits. Every return path signals the group and reaps the direct child.
+struct GitProcess(Child);
+
+impl Drop for GitProcess {
+    fn drop(&mut self) {
+        unsafe extern "C" {
+            fn kill(pid: i32, signal: i32) -> i32;
+        }
+        // SAFETY: process_group(0) makes the spawned child's positive POSIX PID
+        // its isolated PGID. Its negative value addresses only that group, never
+        // our own. SIGKILL is 9 on Unix; no borrowed memory crosses this call.
+        unsafe {
+            kill(-(self.0.id() as i32), 9);
+        }
+        let _ = self.0.wait();
+    }
+}
+
 fn git_ok(path: &Path, args: &[&str], empty_output: bool, deadline: Instant) -> Option<bool> {
     let deadline = deadline.min(Instant::now() + Duration::from_millis(20));
     if Instant::now() >= deadline {
         return None;
     }
+    // A socket pair provides std-only nonblocking reads without platform-specific
+    // fcntl constants or a new dependency. Descendants may inherit the writer;
+    // neither the polling loop nor the final read ever waits for EOF.
+    let (mut stdout, writer) = UnixStream::pair().ok()?;
+    stdout.set_nonblocking(true).ok()?;
     let mut command = Command::new("git");
     // Do not inherit a caller's repository, index, object replacement or config
     // overrides. Disable optional index writes, fsmonitor and lazy network fetches.
@@ -232,42 +260,55 @@ fn git_ok(path: &Path, args: &[&str], empty_output: bool, deadline: Instant) -> 
             command.env_remove(key);
         }
     }
-    let mut child = command
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("GIT_NO_LAZY_FETCH", "1")
-        .env("GIT_NO_REPLACE_OBJECTS", "1")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .arg("--no-optional-locks")
-        .arg("-C")
-        .arg(path)
-        .args([
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "core.untrackedCache=false",
-        ])
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+    let mut child = GitProcess(
+        command
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .env("GIT_NO_LAZY_FETCH", "1")
+            .env("GIT_NO_REPLACE_OBJECTS", "1")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .arg("--no-optional-locks")
+            .arg("-C")
+            .arg(path)
+            .args([
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.untrackedCache=false",
+            ])
+            .args(args)
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(OwnedFd::from(writer)))
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?,
+    );
+    // Command retains its stdio configuration: close the parent's writer too.
+    drop(command);
     loop {
-        match child.try_wait() {
+        let mut byte = [0];
+        if empty_output {
+            match stdout.read(&mut byte) {
+                Ok(0) => {}
+                Ok(_) => return Some(false),
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {}
+                Err(_) => return None,
+            }
+        }
+        match child.0.try_wait() {
             Ok(Some(status)) => {
+                // Even a successful git may have left helpers behind. Kill them
+                // before inspecting the remaining output, which is nonblocking.
+                drop(child);
                 if !status.success() {
                     return Some(false);
                 }
-                let mut byte = [0];
-                return Some(!empty_output || child.stdout.take()?.read(&mut byte).ok()? == 0);
+                return Some(!empty_output || stdout.read(&mut byte).ok()? == 0);
             }
             Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(1)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
+            _ => return None,
         }
     }
 }
@@ -318,9 +359,9 @@ fn candidate(path: &Path, deadline: Instant) -> Option<String> {
             > Duration::from_secs(7200);
     let reason = if stale {
         "stale review >2h".to_owned()
-    } else if (head == main && entries > 1)
-        || (head != main
-            && git_ok(
+    } else if entries > 1
+        && (head == main
+            || git_ok(
                 path,
                 &["merge-base", "--is-ancestor", &head, &main],
                 false,

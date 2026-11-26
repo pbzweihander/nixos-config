@@ -241,6 +241,8 @@ fn owner_handoff_worker_done_question_and_status_scope() {
         "──── From: bot-2 (handoff) ────\n수행",
         "──── From: worker (worker_done) ────\n완료",
         "──── From: bot-1 (question) ────\n질문",
+        "──── From: TERM_WORKER (term_worker) [HIGH] (handoff) ────\n수행",
+        "──── From: TERM_WORKER (term_worker) [HIGH] (worker_done) ────\n완료",
     ] {
         let text = f.prompt(prompt);
         assert_eq!(text.matches(ANCHOR).count(), 1, "{text}");
@@ -249,6 +251,10 @@ fn owner_handoff_worker_done_question_and_status_scope() {
     }
     assert!(
         !f.prompt("──── From: bot-2 (status) ────\n참고")
+            .contains(ANCHOR)
+    );
+    assert!(
+        !f.prompt("──── From: TERM_WORKER (term_worker) [HIGH] (escalation) ────\n참고")
             .contains(ANCHOR)
     );
 }
@@ -295,6 +301,50 @@ fn fresh_single_line_and_real_git_creation_reset_are_not_leftovers() {
 }
 
 #[test]
+fn untouched_worktrees_stay_excluded_after_unrelated_main_advance() {
+    let f = Fixture::new();
+    f.child("fresh");
+    f.child("review-fresh");
+    f.commit(&f.repo());
+    let text = f.prompt("merged");
+    assert!(!text.contains(CLEANUP), "{text}");
+}
+
+#[test]
+fn non_fast_forward_merge_with_post_creation_work_is_still_flagged() {
+    let f = Fixture::new();
+    let child = f.child("feature-merge");
+    f.commit(&child);
+    f.git(
+        &f.repo(),
+        &[
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "unrelated main advance",
+        ],
+    );
+    f.git(
+        &f.repo(),
+        &[
+            "merge",
+            "--no-ff",
+            "-q",
+            "-m",
+            "merge feature",
+            "feature-merge",
+        ],
+    );
+    assert_ne!(
+        f.git(&child, &["rev-parse", "HEAD"]),
+        f.git(&f.repo(), &["rev-parse", "HEAD"])
+    );
+    let text = f.prompt("merged");
+    assert!(text.contains("feature-merge, merged into main"), "{text}");
+}
+
+#[test]
 fn fast_forwarded_and_ancestor_of_advanced_main_are_leftovers() {
     let f = Fixture::new();
     let child = f.merged("feature-done");
@@ -327,6 +377,31 @@ fn stale_review_uses_head_age_and_branch_or_directory_name() {
     let text = f.prompt("点検");
     assert!(text.contains("review-old, stale review >2h"), "{text}");
     assert!(!text.contains("review-new"), "{text}");
+    f.commit(&f.repo());
+    let text = f.prompt("merged");
+    assert!(text.contains("review-old, stale review >2h"), "{text}");
+    assert!(!text.contains("review-new"), "{text}");
+}
+
+#[test]
+fn inherited_git_repository_index_and_config_overrides_do_not_affect_scan() {
+    let f = Fixture::new();
+    f.merged("done");
+    f.prompt("초기화");
+    let foreign_git = f.root.join("foreign-git");
+    let foreign_index = f.root.join("foreign-index");
+    let text = f.run(
+        &["remind"],
+        Some(f.payload("UserPromptSubmit", "merged")),
+        &[
+            ("GIT_DIR", foreign_git.to_str().unwrap()),
+            ("GIT_INDEX_FILE", foreign_index.to_str().unwrap()),
+            ("GIT_CONFIG_COUNT", "invalid"),
+        ],
+    );
+    assert!(text.contains("done, merged into main"), "{text}");
+    assert!(!foreign_git.exists());
+    assert!(!foreign_index.exists());
 }
 
 #[test]
@@ -580,4 +655,84 @@ fn slow_git_is_killed_and_scan_returns_promptly() {
     assert!(!text.contains(CLEANUP));
     // Includes process startup, index creation and the unrelated reminder work.
     assert!(begin.elapsed() < Duration::from_millis(500));
+}
+
+struct DescendantPid(PathBuf);
+
+impl DescendantPid {
+    fn pid(&self) -> Option<u32> {
+        fs::read_to_string(&self.0).ok()?.trim().parse().ok()
+    }
+
+    fn assert_gone(&self) {
+        let pid = self.pid().expect("wrapper must start its grandchild");
+        let path = PathBuf::from(format!("/proc/{pid}"));
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while path.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!path.exists(), "grandchild {pid} survived hook exit");
+    }
+}
+
+impl Drop for DescendantPid {
+    fn drop(&mut self) {
+        // Test-owned PID only: ensure a regression never leaks the fixture sleep.
+        if let Some(pid) = self.pid()
+            && Path::new(&format!("/proc/{pid}")).exists()
+        {
+            let _ = Command::new("kill")
+                .args(["-KILL", &pid.to_string()])
+                .status();
+        }
+    }
+}
+
+fn check_git_descendant_lifetime(exit_immediately: bool, dirty: bool) {
+    let f = Fixture::new();
+    f.merged("done");
+    f.prompt("초기화");
+    let bin = f.root.join("bin");
+    fs::create_dir(&bin).unwrap();
+    let fake = bin.join("git");
+    let finish = if exit_immediately { "exit 0" } else { "wait" };
+    let output = if dirty { "printf ' M tracked\\n'" } else { ":" };
+    fs::write(&fake, format!("#!/bin/sh\nsleep 30 &\nprintf '%s\\n' \"$!\" > \"$AGENT_WIKI_TEST_PID\"\n{output}\n{finish}\n")).unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    let pid = DescendantPid(f.root.join("grandchild.pid"));
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let begin = Instant::now();
+    let text = f.run(
+        &["remind"],
+        Some(f.payload("UserPromptSubmit", "merged")),
+        &[
+            ("PATH", &path),
+            ("AGENT_WIKI_TEST_PID", pid.0.to_str().unwrap()),
+        ],
+    );
+    let elapsed = begin.elapsed();
+    assert!(
+        elapsed < Duration::from_millis(100),
+        "hook took {elapsed:?}"
+    );
+    assert!(text.contains(ANCHOR));
+    if !exit_immediately || dirty {
+        assert!(!text.contains(CLEANUP), "{text}");
+    }
+    pid.assert_gone();
+}
+
+#[test]
+fn timed_out_git_kills_its_sleeping_grandchild() {
+    check_git_descendant_lifetime(false, false);
+}
+
+#[test]
+fn exited_git_cannot_leave_grandchild_holding_stdout_open() {
+    check_git_descendant_lifetime(true, false);
+}
+
+#[test]
+fn dirty_git_output_is_detected_even_with_inherited_stdout() {
+    check_git_descendant_lifetime(true, true);
 }
