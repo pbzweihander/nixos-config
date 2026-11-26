@@ -187,10 +187,18 @@ pub(crate) struct HookContext<'a> {
 
 pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
     let input = hook_input();
-    let hook = input.as_ref().map(|v| HookContext {
-        session: v["session_id"].as_str(),
-        cwd: v["cwd"].as_str(),
-    });
+    let hook = input
+        .as_ref()
+        .filter(|v| {
+            v.is_object()
+                && v["hook_event_name"]
+                    .as_str()
+                    .is_none_or(|event| event == "SessionStart")
+        })
+        .map(|v| HookContext {
+            session: v["session_id"].as_str(),
+            cwd: v["cwd"].as_str(),
+        });
     let text = render(root, db, args, Path::new("."), hook)?;
     print!("{}", args.harness.context("SessionStart", &text));
     Ok(())
@@ -347,6 +355,17 @@ pub(crate) fn render(
             hook.cwd,
             hook.session.unwrap_or_default(),
             (args.budget / 5).min(crate::bulletin::MAX_CHARS),
+        )
+    {
+        pinned += &format!("\n{note}\n");
+    }
+    if let Some(hook) = &hook
+        && let Some(note) = crate::bot_guard::session_start(
+            root,
+            hook.cwd,
+            args.budget
+                .saturating_sub(pinned.chars().count() + 100)
+                .min(1500),
         )
     {
         pinned += &format!("\n{note}\n");

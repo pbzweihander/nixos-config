@@ -1,5 +1,6 @@
 //! Shared markdown wiki, indexed incrementally and serialized across sessions.
 mod antigravity;
+mod bot_guard;
 mod bulletin;
 mod codex_recall;
 mod compat;

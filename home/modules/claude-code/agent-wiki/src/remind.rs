@@ -129,6 +129,7 @@ pub(crate) fn messages(root: &Path, db: &Connection, args: &Args, hook: Hook) ->
     )
     .into_iter()
     .collect();
+    messages.extend(crate::bot_guard::prompt(root, &hook));
     if !selected.is_empty() {
         let root = root.canonicalize()?;
         let pages = selected
