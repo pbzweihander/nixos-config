@@ -30,10 +30,16 @@ let
             pkgs.util-linux
           ]
         } \
-        --set-default CLAUDE_WIKI_CODEX_SESSIONS_DIRS ${lib.escapeShellArg "${homeDir}/.codex/sessions:${homeDir}/.pcodex/sessions"} \
-        --set-default CLAUDE_WIKI_SESSIONS_DIRS ${
-          lib.escapeShellArg (lib.concatMapStringsSep ":" (dir: "${homeDir}/${dir}/projects") configDirs)
-        }
+        --run ${lib.escapeShellArg ''
+          if [ -z "''${AGENT_WIKI_CODEX_SESSIONS_DIRS+x}''${CLAUDE_WIKI_CODEX_SESSIONS_DIRS+x}" ]; then
+            export AGENT_WIKI_CODEX_SESSIONS_DIRS="''${CODEX_HOME:+$CODEX_HOME/sessions:}${homeDir}/.codex/sessions:${homeDir}/.pcodex/sessions"
+          fi
+          if [ -z "''${AGENT_WIKI_SESSIONS_DIRS+x}''${CLAUDE_WIKI_SESSIONS_DIRS+x}" ]; then
+            export AGENT_WIKI_SESSIONS_DIRS="''${CLAUDE_CONFIG_DIR:+$CLAUDE_CONFIG_DIR/projects:}${
+              lib.concatMapStringsSep ":" (dir: "${homeDir}/${dir}/projects") configDirs
+            }"
+          fi
+        ''}
       ln -s agent-wiki $out/bin/claude-wiki
     '';
     doInstallCheck = true;
@@ -346,15 +352,32 @@ in
       # runtime survive. Only exact legacy wiki hook commands are removed.
       claudeCodeSettings = lib.hm.dag.entryAfter [ "linkGeneration" ] ''
         for settings in ${lib.escapeShellArgs (map (dir: "${homeDir}/${dir}/settings.json") configDirs)}; do
-        mkdir -p "$(dirname "$settings")"
-        [ -e "$settings" ] || echo '{}' > "$settings"
-        if merged="$(${lib.getExe pkgs.jq} --slurpfile static ${
-          (pkgs.formats.json { }).generate "claude-code-settings.json" settings
-        } -f ${./merge-settings.jq} "$settings")"; then
-          printf '%s\n' "$merged" > "$settings"
-        else
-          warnEcho "$settings is not valid JSON; not merging Claude Code settings"
+        if [ -n "''${DRY_RUN_CMD:-}" ] || [ "''${DRY_RUN:-0}" = 1 ]; then
+          verboseEcho "Would merge $settings"
+          continue
         fi
+        [ ! -L "$settings" ] || { warnEcho "Refusing symlink $settings"; continue; }
+        dir="$(dirname "$settings")"
+        run mkdir -p "$dir"
+        (
+          set -o pipefail
+          tmp="$(mktemp "$dir/.settings.json.XXXXXX")" || exit 1
+          trap 'rm -f "$tmp"' EXIT
+          input="$settings"
+          if [ ! -e "$input" ]; then input=/dev/null; fi
+          before="$(sha256sum "$input")"
+          if ${lib.getExe pkgs.jq} -s 'if length == 0 then {} elif length == 1 and (.[0] | type) == "object" then .[0] else error("expected one settings object") end' "$input" |
+            ${lib.getExe pkgs.jq} --slurpfile static ${
+              (pkgs.formats.json { }).generate "claude-code-settings.json" settings
+            } -f ${./merge-settings.jq} > "$tmp" &&
+            [ -s "$tmp" ] && ${lib.getExe pkgs.jq} -e 'type == "object"' "$tmp" > /dev/null &&
+            [ ! -L "$settings" ] && { [ "$input" != /dev/null ] || [ ! -e "$settings" ]; } && [ "$before" = "$(sha256sum "$input")" ]; then
+            chmod 600 "$tmp"
+            run mv -f "$tmp" "$settings"
+          else
+            warnEcho "$settings changed or is invalid; not merging Claude Code settings"
+          fi
+        )
         done
 
         # The idle notification waits 60 s by default, and the key is read from the global
@@ -367,13 +390,22 @@ in
             ) configDirs
           )
         }; do
-        [ -e "$global" ] || continue
+        [ -e "$global" ] && [ ! -L "$global" ] || continue
+        if [ -n "''${DRY_RUN_CMD:-}" ] || [ "''${DRY_RUN:-0}" = 1 ]; then continue; fi
         if [ "$(${lib.getExe pkgs.jq} '.messageIdleNotifThresholdMs' "$global")" != ${toString idleNotifThresholdMs} ]; then
-          if updated="$(${lib.getExe pkgs.jq} '.messageIdleNotifThresholdMs = ${toString idleNotifThresholdMs}' "$global")"; then
-            printf '%s\n' "$updated" > "$global"
-          else
-            warnEcho "$global is not valid JSON; not setting messageIdleNotifThresholdMs"
-          fi
+          (
+            tmp="$(mktemp "$(dirname "$global")/.settings.json.XXXXXX")" || exit 1
+            trap 'rm -f "$tmp"' EXIT
+            before="$(sha256sum "$global")"
+            if ${lib.getExe pkgs.jq} '.messageIdleNotifThresholdMs = ${toString idleNotifThresholdMs}' "$global" > "$tmp" &&
+              [ -s "$tmp" ] && ${lib.getExe pkgs.jq} -e 'type == "object"' "$tmp" > /dev/null &&
+              [ ! -L "$global" ] && [ "$before" = "$(sha256sum "$global")" ]; then
+              chmod 600 "$tmp"
+              run mv -f "$tmp" "$global"
+            else
+              warnEcho "$global changed or is invalid; not setting messageIdleNotifThresholdMs"
+            fi
+          )
         fi
         done
         # Orca and Codex own these mutable files. Merge only marked wiki hooks and

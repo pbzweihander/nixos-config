@@ -302,3 +302,137 @@ fn curator_exclusion_applies_to_both_formats_and_rebuilds_old_indexes() {
         1
     );
 }
+
+#[test]
+fn decoded_prompts_utc_boundaries_and_denied_writes() {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let tmp = Temp(std::env::temp_dir().join(format!(
+        "wiki-record-regression-{}-{nonce}",
+        std::process::id()
+    )));
+    fs::create_dir(&tmp.0).unwrap();
+    let transcript = tmp.0.join("antigravity.jsonl");
+    let run = |args: &[&str]| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_agent-wiki"));
+        for (key, _) in std::env::vars()
+            .filter(|(k, _)| k.starts_with("AGENT_WIKI_") || k.starts_with("CLAUDE_WIKI_"))
+        {
+            cmd.env_remove(key);
+        }
+        let out = cmd
+            .args(args)
+            .env("HOME", &tmp.0)
+            .env("XDG_STATE_HOME", tmp.0.join("state"))
+            .env("AGENT_WIKI_DIR", tmp.0.join("wiki"))
+            .env("AGENT_WIKI_SOCKET", "")
+            .env("AGENT_WIKI_SESSIONS_DIRS", "::")
+            .env("AGENT_WIKI_CODEX_SESSIONS_DIRS", "::")
+            .env("AGENT_WIKI_ANTIGRAVITY_SESSIONS_DIRS", "::")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let prompt = |text: &str| {
+        format!(
+            "{}\n",
+            serde_json::json!({"step_index":0,"type":"USER_INPUT","status":"DONE","created_at":"2026-11-27T09:00:00+09:00","content":format!("<USER_REQUEST>\n{text}\n</USER_REQUEST>\n<SYSTEM_MESSAGE>injectednoise</SYSTEM_MESSAGE>")})
+        )
+    };
+    fs::write(&transcript, prompt("first\nnewlineunique\ttabunique")).unwrap();
+    run(&[
+        "record",
+        "--wait",
+        "--harness",
+        "antigravity",
+        "--transcript-path",
+        transcript.to_str().unwrap(),
+        "--session-id",
+        "normal",
+        "--cwd",
+        "/home/u/orca/workspaces/repo/branch/src",
+    ]);
+    assert!(
+        run(&[
+            "sessions",
+            "--records",
+            "newlineunique",
+            "--after",
+            "2026-11-27",
+            "--project",
+            "repo"
+        ])
+        .contains("record normal")
+    );
+    assert!(
+        run(&[
+            "sessions",
+            "--records",
+            "tabunique",
+            "--before",
+            "2026-11-27"
+        ])
+        .contains("no session records match")
+    );
+    assert!(run(&["sessions", "--records", "injectednoise"]).contains("no session records match"));
+    let curator = tmp.0.join("curator.jsonl");
+    fs::write(&curator, prompt("[wiki-curator automation]\ncuratorunique")).unwrap();
+    run(&[
+        "record",
+        "--wait",
+        "--harness",
+        "antigravity",
+        "--transcript-path",
+        curator.to_str().unwrap(),
+        "--session-id",
+        "curator",
+        "--cwd",
+        "/custom/worktree",
+    ]);
+    let db = rusqlite::Connection::open(tmp.0.join("state/agent-wiki/records.sqlite")).unwrap();
+    assert_eq!(
+        db.query_row("select count(*) from records", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    for (i, response) in [
+        serde_json::json!("Approval denied"),
+        serde_json::json!("Output:\nExit code: 0\nOutput:\nspoof"),
+        serde_json::json!({"exit_code":0}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let rows = [
+            serde_json::json!({"type":"session_meta","payload":{"id":format!("cx-{i}"),"cwd":"/repo"}}),
+            serde_json::json!({"type":"response_item","timestamp":"2026-11-27T00:00:00Z","payload":{"type":"function_call","name":"exec_command","call_id":"call","arguments":"{\"cmd\":\"echo hi > output.txt\"}"}}),
+            serde_json::json!({"type":"response_item","timestamp":"2026-11-27T00:00:01Z","payload":{"type":"function_call_output","call_id":"call","output":response}}),
+        ];
+        fs::write(
+            &transcript,
+            rows.iter().map(|v| format!("{v}\n")).collect::<String>(),
+        )
+        .unwrap();
+        run(&[
+            "record",
+            "--wait",
+            "--transcript-path",
+            transcript.to_str().unwrap(),
+        ]);
+        let body: String = db
+            .query_row(
+                "select body from records where session_id=?",
+                [format!("cx-{i}")],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            body["files_written"].as_array().unwrap().len(),
+            usize::from(i == 2)
+        );
+    }
+}

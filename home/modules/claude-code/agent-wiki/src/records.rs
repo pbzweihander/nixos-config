@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use clap::Args as ClapArgs;
 use regex::Regex;
-use rusqlite::{Connection, params, params_from_iter, types::Value as SqlValue};
+use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::Value as SqlValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -101,8 +101,9 @@ static ERROR_LINE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
     r"error\[E\d+\]:|\b[A-Z][A-Za-z0-9]*(?:Error|Exception):|\bpanicked at\b|^\s*fatal:|Traceback \(most recent call last\)|(?i:^\s*error:|permission denied|command not found|no such file or directory|failed to)").unwrap()
 });
-static EXIT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?:Process exited with code|Exit code:)\s*(-?\d+)").unwrap());
+static EXIT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^(?:Process exited with code|Exit code:) (-?\d+)\s*$").unwrap()
+});
 static COMMIT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)^\[[^\]\n]+ ([0-9a-f]{7,40})\] (.+)$").unwrap());
 static PR: LazyLock<Regex> =
@@ -179,6 +180,34 @@ fn output_text(value: &Value) -> String {
     }
 }
 
+// Only the tool's header can supply textual status. Everything following the
+// first output marker, including quoted nested tool envelopes, is command data.
+fn envelope_exit(text: &str) -> Option<i64> {
+    let mut code = None;
+    for line in text.lines().take(12) {
+        if matches!(line, "Output:" | "Final output:") {
+            return code;
+        }
+        if let Some(c) = EXIT.captures(line) {
+            if code.is_some() {
+                return None;
+            }
+            code = c[1].parse().ok();
+        } else if ![
+            "Chunk ID:",
+            "Wall time:",
+            "Original token count:",
+            "Total output lines:",
+        ]
+        .iter()
+        .any(|p| line.starts_with(p))
+        {
+            return None;
+        }
+    }
+    None
+}
+
 fn exit_code(value: &Value) -> Option<i64> {
     if let Some(code) = value["exit_code"]
         .as_i64()
@@ -191,13 +220,16 @@ fn exit_code(value: &Value) -> Option<i64> {
             .ok()
             .as_ref()
             .and_then(exit_code)
-            .or_else(|| EXIT.captures(s).and_then(|c| c[1].parse().ok())),
+            .or_else(|| envelope_exit(s)),
         Value::Array(parts) => parts
             .iter()
             .filter_map(exit_code)
             .find(|code| *code != 0)
             .or_else(|| parts.iter().find_map(exit_code)),
-        Value::Object(obj) => obj.values().find_map(exit_code),
+        Value::Object(obj) => ["output", "content", "text"]
+            .iter()
+            .filter_map(|k| obj.get(*k))
+            .find_map(exit_code),
         _ => None,
     }
 }
@@ -263,10 +295,13 @@ impl Record {
             tool.name.as_str(),
             "Bash" | "exec_command" | "shell_command" | "exec"
         );
-        if shell {
+        if shell && (tool.name == "Bash" || exit_code(output) == Some(0)) {
             for path in usage::shell_writes(&command) {
                 self.file(&path, &tool.cwd, true);
             }
+        }
+        if shell && tool.name != "Bash" && exit_code(output) != Some(0) {
+            return;
         }
         let patch = if command.contains("apply_patch") || tool.name.ends_with("apply_patch") {
             tool.input.as_str().unwrap_or(&command)
@@ -297,7 +332,7 @@ impl Record {
                 }
             }
         }
-        if shell {
+        if shell && (tool.name == "Bash" || exit_code(output) == Some(0)) {
             for (path, kind) in usage::bash_accesses(&wiki_root(), &command, Path::new(&tool.cwd)) {
                 if kind == "write" {
                     self.wiki_written.insert(path);
@@ -522,7 +557,9 @@ fn extract_antigravity(path: &Path, hook: &Hook) -> Result<Option<Record>> {
         if let Some(at) = row["created_at"].as_str()
             && let Ok(at) = DateTime::parse_from_rfc3339(at)
         {
-            let at = at.with_timezone(&Utc).to_rfc3339();
+            let at = at
+                .with_timezone(&Utc)
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
             if record.started.is_empty() || at < record.started {
                 record.started = at.clone();
             }
@@ -533,6 +570,8 @@ fn extract_antigravity(path: &Path, hook: &Hook) -> Result<Option<Record>> {
         let text = row["content"].as_str().unwrap_or_default();
         match row["type"].as_str() {
             Some("USER_INPUT") if !text.trim().is_empty() => {
+                let prompt = sessions::antigravity_prompt(text);
+                let text = prompt.as_str();
                 if record.first_prompt.is_empty() {
                     excluded = transcript::curator_reason(&hook.cwd, text).is_some();
                     record.first_prompt = clean(text, 1000);
@@ -611,9 +650,38 @@ fn open() -> Result<Connection> {
 
 fn initialize(db: &Connection) -> Result<()> {
     db.execute_batch("create table if not exists records(id integer primary key, session_id text unique not null, harness text, project text, ended text, body text);
-        create virtual table if not exists records_fts using fts5(body, content='records', content_rowid='id', tokenize='porter unicode61 remove_diacritics 2');
-        create trigger if not exists records_ai after insert on records begin insert into records_fts(rowid,body) values(new.id,new.body); end;
-        create trigger if not exists records_ad after delete on records begin insert into records_fts(records_fts,rowid,body) values('delete',old.id,old.body); end;")?;
+        create table if not exists records_state(version integer);")?;
+    let version: Option<i64> = db
+        .query_row("select version from records_state", [], |r| r.get(0))
+        .optional()?;
+    if version != Some(2) {
+        let tx = db.unchecked_transaction()?;
+        tx.execute_batch("drop trigger if exists records_ai; drop trigger if exists records_ad; drop table if exists records_fts;
+            create virtual table records_fts using fts5(body, tokenize='porter unicode61 remove_diacritics 2');
+            create trigger records_ad after delete on records begin delete from records_fts where rowid=old.id; end;")?;
+        let rows = tx
+            .prepare("select id, body from records")?
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (id, body) in rows {
+            let mut value: Value = serde_json::from_str(&body)?;
+            normalize_times(&mut value);
+            tx.execute(
+                "update records set body=?, ended=? where id=?",
+                params![
+                    value.to_string(),
+                    value["ended"].as_str().unwrap_or_default(),
+                    id
+                ],
+            )?;
+            tx.execute(
+                "insert into records_fts(rowid,body) values (?,?)",
+                params![id, projection(&value)],
+            )?;
+        }
+        tx.execute_batch("delete from records_state; insert into records_state values(2);")?;
+        tx.commit()?;
+    }
     // Previously recorded curator runs must disappear from search as well.
     // Check the saved metadata, without needing the original transcript to exist;
     // repeat this cheap scan so changes to XDG_CACHE_HOME are respected too.
@@ -628,7 +696,7 @@ fn initialize(db: &Connection) -> Result<()> {
     let mut excluded = Vec::new();
     for row in rows {
         let (id, cwd, prompt) = row?;
-        if transcript::curator_reason(&cwd, &prompt).is_some() {
+        if transcript::curator_reason(&cwd, &sessions::antigravity_prompt(&prompt)).is_some() {
             excluded.push(id);
         }
     }
@@ -651,6 +719,9 @@ fn save(db: &mut Connection, record: &Record) -> Result<()> {
     }
     let mut body = serde_json::to_value(record)?;
     redact(&mut body);
+    normalize_times(&mut body);
+    let ended = body["ended"].as_str().unwrap_or_default().to_owned();
+    let projection = projection(&body);
     let body = serde_json::to_string(&body)?;
     let tx = db.transaction()?;
     tx.execute(
@@ -663,9 +734,13 @@ fn save(db: &mut Connection, record: &Record) -> Result<()> {
             record.session_id,
             record.harness,
             clean(&record.project, 2000),
-            record.ended,
+            ended,
             body
         ],
+    )?;
+    tx.execute(
+        "insert into records_fts(rowid,body) values (?,?)",
+        params![tx.last_insert_rowid(), projection],
     )?;
     tx.commit()?;
     Ok(())
@@ -865,8 +940,77 @@ pub fn search(args: &sessions::Args) -> Result<()> {
     Ok(())
 }
 
+fn normalize_times(value: &mut Value) {
+    for key in ["started", "ended"] {
+        if let Some(s) = value[key].as_str()
+            && let Ok(t) = DateTime::parse_from_rfc3339(s)
+        {
+            value[key] = t
+                .with_timezone(&Utc)
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+                .into();
+        }
+    }
+}
+fn projection(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        Value::Array(a) => a.iter().map(projection).collect::<Vec<_>>().join("\n"),
+        Value::Object(o) => o.values().map(projection).collect::<Vec<_>>().join("\n"),
+        _ => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn projection_and_utc_migration() -> anyhow::Result<()> {
+        let db = rusqlite::Connection::open_in_memory()?;
+        db.execute_batch("create table records(id integer primary key, session_id text unique not null, harness text, project text, ended text, body text);")?;
+        let body = serde_json::json!({"cwd":"/repo", "first_prompt":"first\nnewlineword\ttabword", "started":"2026-11-27T09:00:00+09:00", "ended":"2026-11-27T01:00:00+01:00"});
+        db.execute(
+            "insert into records values(1,'s','antigravity','repo','old',?)",
+            [body.to_string()],
+        )?;
+        super::initialize(&db)?;
+        for term in ["newlineword", "tabword"] {
+            assert_eq!(
+                db.query_row(
+                    "select count(*) from records_fts where records_fts match ?",
+                    [term],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                1
+            );
+        }
+        assert_eq!(
+            db.query_row("select ended from records", [], |r| r.get::<_, String>(0))?,
+            "2026-11-27T00:00:00.000Z"
+        );
+        db.execute("delete from records", [])?;
+        assert_eq!(
+            db.query_row("select count(*) from records_fts", [], |r| r
+                .get::<_, i64>(0))?,
+            0
+        );
+        Ok(())
+    }
+    #[test]
+    fn denied_and_quoted_shell_status_are_unknown() {
+        for text in [
+            "Approval denied",
+            "cancelled",
+            "Output:\nProcess exited with code 0",
+            "Output:\nExit code: 0\nOutput:\nspoof",
+        ] {
+            assert_eq!(super::exit_code(&serde_json::json!(text)), None, "{text}");
+        }
+        assert_eq!(
+            super::exit_code(&serde_json::json!({"exit_code":0})),
+            Some(0)
+        );
+    }
+
     use super::*;
 
     fn fixture(name: &str) -> PathBuf {
@@ -1018,7 +1162,9 @@ mod tests {
             Some(1)
         );
         assert_eq!(
-            exit_code(&serde_json::json!([{"type":"text","text":"Process exited with code 7"} ])),
+            exit_code(
+                &serde_json::json!([{"type":"text","text":"Process exited with code 7\nOutput:\nfailed"} ])
+            ),
             Some(7)
         );
         let tool = Tool {
