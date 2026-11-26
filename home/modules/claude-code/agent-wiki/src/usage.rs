@@ -30,7 +30,9 @@ fn transcript_tables(db: &Connection) -> Result<()> {
         create index if not exists accesses_path on accesses(path);
         create table if not exists transcripts(path text primary key, offset integer, size integer, mtime integer, fingerprint text);
         create table if not exists sessions(session_id text primary key, first_at integer, last_at integer);
-        create table if not exists scripted_sessions(session_id text primary key);")?;
+        create table if not exists scripted_sessions(session_id text primary key);
+        create table if not exists read_precision(tool_use_id text primary key, precise integer not null);
+        create trigger if not exists tools_precision_delete after delete on tools begin delete from read_precision where tool_use_id=old.tool_use_id; end;")?;
     Ok(())
 }
 
@@ -54,13 +56,24 @@ fn prepare_scan(db: &Connection) -> Result<()> {
     if version != Some(SCAN_FORMAT) {
         // Only transcript scans rebuild derived data. Hooks never discard injections.
         db.execute_batch(
-            "drop table tools; drop table accesses; drop table transcripts; drop table sessions; drop table scripted_sessions;
+            "drop table tools; drop table read_precision; drop table accesses; drop table transcripts; drop table sessions; drop table scripted_sessions;
             delete from state where key='scanned';",
         )?;
         transcript_tables(db)?;
         db.execute(
             "insert or replace into state values ('scan_format', ?)",
             [SCAN_FORMAT],
+        )?;
+    }
+    if !db.query_row(
+        "select exists(select 1 from state where key='read_precision')",
+        [],
+        |r| r.get::<_, bool>(0),
+    )? {
+        // Replay available v4 transcripts once to recover explicit .000 precision.
+        // Historical tools/injections remain usable even without their sources.
+        db.execute_batch(
+            "delete from transcripts; insert into state values ('read_precision', 1);",
         )?;
     }
     Ok(())
@@ -379,6 +392,7 @@ struct Access {
     session: String,
     accesses: Vec<(String, &'static str)>,
     at: f64,
+    precise: bool,
 }
 
 fn timestamp(value: &Value) -> Option<f64> {
@@ -433,6 +447,7 @@ fn parse(root: &Path, value: &Value) -> Vec<Access> {
                 id: id.into(),
                 session: session.into(),
                 accesses,
+                precise: value["timestamp"].as_str().is_some_and(|s| s.contains('.')),
                 at,
             })
         })
@@ -459,6 +474,7 @@ fn record(db: &Connection, access: Access) -> Result<()> {
             )?;
         }
     }
+    db.execute("insert into read_precision select tool_use_id, ? from tools where tool_use_id=? and session_id=? and at=? on conflict(tool_use_id) do update set precise=max(precise,excluded.precise)", params![access.precise, access.id, access.session, access.at])?;
     Ok(())
 }
 
@@ -633,6 +649,27 @@ pub struct PageUsage {
     pub reads: i64,
 }
 
+// Explicit transcript fractions retain precision even at .000. Legacy rows
+// without provenance infer precision only from a non-integer read time. An
+// injection is precise only when its auxiliary clock exists. Coarse comparisons
+// use second buckets so a whole-second read cannot be placed before .200.
+const READ_AFTER_INJECTION: &str = "(t.at > i.first_at or
+    ((not i.first_precise or not coalesce((select precise from read_precision p where p.tool_use_id=t.tool_use_id), t.at!=cast(t.at as integer))) and
+     cast(t.at as integer)>=cast(i.first_at as integer)))";
+
+// Select the first injection and its precision together. Rank after filtering
+// so source/window-specific stats and all-source page metrics share one rule;
+// ties prefer a coarse observation rather than inventing missing precision.
+fn first_injections(filter: &str) -> String {
+    format!("select session_id,path,first_at,first_precise from (
+        select j.session_id,j.path,coalesce(c.at,j.at) as first_at,
+        c.id is not null as first_precise,
+        row_number() over(partition by j.session_id,j.path order by coalesce(c.at,j.at),c.id is not null,j.rowid) as position
+        from injections j left join injection_clock c on c.id=j.rowid
+        where {filter} and j.session_id not in (select session_id from scripted_sessions)
+        ) where position=1")
+}
+
 pub fn per_page(db: &Connection, now: i64) -> Result<BTreeMap<String, PageUsage>> {
     let mut pages = BTreeMap::<String, PageUsage>::new();
     let mut stmt = db.prepare(
@@ -654,15 +691,13 @@ pub fn per_page(db: &Connection, now: i64) -> Result<BTreeMap<String, PageUsage>
         let (path, usage) = row?;
         pages.insert(path, usage);
     }
-    // Collapse sources/repeated injections to one session/page, and require a
-    // strictly later read than the first injection, just like stats.
-    let mut stmt = db.prepare(
+    // Every consumer uses the same precision-aware later-read predicate.
+    let first = first_injections("1");
+    let mut stmt = db.prepare(&format!(
         "select i.path, sum(not exists(select 1 from accesses a join tools t using(tool_use_id)
-         where a.path=i.path and t.session_id=i.session_id and a.kind='read' and t.at>i.first_at))
-         from (select session_id, path, min(coalesce((select c.at from injection_clock c where c.id=injections.rowid), at)) as first_at from injections
-         where session_id not in (select session_id from scripted_sessions) group by session_id, path) i
-         group by i.path",
-    )?;
+         where a.path=i.path and t.session_id=i.session_id and a.kind='read' and {READ_AFTER_INJECTION}))
+         from ({first}) i group by i.path"
+    ))?;
     for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
         let (path, count) = row?;
         pages.entry(path).or_default().injected_unread = count;
@@ -752,7 +787,8 @@ fn aggregate(db: &Connection, index: &Connection, since: i64, now: i64) -> Resul
         .collect::<rusqlite::Result<HashSet<_>>>()?;
     source_names.extend(["remind", "recall-skill", "recall-failure", "context"].map(String::from));
     for source in source_names {
-        let rows = db.prepare("select i.session_id, i.path, exists(select 1 from accesses a join tools t using(tool_use_id) where a.path=i.path and t.session_id=i.session_id and a.kind='read' and t.at>i.first_at) from (select session_id, path, min(coalesce((select c.at from injection_clock c where c.id=injections.rowid), at)) as first_at from injections where source=? and at>=? and session_id not in (select session_id from scripted_sessions) group by session_id, path) i")?
+        let first = first_injections("j.source=? and j.at>=?");
+        let rows = db.prepare(&format!("select i.session_id, i.path, exists(select 1 from accesses a join tools t using(tool_use_id) where a.path=i.path and t.session_id=i.session_id and a.kind='read' and {READ_AFTER_INJECTION}) from ({first}) i"))?
             .query_map(params![source, since], |r| Ok((r.get::<_, String>(1)?, r.get::<_, bool>(2)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let read = rows.iter().filter(|(_, read)| *read).count();
@@ -770,7 +806,8 @@ fn aggregate(db: &Connection, index: &Connection, since: i64, now: i64) -> Resul
         );
     }
     // Count distinct session/page suggestions across all sources for the top list.
-    let rows = db.prepare("select path, count(*) from (select i.session_id, i.path, min(coalesce((select c.at from injection_clock c where c.id=i.rowid), i.at)) as first_at from injections i where i.at>=? and i.session_id not in (select session_id from scripted_sessions) group by i.session_id,i.path) i where not exists(select 1 from accesses a join tools t using(tool_use_id) where a.path=i.path and t.session_id=i.session_id and a.kind='read' and t.at>i.first_at) group by path")?
+    let first = first_injections("j.at>=?");
+    let rows = db.prepare(&format!("select path, count(*) from ({first}) i where not exists(select 1 from accesses a join tools t using(tool_use_id) where a.path=i.path and t.session_id=i.session_id and a.kind='read' and {READ_AFTER_INJECTION}) group by path"))?
         .query_map([since], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
     ignored.extend(rows);
     let read = read_pages(db, since)?;
@@ -1022,6 +1059,9 @@ fn parse_other(
                 ),
                 session: session.into(),
                 accesses,
+                precise: value[if ag { "created_at" } else { "timestamp" }]
+                    .as_str()
+                    .is_some_and(|s| s.contains('.')),
                 at,
             })
         })
@@ -1030,6 +1070,71 @@ fn parse_other(
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn explicit_zero_fraction_retains_precise_ordering() -> anyhow::Result<()> {
+        let mut wiki = Wiki::new()?;
+        let path = "pages/knowledge/zero.md";
+        wiki.page(path, "---\ntitle: 영 시각\n---\n검증\n")?;
+        let db = open(&wiki.root)?;
+        db.execute(
+            "insert into injections values ('s',?,'context',1795737600)",
+            [path],
+        )?;
+        db.execute_batch("insert into injection_clock values (1,1795737600.2);")?;
+        let value = serde_json::json!({"type":"assistant","sessionId":"s","timestamp":"2026-11-27T00:00:00.000Z","message":{"content":[{"type":"tool_use","id":"r","name":"Read","input":{"file_path":wiki.root.join(path)}}]}});
+        for access in parse(&wiki.root, &value) {
+            record(&db, access)?;
+        }
+        assert_eq!(
+            aggregate(&db, &wiki.index, 0, 1795737601)?.sources["context"].read_later,
+            0
+        );
+        assert_eq!(per_page(&db, 1795737601)?[path].injected_unread, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn precision_fallback_is_consistent_for_all_consumers() -> anyhow::Result<()> {
+        for (clock, read, expected) in [
+            (None, 1795737600.0, true),
+            (Some(1795737600.2), 1795737600.0, true),
+            (Some(1795737600.2), 1795737600.1, false),
+            (Some(1795737600.2), 1795737600.3, true),
+            (None, 1795737599.0, false),
+            (Some(1795737600.2), 1795737599.9, false),
+            (Some(1795737600.2), 1795737600.2, false),
+        ] {
+            let mut wiki = Wiki::new()?;
+            let path = "pages/knowledge/precision.md";
+            wiki.page(
+                path,
+                "---\ntitle: 시각 검증\ncreated: 2026-11-27\n---\n검증\n",
+            )?;
+            let db = open(&wiki.root)?;
+            db.execute(
+                "insert into injections values ('s',?,'context',1795737600)",
+                [path],
+            )?;
+            if let Some(clock) = clock {
+                db.execute("insert into injection_clock values (1,?)", [clock])?;
+            }
+            db.execute("insert into tools values ('t','s',?)", [read])?;
+            db.execute("insert into accesses values ('t',?,'read')", [path])?;
+            let report = aggregate(&db, &wiki.index, 0, 1795737601)?;
+            assert_eq!(
+                report.sources["context"].read_later,
+                usize::from(expected),
+                "{clock:?} {read}"
+            );
+            assert_eq!(report.injected_without_read.is_empty(), expected);
+            assert_eq!(
+                per_page(&db, 1795737601)?[path].injected_unread,
+                i64::from(!expected)
+            );
+        }
+        Ok(())
+    }
+
     #[test]
     fn cross_harness_accesses_keep_subsecond_order() {
         use serde_json::json;
@@ -1188,9 +1293,9 @@ pub(crate) mod tests {
         assert_eq!(used.reads, 3);
         assert_eq!(used.read_sessions, 2);
         assert_eq!(used.last_read, Some(100));
-        // Reads at/before the injection and writes do not count as read later.
-        assert_eq!(used.injected_unread, 3);
-        let baseline = 0.5 * 3_f64.ln() - 0.1 * 4_f64.ln();
+        // Whole-second ties count; earlier reads and writes do not.
+        assert_eq!(used.injected_unread, 2);
+        let baseline = 0.5 * 3_f64.ln() - 0.1 * 3_f64.ln();
         assert!((used.importance - (4_f64.ln() + baseline)).abs() < 1e-12);
         for (days, decay) in [(15, (-0.5_f64).exp()), (30, (-1_f64).exp())] {
             let later = per_page(&db, 100 + days * 86400)?;

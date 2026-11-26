@@ -470,4 +470,36 @@ fn cross_harness_usage_scans_and_orders_subsecond_reads() {
     db.execute_batch("insert into injection_clock select rowid, 1795737600.200 from injections;")
         .unwrap();
     assert_eq!(stats()["sources"]["context"]["read_later"], 0);
+    // Reparse actual whole-second sources with a precise .200 injection.
+    for source in [&ag, &home.join("codex/rollout-usage.jsonl")] {
+        let text = fs::read_to_string(source)
+            .unwrap()
+            .replace("00:00:00.100Z", "00:00:00Z");
+        fs::write(source, text).unwrap();
+    }
+    db.execute_batch("delete from tools; delete from accesses; delete from transcripts;")
+        .unwrap();
+    let report = stats();
+    assert_eq!(report["sources"]["context"]["read_later"], 2);
+    assert!(
+        report["injected_without_read"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    // An existing v4 DB must also work without any remaining source files.
+    fs::remove_file(&ag).unwrap();
+    fs::remove_file(home.join("codex/rollout-usage.jsonl")).unwrap();
+    db.execute_batch(
+        "delete from injection_clock; update state set value=4 where key='scan_format';",
+    )
+    .unwrap();
+    let report = stats();
+    assert_eq!(report["sources"]["context"]["read_later"], 2);
+    assert!(
+        report["injected_without_read"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }

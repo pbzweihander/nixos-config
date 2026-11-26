@@ -1028,29 +1028,93 @@ pub fn run(root: &Path, args: &Args) -> Result<()> {
     Ok(())
 }
 
-// Precreate privately so SQLite never exposes transcript data under the umask.
-pub(crate) fn private_db(path: &Path) -> Result<Connection> {
+// O_NOFOLLOW prevents symlink replacement between lstat and open; O_NONBLOCK
+// keeps a concurrent FIFO replacement from hanging before the descriptor check.
+#[cfg(target_os = "linux")]
+const PRIVATE_OPEN_FLAGS: i32 = 0x20000 | 0x800;
+#[cfg(target_os = "macos")]
+const PRIVATE_OPEN_FLAGS: i32 = 0x100 | 0x4;
+
+fn repair_private_file(path: &Path, create: bool) -> Result<()> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    fs::OpenOptions::new()
-        .create(true)
+    match fs::symlink_metadata(path) {
+        Ok(meta) if !meta.is_file() => {
+            bail!("refusing non-regular database file: {}", path.display())
+        }
+        Ok(_) => (),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if !create {
+                return Ok(());
+            }
+        }
+        Err(e) => return Err(e.into()),
+    }
+    let file = match fs::OpenOptions::new()
+        .read(true)
+        .write(create)
+        .create(create)
         .truncate(false)
-        .write(true)
         .mode(0o600)
-        .open(path)?;
+        .custom_flags(PRIVATE_OPEN_FLAGS)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(e) if !create && e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    if !file.metadata()?.is_file() {
+        bail!("refusing non-regular database file: {}", path.display());
+    }
+    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+// Precreate privately, repair only verified regular file descriptors, and ask
+// SQLite to reject a database path replaced by a symlink after our own open.
+pub(crate) fn private_db(path: &Path) -> Result<Connection> {
     for suffix in ["", "-wal", "-shm", "-journal"] {
         let mut name = path.as_os_str().to_os_string();
         name.push(suffix);
-        match fs::set_permissions(Path::new(&name), fs::Permissions::from_mode(0o600)) {
-            Ok(()) => (),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound && !suffix.is_empty() => (),
-            Err(e) => return Err(e.into()),
-        }
+        repair_private_file(Path::new(&name), suffix.is_empty())?;
     }
-    Ok(Connection::open(path)?)
+    Ok(Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::default() | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )?)
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn private_databases_reject_symlinks_without_chmod_targets() -> anyhow::Result<()> {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let tmp = TestDir::new()?;
+        let target = tmp.0.join("unrelated.txt");
+        std::fs::write(&target, "unchanged")?;
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644))?;
+        for name in ["sessions.sqlite", "usage.sqlite"] {
+            let db = tmp.0.join(name);
+            for suffix in ["", "-wal", "-shm", "-journal"] {
+                let link = tmp.0.join(format!("{name}{suffix}"));
+                symlink(&target, &link)?;
+                assert!(super::private_db(&db).is_err(), "{name}{suffix}");
+                assert_eq!(
+                    std::fs::metadata(&target)?.permissions().mode() & 0o777,
+                    0o644
+                );
+                assert_eq!(std::fs::read_to_string(&target)?, "unchanged");
+                std::fs::remove_file(&link)?;
+            }
+            // A directory also must be rejected before chmod.
+            std::fs::remove_file(&db)?;
+            std::fs::create_dir(&db)?;
+            std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o755))?;
+            assert!(super::private_db(&db).is_err());
+            assert_eq!(std::fs::metadata(&db)?.permissions().mode() & 0o777, 0o755);
+        }
+        Ok(())
+    }
+
     #[test]
     fn selected_groups_stop_consuming_ranked_rows() -> anyhow::Result<()> {
         let mut count = 0;
