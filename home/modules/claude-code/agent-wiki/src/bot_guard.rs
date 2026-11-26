@@ -1,6 +1,6 @@
 //! Bot-only turn anchors and advisory worktree cleanup. Never removes anything.
 //! All scan/state I/O runs behind an 80 ms receive deadline; busy state fails open.
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::{
     fs,
     io::{BufRead, BufReader, ErrorKind, Read},
@@ -19,8 +19,16 @@ const ANCHOR: &str = "agent-wiki witch-anchor: 최종 응답(핸드오프 카드
 const PREFIX: &str = "agent-wiki witch-cleanup: 정리 대상 임시 워크트리가 남아 있습니다: ";
 const SUFFIX: &str =
     " 작업이 끝났다면 orca worktree rm --worktree path:<path> --delete-branch 로 정리하세요.";
-const SCAN_BUDGET: Duration = Duration::from_millis(70);
+/// Time for visiting worktrees. The rest of [`WAIT_BUDGET`] is left for recording
+/// where the scan stopped (one small SQLite transaction).
+const SCAN_BUDGET: Duration = Duration::from_millis(60);
 const WAIT_BUDGET: Duration = Duration::from_millis(80);
+/// Seconds between ordinary scans for one bot.
+const THROTTLE_SECS: i64 = 900;
+/// Seconds before retrying a scan that ran out of time.
+const RETRY_SECS: i64 = 60;
+/// Most leftovers named in one advisory.
+const MAX_LEFT_WORKTREES: usize = 5;
 
 fn bot_key(cwd: Option<&str>) -> Option<String> {
     let bot_home = std::env::var_os("ORCA_BOT_HOME").filter(|s| !s.is_empty());
@@ -95,10 +103,12 @@ fn cleanup(root: &Path, key: String, prompt: &str, budget: usize) -> Option<Stri
     let root = root.to_owned();
     let deadline = Instant::now() + SCAN_BUDGET;
     bounded(move || {
-        claim(&root, &key, bypass).ok().filter(|claimed| *claimed)?;
-        let leftovers = scan(&workspaces, deadline);
+        let claim = claim(&root, &key, bypass).ok().flatten()?;
+        let scan = scan(&workspaces, claim.cursor.as_deref(), deadline);
+        // Best effort: a busy database loses only the cursor or the shorter retry.
+        let _ = claim.finish(&key, &scan);
         let mut entries = vec![];
-        for entry in leftovers {
+        for entry in scan.found {
             let mut candidate = entries.clone();
             candidate.push(entry);
             if format!("{PREFIX}{}{SUFFIX}", candidate.join("; "))
@@ -131,22 +141,90 @@ fn bounded(work: impl FnOnce() -> Option<String> + Send + 'static) -> Option<Str
         .flatten()
 }
 
-fn claim(root: &Path, key: &str, bypass: bool) -> rusqlite::Result<bool> {
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_secs()).ok())
+        .unwrap_or_default()
+}
+
+/// A scan this process won the right to run, with where the last one stopped.
+struct Claim {
+    db: Connection,
+    cursor: Option<String>,
+}
+
+impl Claim {
+    /// Records the scan's end in at most one transaction, and none at all for the
+    /// common scan that visits every worktree in time without a saved cursor.
+    ///
+    /// A scan cut off by the deadline moves the throttle stamp back so the next
+    /// prompt after [`RETRY_SECS`] retries, instead of waiting the full
+    /// [`THROTTLE_SECS`]. A scan that did not visit every worktree remembers where
+    /// it stopped, so the next one continues there instead of revisiting the same
+    /// early entries. A failed write (busy database) only loses these refinements.
+    fn finish(&self, key: &str, scan: &Scan) -> rusqlite::Result<()> {
+        let cursor = match (&scan.last, scan.finished) {
+            (Some(last), false) => Some(Some(last)),
+            (_, true) if self.cursor.is_some() => Some(None),
+            _ => None,
+        };
+        if !scan.timed_out && cursor.is_none() {
+            return Ok(());
+        }
+        let tx = self.db.unchecked_transaction()?;
+        if scan.timed_out {
+            tx.execute(
+                "update bot_guard_state set last_worktree_check=? where consumer_key=?",
+                params![now_secs() - THROTTLE_SECS + RETRY_SECS, key],
+            )?;
+        }
+        match cursor {
+            Some(Some(last)) => {
+                tx.execute(
+                    "insert into bot_guard_cursor values (?,?) on conflict(consumer_key) do update set after=excluded.after",
+                    params![key, last],
+                )?;
+            }
+            Some(None) => {
+                tx.execute("delete from bot_guard_cursor where consumer_key=?", [key])?;
+            }
+            None => {}
+        }
+        tx.commit()
+    }
+}
+
+/// Claims this bot's scan, or `None` while another scan is throttled or in progress.
+fn claim(root: &Path, key: &str, bypass: bool) -> rusqlite::Result<Option<Claim>> {
     // Open directly: usage::open initializes unrelated transcript schemas and
     // permits a 50 ms busy wait per statement. This table is independently owned.
     let db = Connection::open(root.join("usage.sqlite"))?;
     db.busy_timeout(Duration::ZERO)?;
-    db.execute_batch("create table if not exists bot_guard_state(consumer_key text primary key, last_worktree_check integer not null);")?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
+    db.execute_batch(
+        "create table if not exists bot_guard_state(consumer_key text primary key, last_worktree_check integer not null);
+        create table if not exists bot_guard_cursor(consumer_key text primary key, after text not null);",
+    )?;
+    let now = now_secs();
     // One atomic statement claims the scan across concurrent sessions. Bypass
     // also updates the timestamp, so the next ordinary prompt stays throttled.
-    Ok(db.execute(
-        "insert into bot_guard_state values (?,?) on conflict(consumer_key) do update set last_worktree_check=excluded.last_worktree_check where ? or bot_guard_state.last_worktree_check <= ?-900 or bot_guard_state.last_worktree_check > ?",
-        params![key, now, bypass, now, now],
-    )? != 0)
+    // A scan that then runs out of time shortens this (Claim::finish).
+    let claimed = db.execute(
+        "insert into bot_guard_state values (?1,?2) on conflict(consumer_key) do update set last_worktree_check=excluded.last_worktree_check where ?3 or bot_guard_state.last_worktree_check <= ?2-?4 or bot_guard_state.last_worktree_check > ?2",
+        params![key, now, bypass, THROTTLE_SECS],
+    )? != 0;
+    if !claimed {
+        return Ok(None);
+    }
+    let cursor = db
+        .query_row(
+            "select after from bot_guard_cursor where consumer_key=?",
+            [key],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(Some(Claim { db, cursor }))
 }
 
 fn regular(path: &Path) -> Option<fs::File> {
@@ -386,46 +464,157 @@ fn candidate(path: &Path, deadline: Instant) -> Option<String> {
         return None;
     }
     let path = path.to_str()?;
-    // A filesystem name must never inject a second hook line or terminal control.
-    if path.chars().chain(head_ref.chars()).any(char::is_control) {
+    // A filesystem or branch name must never inject a hook line, terminal or bidi
+    // control, credential or instruction-like text: such a worktree is not named at
+    // all, since a rewritten path would no longer identify it for removal.
+    if !crate::bulletin::identifier_is_clean(path)
+        || !crate::bulletin::identifier_is_clean(head_ref)
+    {
         return None;
     }
     Some(format!("{path} ({head_ref}, {reason})"))
 }
 
-fn scan(root: &Path, deadline: Instant) -> Vec<String> {
-    let mut found = vec![];
-    if !directory(root) {
-        return found;
+struct Scan {
+    found: Vec<String>,
+    /// Every candidate worktree was visited.
+    finished: bool,
+    /// The deadline ended the scan before it finished.
+    timed_out: bool,
+    /// Cursor for the next scan: the last worktree attempted, whether or not its
+    /// checks completed, or `<repo>/`[`END`] for a repository whose listing used
+    /// up the time. The next scan starts after it, so one slow entry cannot hold
+    /// every later scan at the same place.
+    last: Option<String>,
+}
+
+/// Sorts after every child of a directory (U+10FFFF is the largest scalar value,
+/// and paths compare by component): a cursor at `<repo>/<END>` passes that repo.
+const END: &str = "\u{10ffff}";
+
+/// Up to `max` subdirectories of `dir`, sorted by path; symlinks are not followed.
+fn child_dirs(dir: &Path, max: usize) -> Vec<PathBuf> {
+    let Ok(children) = fs::read_dir(dir) else {
+        return vec![];
+    };
+    let mut paths: Vec<_> = children
+        .take(max)
+        .flatten()
+        .filter(|child| child.file_type().is_ok_and(|kind| kind.is_dir()))
+        .map(|child| child.path())
+        .collect();
+    paths.sort();
+    paths
+}
+
+/// Visits the worktrees (`<repo>/<worktree>`) under `root`; see [`scan_with`].
+fn scan(root: &Path, cursor: Option<&str>, deadline: Instant) -> Scan {
+    // A symlinked root is not followed (checked before canonicalizing).
+    let repos = match directory(root).then(|| root.canonicalize()) {
+        Some(Ok(root)) => child_dirs(&root, 256),
+        _ => vec![],
+    };
+    scan_with(
+        &repos,
+        cursor.map(Path::new),
+        deadline,
+        |repo| child_dirs(repo, 1024),
+        candidate,
+    )
+}
+
+/// Which children of a repository one pass over it visits, relative to the cursor.
+#[derive(Clone, Copy)]
+enum Part {
+    All,
+    After,
+    UpTo,
+}
+
+/// Visits worktrees in path order, starting after `cursor` (where the previous
+/// scan stopped) and wrapping around, until all are visited, the deadline passes
+/// or [`MAX_LEFT_WORKTREES`] leftovers are found. Each repository is listed just
+/// before its worktrees are visited, so a slow listing or a slow worktree costs
+/// one scan and is passed by the next, instead of hiding every later entry.
+fn scan_with(
+    repos: &[PathBuf],
+    cursor: Option<&Path>,
+    deadline: Instant,
+    mut list: impl FnMut(&Path) -> Vec<PathBuf>,
+    mut visit: impl FnMut(&Path, Instant) -> Option<String>,
+) -> Scan {
+    let mut scan = Scan {
+        found: vec![],
+        finished: false,
+        timed_out: false,
+        last: None,
+    };
+    // The first repository that still has a child after the cursor; a cursor past
+    // every repository starts a fresh cycle.
+    let resume = cursor.and_then(|cursor| {
+        repos
+            .iter()
+            .position(|repo| repo.join(END).as_path() > cursor)
+            .map(|start| (start, cursor))
+    });
+    let start = resume.map_or(0, |(start, _)| start);
+    let cursor = resume.map(|(_, cursor)| cursor);
+    let mut passes: Vec<(&Path, Part)> = repos[start..]
+        .iter()
+        .chain(&repos[..start])
+        .map(|repo| (repo.as_path(), Part::All))
+        .collect();
+    if cursor.is_some()
+        && let Some(first) = passes.first_mut()
+    {
+        // The starting repository again at the end, for its children up to the cursor.
+        first.1 = Part::After;
+        let repo = first.0;
+        passes.push((repo, Part::UpTo));
     }
-    let Ok(root) = root.canonicalize() else {
-        return found;
-    };
-    let Ok(repos) = fs::read_dir(root) else {
-        return found;
-    };
-    for repo in repos.take(256).flatten() {
+    for (repo, part) in passes {
         if Instant::now() >= deadline {
-            break;
+            scan.timed_out = true;
+            return scan;
         }
-        if !repo.file_type().is_ok_and(|kind| kind.is_dir()) {
-            continue;
+        let children = list(repo);
+        if Instant::now() >= deadline {
+            // The listing itself used up the time: pass this repository next time.
+            scan.timed_out = true;
+            scan.last = Some(repo.join(END).to_string_lossy().into_owned());
+            return scan;
         }
-        let Ok(children) = fs::read_dir(repo.path()) else {
-            continue;
-        };
-        for child in children.take(1024).flatten() {
-            if Instant::now() >= deadline || found.len() == 5 {
-                return found;
+        for child in &children {
+            let wanted = match (part, cursor) {
+                (Part::After, Some(cursor)) => child.as_path() > cursor,
+                (Part::UpTo, Some(cursor)) => child.as_path() <= cursor,
+                _ => true,
+            };
+            if !wanted {
+                continue;
             }
-            if child.file_type().is_ok_and(|kind| kind.is_dir())
-                && let Some(entry) = candidate(&child.path(), deadline)
-            {
-                found.push(entry);
+            if scan.found.len() == MAX_LEFT_WORKTREES {
+                return scan;
             }
+            if Instant::now() >= deadline {
+                scan.timed_out = true;
+                return scan;
+            }
+            let entry = visit(child, deadline);
+            // Attempted, even if its checks were cut off: the next scan starts after
+            // it, and it comes up again after the others.
+            scan.last = Some(child.to_string_lossy().into_owned());
+            // A leftover is only reported after all its checks ran; no leftover past
+            // the deadline may mean a check was cut off.
+            if entry.is_none() && Instant::now() >= deadline {
+                scan.timed_out = true;
+                return scan;
+            }
+            scan.found.extend(entry);
         }
     }
-    found
+    scan.finished = true;
+    scan
 }
 
 #[cfg(test)]
@@ -439,6 +628,156 @@ mod tests {
         assert!(!anchor("──── From: bot-2 (status) ────\n참고용 완료 보고"));
         for kind in ["handoff", "worker_done", "question"] {
             assert!(anchor(&format!("──── From: bot-2 ({kind}) ────\n내용")));
+        }
+    }
+
+    fn paths(names: &[&str]) -> Vec<PathBuf> {
+        names
+            .iter()
+            .map(|n| PathBuf::from(format!("/ws/{n}")))
+            .collect()
+    }
+
+    /// Children of the fake repositories: `/ws/<repo>/<name>`.
+    fn tree(repo: &Path) -> Vec<PathBuf> {
+        let names: &[&str] = match repo.file_name().and_then(|n| n.to_str()) {
+            Some("demo") => &["a", "b", "c", "z"],
+            Some("other") => &["x"],
+            _ => &[],
+        };
+        names.iter().map(|n| repo.join(n)).collect()
+    }
+
+    /// Every worktree is a leftover named after itself; `slow` ones take the
+    /// whole scan budget and report nothing.
+    fn visitor<'a>(
+        slow: &'static [&'static str],
+        seen: &'a mut Vec<String>,
+    ) -> impl FnMut(&Path, Instant) -> Option<String> + 'a {
+        move |path, deadline| {
+            let name = path.file_name()?.to_str()?.to_owned();
+            seen.push(name.clone());
+            if slow.contains(&name.as_str()) {
+                thread::sleep(
+                    deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(1),
+                );
+                return None;
+            }
+            Some(name)
+        }
+    }
+
+    #[test]
+    fn slow_first_worktree_advances_the_cursor_to_the_next_one() {
+        let repos = paths(&["demo"]);
+        let tree =
+            |repo: &Path| -> Vec<PathBuf> { ["a", "z"].iter().map(|n| repo.join(n)).collect() };
+        let mut seen = vec![];
+        let first = scan_with(
+            &repos,
+            None,
+            Instant::now() + Duration::from_millis(20),
+            tree,
+            visitor(&["a"], &mut seen),
+        );
+        assert!(first.timed_out && !first.finished);
+        assert!(first.found.is_empty());
+        assert_eq!(first.last.as_deref(), Some("/ws/demo/a"));
+        assert_eq!(seen, ["a"]);
+        // The retry starts after `a`, reports `z`, and only then wraps to `a`.
+        let mut seen = vec![];
+        let second = scan_with(
+            &repos,
+            first.last.as_deref().map(Path::new),
+            Instant::now() + Duration::from_millis(20),
+            tree,
+            visitor(&["a"], &mut seen),
+        );
+        assert_eq!(second.found, ["z"]);
+        assert_eq!(seen, ["z", "a"]);
+        assert!(second.timed_out);
+        assert_eq!(second.last.as_deref(), Some("/ws/demo/a"));
+    }
+
+    #[test]
+    fn slow_repository_listing_is_passed_by_the_next_scan() {
+        let repos = paths(&["demo", "other"]);
+        let slow_listing = |repo: &Path| {
+            if repo.ends_with("demo") {
+                thread::sleep(Duration::from_millis(30));
+            }
+            tree(repo)
+        };
+        let mut seen = vec![];
+        let first = scan_with(
+            &repos,
+            None,
+            Instant::now() + Duration::from_millis(20),
+            slow_listing,
+            visitor(&[], &mut seen),
+        );
+        assert!(first.timed_out && first.found.is_empty() && seen.is_empty());
+        assert_eq!(first.last, Some(format!("/ws/demo/{END}")));
+        let mut seen = vec![];
+        let second = scan_with(
+            &repos,
+            first.last.as_deref().map(Path::new),
+            Instant::now() + Duration::from_millis(20),
+            slow_listing,
+            visitor(&[], &mut seen),
+        );
+        assert_eq!(second.found, ["x"]);
+        assert_eq!(second.last, Some(format!("/ws/demo/{END}")));
+    }
+
+    #[test]
+    fn rotation_resumes_after_the_cursor_and_wraps_once() {
+        let repos = paths(&["demo", "other"]);
+        let far = Instant::now() + Duration::from_secs(5);
+        let mut seen = vec![];
+        let scan = scan_with(
+            &repos,
+            Some(Path::new("/ws/demo/b")),
+            far,
+            tree,
+            visitor(&[], &mut seen),
+        );
+        assert!(scan.finished && !scan.timed_out);
+        assert_eq!(seen, ["c", "z", "x", "a", "b"]);
+        // The cap stops the scan and leaves the cursor at the last one attempted.
+        let six = |repo: &Path| {
+            let mut children = tree(repo);
+            if repo.ends_with("other") {
+                children.push(repo.join("y"));
+            }
+            children
+        };
+        let mut seen = vec![];
+        let scan = scan_with(&repos, None, far, six, visitor(&[], &mut seen));
+        assert_eq!(scan.found, ["a", "b", "c", "z", "x"]);
+        assert!(!scan.finished && !scan.timed_out);
+        assert_eq!(scan.last.as_deref(), Some("/ws/other/x"));
+        let mut seen = vec![];
+        let scan = scan_with(
+            &repos,
+            scan.last.as_deref().map(Path::new),
+            far,
+            six,
+            visitor(&[], &mut seen),
+        );
+        assert_eq!(scan.found, ["y", "a", "b", "c", "z"]);
+        // A cursor past everything (or in a removed repository) starts afresh.
+        for cursor in ["/zz/none", "/ws/other/zzz", "/ws/gone/a"] {
+            let mut seen = vec![];
+            let scan = scan_with(
+                &repos,
+                Some(Path::new(cursor)),
+                far,
+                tree,
+                visitor(&[], &mut seen),
+            );
+            assert!(scan.finished, "{cursor}");
+            assert_eq!(seen.len(), 5, "{cursor}: {seen:?}");
         }
     }
 

@@ -34,6 +34,43 @@ impl DenseStatus {
     }
 }
 
+/// A daemon hit checked against the local index, shared by `search` and `related`.
+#[derive(Debug, PartialEq)]
+pub struct Resolved {
+    /// Index path (`pages/<type>/<slug>.md`) of a well-formed daemon page id.
+    pub rel: String,
+    /// The daemon's section, kept only while the local index still has that exact
+    /// section for the page.
+    pub section: Option<(String, i64, i64)>,
+}
+
+/// Resolves a daemon hit to an index path and a current section. `None` for a
+/// malformed id, so a corrupt daemon cannot name a file outside `pages/`.
+///
+/// The daemon reads sections from this index, but its snapshot can lag behind an
+/// edit: a section that no longer exists (renamed heading, moved or removed lines)
+/// is dropped while the page itself stays a hit. Visibility rules (blocked pages,
+/// filters, history) stay with each caller.
+pub fn resolve(db: &rusqlite::Connection, hit: Hit) -> rusqlite::Result<Option<Resolved>> {
+    let Some(rel) = crate::pages::link_path(&hit.path) else {
+        return Ok(None);
+    };
+    let section = match hit.section {
+        Some((heading, start, end)) => {
+            let current: bool = db.query_row(
+                "select exists(select 1 from sections join files on files.id = sections.file_id
+                 where files.path = ? and sections.heading = ?
+                   and sections.start_line = ? and sections.end_line = ?)",
+                rusqlite::params![rel, heading, start, end],
+                |r| r.get(0),
+            )?;
+            current.then_some((heading, start, end))
+        }
+        None => None,
+    };
+    Ok(Some(Resolved { rel, section }))
+}
+
 #[derive(Debug, Serialize)]
 pub struct Section {
     pub heading: String,
@@ -456,6 +493,71 @@ mod tests {
             ]
         );
         assert!(reply(b"{\"ok\":true,\"tier\":\"cpu\",\"results\":[]}\n").is_empty());
+    }
+
+    #[test]
+    fn resolve_validates_ids_and_drops_stale_sections() -> anyhow::Result<()> {
+        let mut wiki = crate::usage::tests::Wiki::new()?;
+        wiki.page(
+            "pages/knowledge/current.md",
+            "---\ntitle: Current\ncreated: 2026-11-27\n---\n# Kept\nline\n# Other\nline\n",
+        )?;
+        wiki.page(
+            "pages/knowledge/other.md",
+            "---\ntitle: Other\ncreated: 2026-11-27\n---\n# Only here\nline\n",
+        )?;
+        let hit = |path: &str, section: Option<(&str, i64, i64)>| Hit {
+            path: path.into(),
+            section: section.map(|(h, s, e)| (h.to_owned(), s, e)),
+        };
+        let resolved = |path, section| resolve(&wiki.index, hit(path, section)).unwrap();
+        assert_eq!(
+            resolved("knowledge/current", Some(("Kept", 5, 6))),
+            Some(Resolved {
+                rel: "pages/knowledge/current.md".into(),
+                section: Some(("Kept".into(), 5, 6)),
+            })
+        );
+        for stale in [
+            ("Removed heading", 5, 6),
+            ("Kept", 900, 999),
+            ("Kept", 5, 7),
+            ("Other", 5, 6),
+        ] {
+            assert_eq!(
+                resolved("knowledge/current", Some(stale)),
+                Some(Resolved {
+                    rel: "pages/knowledge/current.md".into(),
+                    section: None,
+                }),
+                "{stale:?}"
+            );
+        }
+        // Another page's section never applies to this one.
+        assert_eq!(
+            resolved("knowledge/current", Some(("Only here", 5, 6)))
+                .unwrap()
+                .section,
+            None
+        );
+        for malformed in [
+            "../outside",
+            "knowledge/../x",
+            "secret/x",
+            "/etc/passwd",
+            "",
+        ] {
+            assert_eq!(resolved(malformed, None), None, "{malformed}");
+        }
+        // A well-formed id for a deleted page still resolves: callers check rows.
+        assert_eq!(
+            resolved("knowledge/deleted", Some(("Kept", 5, 6))),
+            Some(Resolved {
+                rel: "pages/knowledge/deleted.md".into(),
+                section: None,
+            })
+        );
+        Ok(())
     }
 
     #[test]

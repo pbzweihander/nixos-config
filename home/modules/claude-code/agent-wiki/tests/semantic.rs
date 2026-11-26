@@ -265,7 +265,7 @@ fn related_json_requests_ten_filters_and_logs_selected_pages() {
         json!({"ok":true,"results":[
             {"path":"history/past","score":1}, {"path":"knowledge/blocked","score":1},
             {"path":"knowledge/deleted","score":1},
-            {"path":"knowledge/foo","score":1,"heading":"Recovery","start_line":7,"end_line":8},
+            {"path":"knowledge/foo","score":1,"heading":"","start_line":1,"end_line":7},
             {"path":"knowledge/bar","score":1}
         ]}),
     );
@@ -276,7 +276,7 @@ fn related_json_requests_ten_filters_and_logs_selected_pages() {
     assert_eq!(
         serde_json::from_str::<Value>(&output).unwrap(),
         json!({
-            "pages":[{"path":cwd.join("pages/knowledge/foo.md"), "rel":"pages/knowledge/foo.md", "title":"foo cache notes", "type":"knowledge", "section":{"heading":"Recovery","start":7,"end":8}}],
+            "pages":[{"path":cwd.join("pages/knowledge/foo.md"), "rel":"pages/knowledge/foo.md", "title":"foo cache notes", "type":"knowledge", "section":{"heading":"","start":1,"end":7}}],
             "overview":cwd.join("pages/projects/wiki.md")
         })
     );
@@ -412,7 +412,7 @@ fn dense_only_rows_apply_each_filter_and_redact_blocked_pages() {
             ("blocked", "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
         ] {
             fs::write(wiki.0.join(format!("wiki/pages/followups/{name}.md")), format!(
-                "---\ntitle: Hidden {name}\nstatus: open\nproject: target\ntags: [unique]\ncreated: 2026-09-20\n---\n{body}\n"
+                "---\ntitle: Hidden {name}\nstatus: open\nproject: target\ntags: [unique]\ncreated: 2026-09-20\n---\n# Recovery\n{body}\n"
             )).unwrap();
         }
         // A substring tag must not match the whole-tag filter.
@@ -424,8 +424,8 @@ fn dense_only_rows_apply_each_filter_and_redact_blocked_pages() {
             {"path":"knowledge/foo","score":0.9},
             {"path":"knowledge/bar","score":0.8},
             {"path":"followups/missing","score":0.7},
-            {"path":"followups/match","score":0.6,"heading":"Recovery","start_line":7,"end_line":8},
-            {"path":"followups/blocked","score":0.5,"heading":"Hidden section","start_line":1,"end_line":9}
+            {"path":"followups/match","score":0.6,"heading":"Recovery","start_line":8,"end_line":9},
+            {"path":"followups/blocked","score":0.5,"heading":"Recovery","start_line":8,"end_line":9}
         ]}));
         assert_eq!(request, json!({"op":"dense","query":"nomatch","n":40}));
         let report: Value = serde_json::from_str(&output).unwrap();
@@ -439,14 +439,16 @@ fn dense_only_rows_apply_each_filter_and_redact_blocked_pages() {
         assert_eq!(matched["rel"], "pages/followups/match.md");
         assert_eq!(
             matched["section"],
-            json!({"heading":"Recovery","start":7,"end":8})
+            json!({"heading":"Recovery","start":8,"end":9})
         );
         let blocked = hits.last().unwrap();
         assert_eq!(blocked["title"], "[BLOCKED: secret]");
         assert_eq!(blocked["snippet"], "");
         assert!(blocked["section"].is_null());
+        assert_eq!(blocked["status"], "");
+        assert_eq!(blocked["project"], "");
+        assert_eq!(blocked["tags"], json!([]));
         assert!(!output.contains("Hidden blocked"));
-        assert!(!output.contains("Hidden section"));
     }
 }
 
@@ -753,12 +755,18 @@ fn opt_out_empty_or_unset_socket_skip_daemon() {
 #[test]
 fn dense_search_renders_pages_and_supplied_section() {
     let wiki = Wiki::new();
+    // The daemon reads sections from this index; give foo a real heading section.
+    fs::write(
+        wiki.0.join("wiki/pages/knowledge/foo.md"),
+        "---\ntitle: foo cache notes\ntags: [cache]\nproject: demo\ncreated: 2026-09-20\n---\n# What kills it\nRecovery details.\n",
+    )
+    .unwrap();
     let (output, request) = wiki.respond_output(
         &["search", "unmatchedmeaning", "anotherquery", "-n", "1"],
         "",
         json!({"ok": true, "tier": "gpu", "results": [
             {"path": "knowledge/deleted", "score": 2.0},
-            {"path": "knowledge/foo", "score": 1.23, "heading": "What kills it", "start_line": 27, "end_line": 36},
+            {"path": "knowledge/foo", "score": 1.23, "heading": "What kills it", "start_line": 7, "end_line": 8},
             {"path": "knowledge/bar", "score": 0.9}
         ]}),
     );
@@ -782,8 +790,143 @@ fn dense_search_renders_pages_and_supplied_section() {
     );
     assert!(lines[1].starts_with("  foo cache notes  (knowledge; updated "));
     assert!(lines[1].ends_with("; project=demo; tags=cache)"));
-    assert_eq!(lines[2], "  § What kills it (lines 27-36)");
+    assert_eq!(lines[2], "  § What kills it (lines 7-8)");
     assert_eq!(lines.len(), 3);
+}
+
+#[test]
+fn stale_daemon_sections_are_dropped_but_pages_kept() {
+    let wiki = Wiki::new();
+    fs::write(
+        wiki.0.join("wiki/pages/knowledge/foo.md"),
+        "---\ntitle: foo cache notes\ntags: [cache]\nproject: demo\ncreated: 2026-09-20\n---\n# Current\nRecovery details.\n",
+    )
+    .unwrap();
+    // A snapshot older than the page: a removed heading, lines past the end, and
+    // a section moved by an edit. A malformed id is never resolved to a file.
+    for (heading, start, end) in [
+        ("Removed heading", 7, 8),
+        ("Current", 900, 999),
+        ("Current", 6, 8),
+    ] {
+        let reply = json!({"ok": true, "results": [
+            {"path": "../../outside", "score": 3.0},
+            {"path": "knowledge/foo", "score": 1.0, "heading": heading, "start_line": start, "end_line": end}
+        ]});
+        let (output, _) =
+            wiki.respond(&["search", "unmatchedmeaning", "--json"], "", reply.clone());
+        let report: Value = serde_json::from_str(&output).unwrap();
+        let hits = report["hits"].as_array().unwrap();
+        assert_eq!(hits.len(), 1, "{output}");
+        assert_eq!(hits[0]["rel"], "pages/knowledge/foo.md");
+        assert!(hits[0]["section"].is_null(), "{output}");
+        fs::remove_file(wiki.0.join("embed.sock")).unwrap();
+
+        let (output, _) = wiki.respond_output(&["search", "unmatchedmeaning"], "", reply.clone());
+        assert!(output.status.success(), "{output:?}");
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains("foo cache notes"), "{text}");
+        assert!(!text.contains('§'), "{text}");
+        assert!(!text.contains(heading), "{text}");
+        fs::remove_file(wiki.0.join("embed.sock")).unwrap();
+
+        let (output, _) = wiki.respond(&["related", "--json", "--cwd", "/"], "cache", reply);
+        let report: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(report["pages"].as_array().unwrap().len(), 1, "{output}");
+        assert_eq!(report["pages"][0]["rel"], "pages/knowledge/foo.md");
+        assert!(report["pages"][0]["section"].is_null(), "{output}");
+        fs::remove_file(wiki.0.join("embed.sock")).unwrap();
+    }
+}
+
+#[test]
+fn blocked_json_hits_hide_status_project_and_tags_in_every_mode() {
+    let wiki = Wiki::new();
+    fs::create_dir_all(wiki.0.join("wiki/pages/followups")).unwrap();
+    // The body blocks the page; its metadata must not escape through JSON.
+    fs::write(
+        wiki.0.join("wiki/pages/followups/leaky.md"),
+        "---\ntitle: Leaky title\nstatus: open\nproject: leakyproject\ntags: [leakytag, secondleak]\ncreated: 2026-09-20\n---\nmarker ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n",
+    )
+    .unwrap();
+    let check = |output: &str, via: &str| {
+        let report: Value = serde_json::from_str(output).unwrap();
+        let hits = report["hits"].as_array().unwrap();
+        let hit = hits
+            .iter()
+            .find(|hit| hit["rel"] == "pages/followups/leaky.md")
+            .unwrap_or_else(|| panic!("{output}"));
+        assert_eq!(hit["via"], via, "{output}");
+        assert_eq!(hit["title"], "[BLOCKED: secret]");
+        assert_eq!(hit["status"], "");
+        assert_eq!(hit["project"], "");
+        assert_eq!(hit["tags"], json!([]));
+        assert_eq!(hit["snippet"], "");
+        assert!(hit["section"].is_null());
+        for hidden in [
+            "Leaky title",
+            "leakyproject",
+            "leakytag",
+            "secondleak",
+            "ghp_",
+        ] {
+            assert!(!output.contains(hidden), "{hidden}: {output}");
+        }
+    };
+    // BM25 only.
+    check(
+        &run(
+            wiki.command(&["search", "marker", "--json", "--no-semantic"]),
+            "",
+        ),
+        "bm25",
+    );
+    let dense = json!({"ok": true, "results": [
+        {"path": "followups/leaky", "score": 1.0, "heading": "", "start_line": 1, "end_line": 8}
+    ]});
+    // Dense only: no keyword matches.
+    let (output, _) = wiki.respond(&["search", "unmatchedmeaning", "--json"], "", dense.clone());
+    check(&output, "dense");
+    fs::remove_file(wiki.0.join("embed.sock")).unwrap();
+    // Fused: both retrievers return the page.
+    let (output, _) = wiki.respond(&["search", "marker", "--json"], "", dense);
+    check(&output, "both");
+}
+
+#[test]
+fn related_returns_promptly_when_stdin_stays_open() {
+    let wiki = Wiki::new();
+    // No daemon listens: only the stdin wait could hold the command.
+    let mut child = wiki
+        .command(&["related", "--json", "--timeout-ms", "20", "--cwd", "/"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(b"cache ").unwrap();
+    stdin.flush().unwrap();
+    let start = Instant::now();
+    let deadline = start + Duration::from_secs(3);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("related still waits for stdin after {:?}", start.elapsed());
+        }
+        thread::sleep(Duration::from_millis(5));
+    };
+    // The writer is still open: the command finished on its stdin deadline.
+    let elapsed = start.elapsed();
+    drop(stdin);
+    let output = child.wait_with_output().unwrap();
+    assert!(status.success(), "{output:?}");
+    assert!(elapsed < Duration::from_millis(1500), "{elapsed:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report, json!({"pages": [], "overview": null}));
 }
 
 #[test]
