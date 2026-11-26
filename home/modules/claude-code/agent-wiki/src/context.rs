@@ -151,7 +151,7 @@ fn budgeted(pinned: &str, sections: &mut [Section], budget: usize) -> (String, u
     }
 }
 
-fn session_id() -> Option<String> {
+fn hook_input() -> Option<serde_json::Value> {
     use std::{
         io::{self, IsTerminal, Read},
         sync::mpsc,
@@ -169,8 +169,7 @@ fn session_id() -> Option<String> {
                 .take(1024 * 1024)
                 .read_to_string(&mut input)
                 .ok()
-                .and_then(|_| serde_json::from_str::<serde_json::Value>(&input).ok())
-                .and_then(|v| v["session_id"].as_str().map(str::to_owned));
+                .and_then(|_| serde_json::from_str::<serde_json::Value>(&input).ok());
             let _ = send.send(id);
         })
         .ok()?;
@@ -181,7 +180,10 @@ fn session_id() -> Option<String> {
 }
 
 pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
-    let session = session_id();
+    let input = hook_input();
+    let session = input
+        .as_ref()
+        .and_then(|v| v["session_id"].as_str().map(str::to_owned));
     let mut injected = vec![];
     let mut listed = std::collections::HashMap::new();
     let total: i64 = db.query_row("select count(*) from files", [], |r| r.get(0))?;
@@ -318,6 +320,17 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
         original: items.len(),
         items,
     });
+    // Announce bulletins here so the session's first prompt does not repeat them.
+    if let Some(v) = &input
+        && let Some(note) = crate::bulletin::hook(
+            root,
+            db,
+            v["cwd"].as_str(),
+            session.as_deref().unwrap_or_default(),
+        )
+    {
+        pinned += &format!("\n{note}\n");
+    }
     let (text, used) = budgeted(&pinned, &mut sections, args.budget);
     if used > args.budget {
         eprintln!(
