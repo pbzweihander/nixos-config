@@ -456,7 +456,7 @@ searched. Those belong in auto memory or a rule file, which load every session.
 
 ## Reminder
 
-A `UserPromptSubmit` hook runs `agent-wiki remind`. It does two things.
+A `UserPromptSubmit` hook runs `agent-wiki remind`. It does three things.
 
 It sends the raw prompt, including Korean prose, to the local `wiki-embed` daemon
 and asks for up to ten pages passing the daemon's relevance threshold. It drops
@@ -470,6 +470,34 @@ slow reply produces no suggestion. The whole request has a 300 ms deadline,
 configurable with `AGENT_WIKI_SEMANTIC_TIMEOUT_MS`. `AGENT_WIKI_SOCKET` overrides
 `$XDG_RUNTIME_DIR/agent-wiki/embed.sock`; setting it to an empty string disables
 semantic retrieval. These settings also apply to dense retrieval in search.
+
+It also announces bulletins: unblocked pages tagged `bulletin` whose indexed mtime
+differs from the one the consumer last saw, for every prompt including `<`-wrapped
+ones (Orca's `<USER_REQUEST>`):
+`agent-wiki bulletin: updated notice(s) since your last check: /abs/a.md (Title — updated YYYY-MM-DD HH:MM). Read and apply any changes that affect your work or SOP; do not reply to this note directly.`
+The consumer is `bot:<id>` when `$ORCA_BOT_HOME` (if set and non-empty, it alone
+decides) or else the hook's `cwd` resolves, after following symlinks and `..`, to a
+path under `.orca/bots/<id>`; all of that bot's sessions share it. Otherwise it is
+`session:<id>`. `agent-wiki context` performs the same check at SessionStart, so the
+first prompt does not repeat it. Each note is bounded: at most 10 pages and 1,500
+characters in `remind`, and a fifth of `--budget` (capped at 1,500) in `context`.
+Antigravity receives the same notices through `SessionStart` and new-prompt
+`PreInvocation` `injectSteps`, sharing the bot consumer across conversations.
+Manual `agent-wiki context` without hook stdin does not announce bulletins or
+mutate their seen state.
+Titles are shortened to fit; pages that do not fit are summarized as
+`` +N more (run `agent-wiki bulletin`) `` and delivered on later turns. Only the pages a
+note names are marked seen in `usage.sqlite` (`bulletin_seen`) and logged as
+`bulletin` injections; a busy `usage.sqlite` delivers nothing and marks nothing.
+To post a notice for every session and bot, write a page with
+`tags: [..., bulletin]`; each edit announces it again. Edits are tracked by mtime
+only, so a write that preserves the timestamp (`touch -r`, `rsync -t`, `cp -p`) is
+not announced. Blocked, untagged, and deleted pages are never announced.
+`agent-wiki bulletin [--consumer KEY] [--cwd DIR] [--mark-seen] [--json]` lists
+bulletin pages with their `new`, `updated`, `seen` (or, without a consumer,
+`unknown`) status. `--mark-seen` needs a consumer and fails otherwise; it marks every
+listed page and reports each page's status from before marking, with the count in
+`marked_seen` (JSON) or `marked N page(s) seen`.
 
 Every 15 prompts without a
 `agent-wiki sync` tool call in the session transcript, it nudges the session to

@@ -1,5 +1,6 @@
 //! Shared markdown wiki, indexed incrementally and serialized across sessions.
 mod antigravity;
+mod bulletin;
 mod codex_recall;
 mod compat;
 mod context;
@@ -108,6 +109,8 @@ enum Commands {
     Remind(remind::Args),
     /// Suggest wiki pages for skill calls or exact error text on failures
     Recall(recall::Args),
+    /// Pages tagged `bulletin` and whether a consumer has seen their latest version
+    Bulletin(bulletin::Args),
 }
 
 fn env_path(key: &str) -> Option<PathBuf> {
@@ -303,6 +306,7 @@ fn run_locked(root: &Path, command: &Commands) -> Result<i32> {
         Commands::Record(_) => unreachable!(),
         Commands::Remind(args) => remind::run(root, &db, args)?,
         Commands::Recall(args) => recall::run(root, &db, args)?,
+        Commands::Bulletin(args) => bulletin::run(root, &db, args)?,
     }
     Ok(0)
 }

@@ -5,7 +5,7 @@ use std::{
     path::PathBuf,
     process::{Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 struct Fixture(PathBuf);
@@ -61,15 +61,9 @@ impl Fixture {
         expect_errors: bool,
         env: &[(&str, &str)],
     ) -> Value {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_agent-wiki"))
-            .args(args)
+        let mut child = self
+            .command(args)
             .args(["--harness", "antigravity"])
-            .current_dir(&self.0)
-            .env("AGENT_WIKI_DIR", self.0.join("wiki"))
-            .env("XDG_STATE_HOME", self.0.join("state"))
-            .env("AGENT_WIKI_SOCKET", "")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .envs(env.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -89,6 +83,35 @@ impl Fixture {
         }
         // Parsing the complete stdout also rejects extra JSON objects/plain text.
         serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {out:?}"))
+    }
+
+    fn command(&self, args: &[&str]) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_agent-wiki"));
+        command
+            .args(args)
+            .current_dir(&self.0)
+            .env("AGENT_WIKI_DIR", self.0.join("wiki"))
+            .env("XDG_STATE_HOME", self.0.join("state"))
+            .env("AGENT_WIKI_SOCKET", "")
+            .env_remove("ORCA_BOT_HOME")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null");
+        command
+    }
+
+    fn bulletin(&self, name: &str, revision: u64) {
+        let page = self.0.join(format!("wiki/pages/knowledge/{name}.md"));
+        fs::write(
+            &page,
+            format!("---\ntitle: 팀 공지 {revision}\ncreated: 2026-11-26\ntags: [bulletin]\n---\n작업 방식 변경 {revision}\n"),
+        )
+        .unwrap();
+        fs::File::options()
+            .write(true)
+            .open(page)
+            .unwrap()
+            .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(revision))
+            .unwrap();
     }
 
     fn run(&self, args: &[&str], input: &Value) -> Value {
@@ -156,6 +179,109 @@ fn context_uses_camelcase_session_and_workspace_fallback_and_logs_injections() {
     assert_eq!(session, "conversation-one");
     p["cwd"] = json!(f.0);
     assert!(!text(&f.run(&["context"], &p)).contains("Current project: demo"));
+}
+
+#[test]
+fn bulletins_share_bot_seen_state_across_session_start_and_new_prompts() {
+    let f = Fixture::new();
+    let bot = f.0.join(".orca/bots/combined-test/work");
+    fs::create_dir_all(&bot).unwrap();
+    f.bulletin("notice", 1);
+    let mut start = f.payload("SessionStart");
+    start["workspacePaths"] = json!([bot]);
+    let first = f.run(&["context"], &start);
+    assert!(text(&first).contains("agent-wiki bulletin:"));
+    assert!(text(&first).contains("notice.md (팀 공지 1"));
+
+    let args = ["remind", "--interval", "100"];
+    let mut prompt = start.clone();
+    prompt["hookEventName"] = json!("PreInvocation");
+    assert_eq!(f.run(&args, &prompt), json!({}));
+    // A different conversation belonging to the same bot shares the seen state.
+    prompt["conversationId"] = json!("conversation-two");
+    assert_eq!(f.run(&args, &prompt), json!({}));
+
+    f.bulletin("notice", 2);
+    f.bulletin("new-notice", 3);
+    // Tool continuations do not consume bulletins before the next user prompt.
+    prompt["invocationNum"] = json!(2);
+    assert_eq!(f.run(&args, &prompt), json!({}));
+    prompt["invocationNum"] = json!(1);
+    prompt["initialNumSteps"] = json!(20);
+    let update = f.run(&args, &prompt);
+    assert!(text(&update).contains("agent-wiki bulletin:"));
+    assert!(text(&update).contains("notice.md (팀 공지 2"));
+    assert!(text(&update).contains("new-notice.md (팀 공지 3"));
+    assert_eq!(f.run(&args, &prompt), json!({}));
+    prompt["initialNumSteps"] = json!(30);
+    assert_eq!(f.run(&args, &prompt), json!({}));
+    start["conversationId"] = json!("conversation-three");
+    assert!(!text(&f.run(&["context"], &start)).contains("agent-wiki bulletin:"));
+
+    let db = rusqlite::Connection::open(f.0.join("wiki/usage.sqlite")).unwrap();
+    let seen: Vec<(String, String, i64)> = db
+        .prepare("select consumer_key, page_path, seen_mtime from bulletin_seen order by page_path")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        seen,
+        vec![
+            (
+                "bot:combined-test".into(),
+                "pages/knowledge/new-notice.md".into(),
+                3_000_000_000
+            ),
+            (
+                "bot:combined-test".into(),
+                "pages/knowledge/notice.md".into(),
+                2_000_000_000
+            ),
+        ]
+    );
+    let delivered: i64 = db
+        .query_row(
+            "select count(*) from injections where source='bulletin'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(delivered, 3);
+}
+
+#[test]
+fn manual_context_without_hook_input_does_not_consume_bot_bulletins() {
+    let f = Fixture::new();
+    let bot = f.0.join(".orca/bots/manual-test");
+    fs::create_dir_all(&bot).unwrap();
+    f.bulletin("notice", 1);
+    // Even an explicit bot identity and bot cwd do not turn a CLI call into a hook.
+    let manual = f
+        .command(&["context"])
+        .current_dir(&bot)
+        .env("ORCA_BOT_HOME", &bot)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(manual.status.success(), "{manual:?}");
+    assert!(manual.stderr.is_empty(), "{manual:?}");
+    assert!(
+        !String::from_utf8(manual.stdout)
+            .unwrap()
+            .contains("agent-wiki bulletin:")
+    );
+    assert!(!f.0.join("wiki/usage.sqlite").exists());
+    let start = f.payload("SessionStart");
+    let result = f.run_env(
+        &["context"],
+        &start.to_string(),
+        false,
+        &[("ORCA_BOT_HOME", bot.to_str().unwrap())],
+    );
+    assert!(text(&result).contains("agent-wiki bulletin:"));
+    assert!(text(&result).contains("notice.md"));
 }
 
 #[test]

@@ -151,7 +151,7 @@ fn budgeted(pinned: &str, sections: &mut [Section], budget: usize) -> (String, u
     }
 }
 
-fn session_id() -> Option<String> {
+fn hook_input() -> Option<serde_json::Value> {
     use std::{
         io::{self, IsTerminal, Read},
         sync::mpsc,
@@ -169,8 +169,7 @@ fn session_id() -> Option<String> {
                 .take(1024 * 1024)
                 .read_to_string(&mut input)
                 .ok()
-                .and_then(|_| serde_json::from_str::<serde_json::Value>(&input).ok())
-                .and_then(|v| v["session_id"].as_str().map(str::to_owned));
+                .and_then(|_| serde_json::from_str::<serde_json::Value>(&input).ok());
             let _ = send.send(id);
         })
         .ok()?;
@@ -180,9 +179,19 @@ fn session_id() -> Option<String> {
         .flatten()
 }
 
+/// Present only when a harness supplied hook input, never for a manual context call.
+pub(crate) struct HookContext<'a> {
+    pub session: Option<&'a str>,
+    pub cwd: Option<&'a str>,
+}
+
 pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
-    let session = session_id();
-    let text = render(root, db, args, session.as_deref(), Path::new("."))?;
+    let input = hook_input();
+    let hook = input.as_ref().map(|v| HookContext {
+        session: v["session_id"].as_str(),
+        cwd: v["cwd"].as_str(),
+    });
+    let text = render(root, db, args, Path::new("."), hook)?;
     print!("{}", args.harness.context("SessionStart", &text));
     Ok(())
 }
@@ -191,8 +200,8 @@ pub(crate) fn render(
     root: &Path,
     db: &Connection,
     args: &Args,
-    session: Option<&str>,
     cwd: &Path,
+    hook: Option<HookContext<'_>>,
 ) -> Result<String> {
     let mut injected = vec![];
     let mut listed = std::collections::HashMap::new();
@@ -330,6 +339,18 @@ pub(crate) fn render(
         original: items.len(),
         items,
     });
+    // Announce bulletins here so the session's first prompt does not repeat them.
+    if let Some(hook) = &hook
+        && let Some(note) = crate::bulletin::hook(
+            root,
+            db,
+            hook.cwd,
+            hook.session.unwrap_or_default(),
+            (args.budget / 5).min(crate::bulletin::MAX_CHARS),
+        )
+    {
+        pinned += &format!("\n{note}\n");
+    }
     let (text, used) = budgeted(&pinned, &mut sections, args.budget);
     if used > args.budget {
         eprintln!(
@@ -337,7 +358,7 @@ pub(crate) fn render(
             args.budget
         );
     }
-    if let Some(session) = session {
+    if let Some(session) = hook.and_then(|hook| hook.session) {
         for section in &sections {
             if let Some(paths) = listed.get(section.name) {
                 injected.extend(paths.iter().take(section.items.len()).cloned());

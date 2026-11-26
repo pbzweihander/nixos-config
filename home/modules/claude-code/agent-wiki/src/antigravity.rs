@@ -368,8 +368,16 @@ fn run_locked(command: &Commands, root: &Path, payload: &Payload) -> Result<Valu
     let session = &payload.conversation_id;
     match command {
         Commands::Context(args) if payload.hook_event_name == "SessionStart" => {
-            let text =
-                crate::context::render(root, &db, args, Some(session), Path::new(payload.cwd()))?;
+            let text = crate::context::render(
+                root,
+                &db,
+                args,
+                Path::new(payload.cwd()),
+                Some(crate::context::HookContext {
+                    session: Some(session),
+                    cwd: Some(payload.cwd()),
+                }),
+            )?;
             Ok(output("SessionStart", &text))
         }
         Commands::Remind(args)
