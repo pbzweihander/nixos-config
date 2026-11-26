@@ -8,7 +8,7 @@ use std::{io::Read, path::Path};
 #[cfg(test)]
 use std::fs::{self, OpenOptions};
 
-const MAX_INPUT: u64 = 256 * 1024;
+const MAX_INPUT: u64 = 1024 * 1024;
 
 #[derive(Clone, Copy)]
 enum Event {
@@ -359,7 +359,10 @@ fn output(hook: &Hook, message: &str) -> String {
 }
 
 pub(crate) fn run(root: &Path, args: &crate::remind::Args) -> Result<()> {
-    let mut hook = parse(crate::hook_io::stdin()?.as_bytes())?;
+    let Some(input) = crate::hook_io::stdin()? else {
+        return Ok(());
+    };
+    let mut hook = parse(input.as_bytes())?;
     if args.harness == Harness::Codex {
         let Some(code) = hook.exit_code() else {
             return Ok(());

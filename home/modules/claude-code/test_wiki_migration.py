@@ -77,9 +77,12 @@ class MigrationTests(unittest.TestCase):
         }
         def hook(command):
             return {"type": "command", "command": command}
-        static = {"hooks": {event: [{"hooks": [hook("agent-wiki " + cmd)]} for cmd in cmds]
+        def current(cmd):
+            return "agent-wiki " + cmd + (" --hook" if cmd in ("context", "remind", "recall") else "")
+        static = {"hooks": {event: [{"hooks": [hook(current(cmd))]} for cmd in cmds]
                             for event, cmds in commands.items()}}
-        legacy = json.loads(json.dumps(static).replace("agent-wiki", "claude-wiki"))
+        legacy = {"hooks": {event: [{"hooks": [hook("claude-wiki " + cmd)]} for cmd in cmds]
+                            for event, cmds in commands.items()}}
         foreign = [hook("echo claude-wiki context"), hook("/custom/claude-wiki context"),
                    {"type": "prompt", "command": "claude-wiki context"}]
         legacy["hooks"]["SessionStart"][0]["hooks"].extend(foreign)
@@ -97,9 +100,34 @@ class MigrationTests(unittest.TestCase):
             for event, cmds in commands.items():
                 actual = [h["command"] for g in result["hooks"][event] for h in g["hooks"] if h["type"] == "command"]
                 for cmd in cmds:
-                    self.assertEqual(actual.count("agent-wiki " + cmd), 1)
+                    self.assertEqual(actual.count(current(cmd)), 1)
                     self.assertNotIn("claude-wiki " + cmd, actual)
             self.assertEqual(merge(result), result)
+
+    def test_claude_explicit_hooks_replace_previous_agent_commands(self):
+        old_commands = {"SessionStart": ["agent-wiki context"],
+                        "UserPromptSubmit": ["agent-wiki remind"],
+                        "PostToolUse": ["agent-wiki recall", "agent-wiki remind --event"],
+                        "SessionEnd": ["agent-wiki record"]}
+        def settings(commands):
+            return {"hooks": {event: [{"hooks": [{"type": "command", "command": cmd}]} for cmd in cmds]
+                              for event, cmds in commands.items()}}
+        new_commands = {event: [cmd + " --hook" if cmd in ("agent-wiki context", "agent-wiki remind", "agent-wiki recall") else cmd
+                               for cmd in cmds] for event, cmds in old_commands.items()}
+        original, static = settings(old_commands), settings(new_commands)
+        foreign = {"hooks": [{"type": "command", "command": "echo agent-wiki context"}]}
+        original["hooks"]["SessionStart"].append(foreign)
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "static.json"
+            config.write_text(json.dumps(static))
+            def merge(value):
+                return json.loads(subprocess.check_output(["jq", "--slurpfile", "static", str(config), "-f", str(ROOT / "merge-settings.jq")], input=json.dumps(value), text=True))
+            result = merge(original)
+            self.assertEqual(merge(result), result)
+            for event, commands in new_commands.items():
+                actual = [h["command"] for group in result["hooks"][event] for h in group["hooks"]]
+                expected = commands + (["echo agent-wiki context"] if event == "SessionStart" else [])
+                self.assertCountEqual(actual, expected)
 
 
 if __name__ == "__main__":

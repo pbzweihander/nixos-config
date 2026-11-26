@@ -123,7 +123,7 @@ fn ordinary_word(re: &Regex, text: &str, m: &regex::Match<'_>) -> bool {
             .any(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
         && !["sk-ant-", "sk-proj-", "sk-svcacct-", "sk-admin-"]
             .iter()
-            .any(|prefix| m.as_str().starts_with(prefix))
+            .any(|prefix| m.as_str().contains(prefix))
 }
 
 // Extend a truncated PEM only through complete base64 or supported metadata
@@ -340,6 +340,17 @@ pub fn scan(text: &str) -> Vec<Finding> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn protected_prefix_inside_kebab_word_is_redacted() {
+        for key in [
+            "disk-sk-proj-abcdefghijklmnopqrstuvwxyz",
+            "disk-sk-ant-api-abcdefghijklmnopqrstuvwxyz",
+        ] {
+            assert!(!super::scan(key).is_empty());
+            assert!(!super::redact(key).contains("abcdefghijklmnopqrstuvwxyz"));
+        }
+    }
+
     use super::*;
     #[test]
     fn categories_and_unicode() {

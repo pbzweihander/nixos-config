@@ -18,24 +18,55 @@ pub fn dir(root: &Path) -> PathBuf {
     let explicit_state = crate::env_path("XDG_STATE_HOME");
     // A custom data home without a paired state home is a custom fixture/root,
     // not permission to put its derived data into the user's live state tree.
-    if root == default && (data == home_data || explicit_state.is_some()) {
+    if canonical(root) == canonical(&default)
+        && (canonical(&data) == canonical(&home_data) || explicit_state.is_some())
+    {
         crate::compat::directory(
             &explicit_state.unwrap_or_else(|| crate::home().join(".local/state")),
         )
     } else {
-        let root = fs::canonicalize(root).unwrap_or_else(|_| {
-            if root.is_absolute() {
-                root.to_owned()
-            } else {
-                std::env::current_dir()
-                    .expect("current directory")
-                    .join(root)
-            }
-        });
+        let root = canonical(root);
         let mut name = root.file_name().unwrap_or_default().to_os_string();
         name.push("-state");
         root.with_file_name(name)
     }
+}
+
+fn canonical(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| {
+        if path.is_absolute() {
+            path.to_owned()
+        } else {
+            std::env::current_dir()
+                .expect("current directory")
+                .join(path)
+        }
+    })
+}
+
+fn sync_file(path: &Path) -> Result<()> {
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(crate::sessions::PRIVATE_OPEN_FLAGS)
+        .open(path)?
+        .sync_all()?;
+    Ok(())
+}
+
+fn staging_files(dir: &Path, names: &[&str]) -> Result<Vec<PathBuf>> {
+    Ok(fs::read_dir(dir)?
+        .collect::<io::Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|entry| {
+            names.iter().any(|name| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(&format!(".{name}.migrating-"))
+            })
+        })
+        .map(|entry| entry.path())
+        .collect())
 }
 
 fn directory(path: &Path) -> Result<()> {
@@ -118,15 +149,21 @@ pub fn prepare(root: &Path) -> Result<PathBuf> {
     if !legacy_files
         .iter()
         .any(|path| fs::symlink_metadata(path).is_ok())
+        && staging_files(&dir, &names)?.is_empty()
     {
         return Ok(dir);
     }
-    // Reject every legacy symlink/nonregular file before migrating any database.
-    for path in &legacy_files {
-        crate::sessions::repair_private_file(path, false)?;
-    }
     let mut migration = lock(root, "migration.lock")?;
     let _guard = migration.try_write()?;
+    // Validate before cleanup, including stale journals from a killed VACUUM.
+    let stale = staging_files(&dir, &names)?;
+    for path in legacy_files.iter().chain(&stale) {
+        crate::sessions::repair_private_file(path, false)?;
+    }
+    for path in stale {
+        fs::remove_file(path)?;
+    }
+    sync_file(&dir)?;
     // Serialize against an old binary while its legacy database is snapshotted.
     let legacy = root.join(".lock");
     let mut old_lock = if fs::symlink_metadata(&legacy).is_ok() {
@@ -157,10 +194,18 @@ pub fn prepare(root: &Path) -> Result<PathBuf> {
             }
             continue;
         }
-        let target = dir.join(name);
-        if fs::symlink_metadata(&target).is_ok() {
-            bail!("both legacy and state databases exist: {name}; reconcile them before migration");
-        }
+        let authoritative = dir.join(name);
+        let conflict = fs::symlink_metadata(&authoritative).is_ok();
+        crate::sessions::repair_private_file(&authoritative, false)?;
+        let target = if conflict {
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos();
+            dir.join(format!("{name}.legacy-{timestamp}"))
+        } else {
+            authoritative
+        };
+        let temporary = dir.join(format!(".{name}.migrating-{}", std::process::id()));
         let db = crate::sessions::private_db(&source)?;
         db.busy_timeout(Duration::from_millis(50))?;
         // Prevent an already running legacy writer from changing the source
@@ -172,19 +217,22 @@ pub fn prepare(root: &Path) -> Result<PathBuf> {
         for suffix in ["-wal", "-shm", "-journal"] {
             crate::sessions::repair_private_file(&dir.join(format!("{name}{suffix}")), false)?;
         }
-        // SQLite copies a consistent committed snapshot, including WAL contents.
-        // Keep the source until the private destination has been synced.
-        crate::sessions::repair_private_file(&target, true)?;
-        if let Err(error) = snapshot.execute("vacuum into ?", [target.to_string_lossy().as_ref()]) {
-            let _ = fs::remove_file(&target);
-            return Err(error.into());
+        // Never expose a partial final database: publish only a synced snapshot.
+        crate::sessions::repair_private_file(&temporary, true)?;
+        snapshot.execute("vacuum into ?", [temporary.to_string_lossy().as_ref()])?;
+        sync_file(&temporary)?;
+        fs::rename(&temporary, &target)?;
+        sync_file(&dir)?;
+        if name == "index.sqlite" {
+            // Recheck every legacy index, even if an earlier migration marker
+            // exists. Existing state rows win; the archive retains all originals.
+            crate::state::import_index(&dir, &target)?;
         }
-        for path in [&target, &dir] {
-            fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(crate::sessions::PRIVATE_OPEN_FLAGS)
-                .open(path)?
-                .sync_all()?;
+        if conflict {
+            eprintln!(
+                "agent-wiki: kept state {name}; archived legacy database as {}",
+                target.file_name().unwrap().to_string_lossy()
+            );
         }
         drop(snapshot);
         for suffix in ["-wal", "-shm", "-journal", ""] {
@@ -205,6 +253,10 @@ pub fn prepare(root: &Path) -> Result<PathBuf> {
     }
     if had_lock {
         fs::remove_file(legacy)?;
+    }
+    sync_file(&dir)?;
+    if root.is_dir() {
+        sync_file(root)?;
     }
     Ok(dir)
 }
@@ -302,7 +354,7 @@ mod tests {
         Ok(())
     }
     #[test]
-    fn migration_rejects_symlink_sidecars_and_conflicting_databases() -> Result<()> {
+    fn migration_rejects_symlink_sidecars_but_preserves_conflicting_databases() -> Result<()> {
         use std::os::unix::fs::symlink;
         let holder = crate::usage::tests::Wiki::new()?;
         let root = dir(&holder.root).join("unsafe");
@@ -316,8 +368,109 @@ mod tests {
         fs::remove_file(root.join("usage.sqlite-wal"))?;
         directory(&dir(&root))?;
         fs::write(dir(&root).join("usage.sqlite"), "destination")?;
-        assert!(prepare(&root).is_err());
-        assert!(root.join("usage.sqlite").exists());
+        prepare(&root)?;
+        assert!(!root.join("usage.sqlite").exists());
+        assert_eq!(
+            fs::read_to_string(dir(&root).join("usage.sqlite"))?,
+            "destination"
+        );
+        let archive = fs::read_dir(dir(&root))?
+            .filter_map(|e| e.ok())
+            .find(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("usage.sqlite.legacy-")
+            })
+            .unwrap();
+        let archived = crate::sessions::private_db(&archive.path())?;
+        archived.execute("insert into data values (1)", [])?;
+        Ok(())
+    }
+    #[test]
+    fn recreated_legacy_index_merges_missing_hook_rows_without_replacing_state() -> Result<()> {
+        let wiki = crate::usage::tests::Wiki::new()?;
+        wiki.index
+            .execute("insert into remind_state values ('kept',9,0)", [])?;
+        for iteration in 0..2 {
+            let old = Connection::open(wiki.root.join("index.sqlite"))?;
+            old.execute_batch("create table remind_state(session_id text primary key,prompts integer not null,offset integer not null); insert into remind_state values ('kept',1,0)")?;
+            old.execute(
+                "insert into remind_state values (?,3,0)",
+                [format!("new-{iteration}")],
+            )?;
+            drop(old);
+            fs::write(wiki.root.join(".lock"), "")?;
+            let new = crate::index::open(&wiki.root)?;
+            assert_eq!(
+                new.query_row(
+                    "select prompts from remind_state where session_id='kept'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                9
+            );
+            assert_eq!(
+                new.query_row(
+                    "select prompts from remind_state where session_id=?",
+                    [format!("new-{iteration}")],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                3
+            );
+            assert!(!wiki.root.join("index.sqlite").exists());
+            assert!(!wiki.root.join(".lock").exists());
+        }
+        assert_eq!(
+            fs::read_dir(dir(&wiki.root))?
+                .filter_map(|e| e.ok())
+                .filter(|e| e
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("index.sqlite.legacy-"))
+                .count(),
+            2
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn interrupted_snapshot_is_removed_and_legacy_data_recovers() -> Result<()> {
+        let wiki = crate::usage::tests::Wiki::new()?;
+        let root = dir(&wiki.root).join("crash");
+        fs::create_dir(&root)?;
+        directory(&dir(&root))?;
+        let old = Connection::open(root.join("sessions.sqlite"))?;
+        old.execute_batch("create table data(value); insert into data values ('preserved')")?;
+        drop(old);
+        for suffix in ["", "-journal"] {
+            fs::write(
+                dir(&root).join(format!(".sessions.sqlite.migrating-123{suffix}")),
+                "partial",
+            )?;
+        }
+        prepare(&root)?;
+        assert!(staging_files(&dir(&root), &["sessions.sqlite"])?.is_empty());
+        assert_eq!(
+            open(&root, "sessions.sqlite")?
+                .query_row("select value from data", [], |r| r.get::<_, String>(0))?,
+            "preserved"
+        );
+        assert!(!root.join("sessions.sqlite").exists());
+        // A marker from the former one-shot migration must not skip a new index.
+        let state = crate::state::open(&root)?;
+        state.execute(
+            "insert or ignore into state_migrations values ('index-hook-state')",
+            [],
+        )?;
+        let index = Connection::open(dir(&root).join("index.sqlite"))?;
+        index.execute_batch("create table recall_seen(session_id text,path text,primary key(session_id,path)); insert into recall_seen values ('restored','page')")?;
+        drop(index);
+        assert_eq!(
+            crate::state::open(&root)?
+                .query_row("select count(*) from recall_seen", [], |r| r
+                    .get::<_, i64>(0))?,
+            1
+        );
         Ok(())
     }
 }

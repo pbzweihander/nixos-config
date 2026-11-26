@@ -37,6 +37,7 @@ pub fn open(root: &Path) -> Result<Connection> {
         [path.to_string_lossy().as_ref()],
     )?;
     initialize(&db)?;
+    crate::state::mark_index(&db, &path)?;
     Ok(db)
 }
 

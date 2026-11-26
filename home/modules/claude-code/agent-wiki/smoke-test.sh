@@ -606,4 +606,45 @@ check "explicit source override" "no sessions match" env \
   AGENT_WIKI_DIR="$HOME/override-wiki" AGENT_WIKI_SESSIONS_DIRS=:: CLAUDE_CONFIG_DIR="$HOME/custom-claude" \
   "$wiki" sessions orbital
 
+# Default XDG migration, including a legacy writer after the first migration.
+(
+  unset AGENT_WIKI_DIR CLAUDE_WIKI_DIR AGENT_WIKI_STATE_DIR CLAUDE_WIKI_STATE_DIR
+  export XDG_DATA_HOME="$HOME/default-data" XDG_STATE_HOME="$HOME/default-state"
+  migration_share=$XDG_DATA_HOME/agent-wiki
+  migration_state=$XDG_STATE_HOME/agent-wiki
+  mkdir -p "$migration_share/pages/knowledge" "$migration_state"
+  printf -- '---\ntitle: 마이그레이션 검증\ncreated: 2026-11-27\n---\n테스트 내용\n' > "$migration_share/pages/knowledge/migration.md"
+  sqlite3 "$migration_share/index.sqlite" "create table remind_state(session_id text primary key,prompts integer not null,offset integer not null); insert into remind_state values ('legacy',7,0);"
+  for name in sessions usage records; do
+    sqlite3 "$migration_share/$name.sqlite" "create table migration_probe(value text); insert into migration_probe values ('preserved');"
+  done
+  : > "$migration_share/.lock"
+  printf '%s\n' '{"session_id":"migration-hook","hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"git commit -m fix"},"tool_response":{"exit_code":0}}' | "$wiki" remind --event > "$HOME/migration-hook.out"
+  grep -q 'you just committed' "$HOME/migration-hook.out"
+  "$wiki" list > "$HOME/migration-cli.out"
+  grep -q migration.md "$HOME/migration-cli.out"
+  test "$(sqlite3 "$migration_state/state.sqlite" "select prompts from remind_state where session_id='legacy'")" = 7
+  for name in index sessions usage records; do
+    test -f "$migration_state/$name.sqlite"
+    for suffix in '' -wal -shm -journal; do test ! -e "$migration_share/$name.sqlite$suffix"; done
+  done
+  for name in sessions usage records; do
+    test "$(sqlite3 "$migration_state/$name.sqlite" 'select value from migration_probe')" = preserved
+  done
+  test ! -e "$migration_share/.lock"
+  # Simulate a still-running old store-path hook recreating its index and lock.
+  sqlite3 "$migration_share/index.sqlite" "create table remind_state(session_id text primary key,prompts integer not null,offset integer not null); insert into remind_state values ('old-writer',11,0);"
+  : > "$migration_share/.lock"
+  "$wiki" list > /dev/null
+  test "$(sqlite3 "$migration_state/state.sqlite" "select prompts from remind_state where session_id='old-writer'")" = 11
+  test ! -e "$migration_share/index.sqlite"
+  test ! -e "$migration_share/.lock"
+  set -- "$migration_state"/index.sqlite.legacy-*
+  test -f "$1"
+  (cd "$migration_share" && "$wiki" --dir . list > /dev/null)
+  ln -s "$migration_share" "$HOME/default-alias"
+  AGENT_WIKI_DIR="$HOME/default-alias" "$wiki" list > /dev/null
+  test ! -e "$XDG_DATA_HOME/agent-wiki-state"
+)
+
 echo "agent-wiki smoke test passed"

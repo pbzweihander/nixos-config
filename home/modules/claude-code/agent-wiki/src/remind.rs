@@ -91,7 +91,9 @@ fn select(
 }
 
 pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
-    let input = crate::hook_io::stdin()?;
+    let Some(input) = crate::hook_io::stdin()? else {
+        return Ok(());
+    };
     let hook = if input.trim().is_empty() {
         Hook::default()
     } else {

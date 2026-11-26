@@ -3,7 +3,8 @@
 def legacy_wiki_hook:
   .type == "command" and
   (.command as $command | ["claude-wiki context", "claude-wiki remind",
-    "claude-wiki remind --event", "claude-wiki recall", "claude-wiki record"] | index($command) != null);
+    "claude-wiki remind --event", "claude-wiki recall", "claude-wiki record",
+    "agent-wiki context", "agent-wiki remind", "agent-wiki recall"] | index($command) != null);
 
 def remove_legacy_hooks:
   if (.hooks | type) == "object" then

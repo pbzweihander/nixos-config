@@ -50,8 +50,9 @@ wiki tag `claude-wiki` and historical page text unchanged.
 Runtime files are private (0600). `AGENT_WIKI_STATE_DIR` (or `CLAUDE_WIKI_STATE_DIR`)
 overrides the state directory; custom wiki roots default to a sibling `<root>-state`
 directory, isolating test fixtures even with an inherited `XDG_STATE_HOME`. Legacy
-SQLite files migrate at startup; conflicting real databases require manual
-reconciliation. `sync --rebuild` preserves hook state and history.
+SQLite files migrate at startup through atomic snapshots. When both copies exist,
+the state directory stays authoritative; missing legacy hook rows are imported and
+conflicting legacy databases are preserved as private `*.legacy-<timestamp>` archives. `sync --rebuild` preserves hook state and history.
 
 The markdown pages are the source of truth. Every `agent-wiki` command first
 re-indexes pages whose mtime or size changed, so pages edited with Edit or Write are

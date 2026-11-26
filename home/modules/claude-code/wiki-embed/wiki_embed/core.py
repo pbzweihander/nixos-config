@@ -93,10 +93,10 @@ def state_dir(root):
         new, old = base / "agent-wiki", base / "claude-wiki"
         return old if not new.exists() and old.exists() else new
     home_data = Path.home() / ".local/share"
-    data = Path(os.environ.get("XDG_DATA_HOME", home_data))
+    data = Path(os.environ.get("XDG_DATA_HOME") or home_data)
     default = compatible(data)
-    if root == default and (data == home_data or "XDG_STATE_HOME" in os.environ):
-        return compatible(Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")))
+    if root.resolve() == default.resolve() and (data.resolve() == home_data.resolve() or os.environ.get("XDG_STATE_HOME")):
+        return compatible(Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state"))
     root = root.resolve()
     return root.with_name(root.name + "-state")
 

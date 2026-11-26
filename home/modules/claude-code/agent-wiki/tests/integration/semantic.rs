@@ -2,7 +2,7 @@ use serde_json::{Value, json};
 use std::{
     fs,
     io::{BufRead, BufReader, Write},
-    os::unix::net::UnixListener,
+    os::unix::net::{UnixListener, UnixStream},
     path::PathBuf,
     process::{Command, Output, Stdio},
     sync::{
@@ -12,6 +12,28 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+fn accept(listener: &UnixListener) -> (UnixStream, std::os::unix::net::SocketAddr) {
+    listener.set_nonblocking(true).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match listener.accept() {
+            Ok((stream, address)) => {
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                return (stream, address);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(5))
+            }
+            Err(e) => panic!("fake daemon accept failed or timed out: {e}"),
+        }
+    }
+}
 
 struct Wiki(PathBuf);
 
@@ -102,6 +124,68 @@ fn default_wiki_directory_uses_existing_legacy_data_until_migrated() {
     }
 }
 
+#[test]
+fn default_root_aliases_share_one_state_directory() {
+    let wiki = Wiki::new();
+    let data = wiki.0.join("data");
+    fs::create_dir(&data).unwrap();
+    let root = data.join("agent-wiki");
+    fs::rename(wiki.0.join("wiki"), &root).unwrap();
+    let alias = wiki.0.join("alias");
+    std::os::unix::fs::symlink(&root, &alias).unwrap();
+    for path in [".", alias.to_str().unwrap()] {
+        let mut command = wiki.command(&["--dir", path, "list"]);
+        command
+            .current_dir(&root)
+            .env("XDG_DATA_HOME", &data)
+            .env("XDG_STATE_HOME", wiki.0.join("xdg-state"));
+        assert!(run(command, "").contains("foo cache notes"));
+        assert!(wiki.0.join("xdg-state/agent-wiki/index.sqlite").exists());
+        assert!(!data.join("agent-wiki-state").exists());
+    }
+}
+
+#[test]
+fn large_failure_payload_is_processed_and_over_limit_input_is_quiet() {
+    let wiki = Wiki::new();
+    let mut input = json!({"session_id":"large", "hook_event_name":"PostToolUseFailure", "tool_name":"Bash", "tool_input":{"command":"cargo test"}, "error":"x".repeat(70_000)});
+    let output = run_output(wiki.command(&["remind", "--event"]), &input.to_string());
+    assert!(
+        output.status.success() && output.stderr.is_empty(),
+        "{output:?}"
+    );
+    let db = rusqlite::Connection::open(wiki.0.join("wiki-state/state.sqlite")).unwrap();
+    assert_eq!(
+        db.query_row(
+            "select failures from remind_event_state where session_id='large'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    input["error"] = json!("x".repeat(1024 * 1024));
+    // Feed through a regular file so an early reader close cannot make the test
+    // writer fail with BrokenPipe before checking the hook's quiet fail-open.
+    let payload = wiki.0.join("oversized.json");
+    fs::write(&payload, input.to_string()).unwrap();
+    for args in [
+        ["remind", "--event"],
+        ["recall", "--hook"],
+        ["remind", "--hook"],
+    ] {
+        let output = wiki
+            .command(&args)
+            .stdin(fs::File::open(&payload).unwrap())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success() && output.stdout.is_empty() && output.stderr.is_empty(),
+            "{output:?}"
+        );
+    }
+}
+
 impl Wiki {
     fn new() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -156,7 +240,16 @@ impl Wiki {
             .args(args)
             .env("CLAUDE_WIKI_DIR", self.0.join("wiki"))
             .env("CLAUDE_WIKI_SESSIONS_DIRS", self.0.join("transcripts"))
+            .env(
+                "CLAUDE_WIKI_CODEX_SESSIONS_DIRS",
+                self.0.join("codex-transcripts"),
+            )
+            .env(
+                "CLAUDE_WIKI_ANTIGRAVITY_SESSIONS_DIRS",
+                self.0.join("antigravity-transcripts"),
+            )
             .env("CLAUDE_WIKI_SKILL_DIRS", self.0.join("skills"))
+            .env_remove("AGENT_WIKI_SOCKET")
             .env("CLAUDE_WIKI_SOCKET", self.0.join("embed.sock"))
             .env("CLAUDE_WIKI_SEMANTIC_TIMEOUT_MS", "1000")
             .env("CLAUDE_WIKI_REMIND_INTERVAL", "15")
@@ -183,7 +276,7 @@ impl Wiki {
     fn respond_bytes(&self, args: &[&str], input: &str, reply: Vec<u8>) -> (Output, Value) {
         let listener = self.listener();
         let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
+            let (mut stream, _) = accept(&listener);
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
@@ -347,7 +440,7 @@ fn related_timeout_is_separate_from_hook_timeout_and_can_be_overridden() {
         let listener = wiki.listener();
         let (release, wait) = mpsc::channel();
         let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
+            let (mut stream, _) = accept(&listener);
             let mut request = String::new();
             BufReader::new(&mut stream).read_line(&mut request).unwrap();
             let _ = wait.recv_timeout(Duration::from_millis(400));
@@ -990,7 +1083,7 @@ fn daemon_down_error_and_timeout_preserve_bm25_output() {
             let listener = wiki.listener();
             let (release, wait) = mpsc::channel();
             let server = thread::spawn(move || {
-                let (mut stream, _) = listener.accept().unwrap();
+                let (mut stream, _) = accept(&listener);
                 let mut request = String::new();
                 BufReader::new(&mut stream).read_line(&mut request).unwrap();
                 assert_eq!(
@@ -1159,7 +1252,7 @@ fn runtime_directory_socket_is_the_default() {
     fs::create_dir(wiki.0.join("agent-wiki")).unwrap();
     let listener = UnixListener::bind(wiki.0.join("agent-wiki/embed.sock")).unwrap();
     let server = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
+        let (mut stream, _) = accept(&listener);
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
@@ -1185,7 +1278,7 @@ fn timeout_override_keeps_stalled_daemon_from_delaying_nudge() {
     let listener = wiki.listener();
     let (release, wait) = mpsc::channel();
     let server = thread::spawn(move || {
-        let (_stream, _) = listener.accept().unwrap();
+        let (_stream, _) = accept(&listener);
         let _ = wait.recv_timeout(Duration::from_secs(2));
     });
     let mut command = wiki.command(&["remind", "--interval", "1"]);

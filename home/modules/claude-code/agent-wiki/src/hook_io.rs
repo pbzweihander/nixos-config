@@ -8,12 +8,13 @@ use std::{
     path::Path,
     time::{Duration, Instant},
 };
+const INPUT_CAP: usize = 1024 * 1024;
 const CAP: usize = 4 * 1024 * 1024;
 
-pub fn stdin() -> Result<String> {
+pub fn stdin() -> Result<Option<String>> {
     let (send, recv) = std::sync::mpsc::sync_channel(64);
     std::thread::spawn(move || {
-        let mut input = std::io::stdin().take(64 * 1024);
+        let mut input = std::io::stdin().take(INPUT_CAP as u64 + 1);
         let mut chunk = [0u8; 1024];
         while let Ok(n) = input.read(&mut chunk) {
             if n == 0 || send.send(chunk[..n].to_vec()).is_err() {
@@ -23,14 +24,17 @@ pub fn stdin() -> Result<String> {
     });
     let deadline = Instant::now() + Duration::from_millis(200);
     let mut bytes = Vec::new();
-    while bytes.len() < 64 * 1024 {
+    while bytes.len() <= INPUT_CAP {
         let Ok(chunk) = recv.recv_timeout(deadline.saturating_duration_since(Instant::now()))
         else {
             break;
         };
         bytes.extend(chunk);
     }
-    Ok(String::from_utf8(bytes)?)
+    if bytes.len() > INPUT_CAP {
+        return Ok(None);
+    }
+    Ok(Some(String::from_utf8(bytes)?))
 }
 
 pub fn lines(

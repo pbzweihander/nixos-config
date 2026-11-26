@@ -87,12 +87,24 @@ pub fn sync_command(command: &str) -> bool {
                     words = &words[1..];
                 }
             }
-            words.len() >= 2
-                && words[1] == "sync"
-                && Path::new(words[0])
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .is_some_and(wiki_skill)
+            if !words
+                .first()
+                .and_then(|word| Path::new(word).file_name())
+                .and_then(|s| s.to_str())
+                .is_some_and(wiki_skill)
+            {
+                return false;
+            }
+            words = &words[1..];
+            while let Some(word) = words.first() {
+                match *word {
+                    "--dir" if words.len() >= 2 => words = &words[2..],
+                    "--hook" => words = &words[1..],
+                    word if word.starts_with("--dir=") => words = &words[1..],
+                    _ => break,
+                }
+            }
+            words.first() == Some(&"sync")
         })
 }
 
@@ -104,6 +116,9 @@ mod tests {
     fn sync_requires_an_executed_command() {
         for command in [
             "agent-wiki sync",
+            "agent-wiki --dir '/tmp/wiki space' sync",
+            "agent-wiki --dir=/tmp/wiki --hook sync",
+            "env X=y claude-wiki --hook --dir /tmp/wiki sync -m done",
             "cd /tmp && /bin/claude-wiki sync -m x",
             "env X=y agent-wiki sync",
             "X=y command agent-wiki sync",
@@ -116,6 +131,9 @@ mod tests {
             "printf '%s' 'agent-wiki sync'",
             "echo agent-wiki sync",
             "cat agent-wiki sync",
+            "echo 'agent-wiki --dir X sync'",
+            "agent-wiki --dir sync list",
+            "agent-wiki --help sync",
         ] {
             assert!(!sync_command(command), "{command}");
         }

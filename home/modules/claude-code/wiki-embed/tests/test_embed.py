@@ -418,6 +418,22 @@ class PageSimilarityTests(unittest.TestCase):
                 decode_request(encode_message(dict(op="pairs", min=0.8, types=types)))
 
 
+class StateDirectoryTests(unittest.TestCase):
+    def test_default_aliases_and_empty_xdg_values(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            root = home / ".local/share/agent-wiki"
+            root.mkdir(parents=True)
+            alias = home / "alias"
+            alias.symlink_to(root)
+            env = {"HOME": str(home), "XDG_DATA_HOME": str(root.parent), "XDG_STATE_HOME": str(home / "state")}
+            with patch.dict(os.environ, env, clear=True):
+                self.assertEqual(state_dir(alias), home / "state/agent-wiki")
+                self.assertEqual(state_dir(root / "."), home / "state/agent-wiki")
+            with patch.dict(os.environ, {"HOME": str(home), "XDG_DATA_HOME": "", "XDG_STATE_HOME": ""}, clear=True):
+                self.assertEqual(state_dir(root), home / ".local/state/agent-wiki")
+
+
 class StoreTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

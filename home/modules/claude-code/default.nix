@@ -16,10 +16,14 @@ let
       pkgs.clippy
       pkgs.rustfmt
       pkgs.util-linux
+      pkgs.jq
     ];
     preCheck = ''
       cargo fmt --check
       cargo clippy --offline --all-targets -- -D warnings
+      PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=${./.} ${lib.getExe pkgs.python3} -m unittest \
+        test_wiki_migration.MigrationTests.test_claude_settings_replace_exact_legacy_commands_only \
+        test_wiki_migration.MigrationTests.test_claude_explicit_hooks_replace_previous_agent_commands
     '';
     # Legacy defaults preserve explicit settings under either environment name.
     postInstall = ''
@@ -43,7 +47,10 @@ let
       ln -s agent-wiki $out/bin/claude-wiki
     '';
     doInstallCheck = true;
-    nativeInstallCheckInputs = [ pkgs.git ];
+    nativeInstallCheckInputs = [
+      pkgs.git
+      pkgs.sqlite
+    ];
     installCheckPhase = ''
       runHook preInstallCheck
       bash smoke-test.sh $out/bin/agent-wiki
@@ -167,6 +174,7 @@ let
     ];
     # Keep the command string stable: array entries are unioned on merge, so a
     # changed command would be added next to the old one instead of replacing it.
+    # Register replaced exact commands in merge-settings.jq before changing them.
     hooks = {
       SessionEnd = [
         {

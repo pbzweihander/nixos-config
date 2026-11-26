@@ -1291,6 +1291,7 @@ mod tests {
         }
         git(&wiki.root, &["config", "user.name", "Test"])?;
         git(&wiki.root, &["config", "user.email", "test@example.com"])?;
+        git(&wiki.root, &["config", "commit.gpgsign", "false"])?;
         let rel = "pages/knowledge/t.md";
         let rewrite = same_size_rewrite(&mut wiki, rel)?;
         let head = head_pages(&wiki.root);
