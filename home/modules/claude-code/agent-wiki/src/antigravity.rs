@@ -6,9 +6,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    collections::hash_map::DefaultHasher,
-    fs::{self, File, OpenOptions},
-    hash::{Hash, Hasher},
+    fs::{self, File},
     io::{self, BufRead, BufReader, Read, Seek, SeekFrom},
     path::Path,
     time::{Duration, Instant},
@@ -69,29 +67,48 @@ impl Payload {
     }
 
     fn tool_key(&self) -> String {
-        fingerprint(&(
-            &self.tool_call.id,
+        fingerprint(&json!([
+            self.tool_call.id,
             self.step_idx,
-            &self.tool_call.name,
+            self.tool_call.name,
             self.tool_call.args.to_string(),
-        ))
+        ]))
     }
 }
 
-fn fingerprint(value: &impl Hash) -> String {
-    let mut hash = DefaultHasher::new();
-    value.hash(&mut hash);
-    format!("{:016x}", hash.finish())
+/// Persisted dedup keys must survive toolchain upgrades, so use FNV-1a (64-bit,
+/// fixed constants) over the serialized JSON instead of std's unspecified hasher.
+fn fingerprint(value: &Value) -> String {
+    format!("{:016x}", fnv1a(value.to_string().as_bytes()))
 }
 
-pub(crate) fn read_payload() -> Result<Payload> {
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+pub(crate) fn read_input() -> Result<Vec<u8>> {
     let mut bytes = vec![];
     io::stdin().take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
     ensure!(
         bytes.len() <= 1024 * 1024,
         "Antigravity hook input too large"
     );
-    Ok(serde_json::from_slice(&bytes)?)
+    Ok(bytes)
+}
+
+pub(crate) fn read_payload() -> Result<Payload> {
+    Ok(serde_json::from_slice(&read_input()?)?)
+}
+
+/// The event name of any JSON object input, even one whose other fields do not
+/// match `Payload`, so failure paths can still answer PreToolUse with `allow`.
+pub(crate) fn event_name(input: &[u8]) -> String {
+    serde_json::from_slice::<Value>(input)
+        .ok()
+        .and_then(|v| v["hookEventName"].as_str().map(str::to_owned))
+        .unwrap_or_default()
 }
 
 pub(crate) fn output(event: &str, text: &str) -> Value {
@@ -125,7 +142,7 @@ fn new_prompt(db: &Connection, payload: &Payload) -> Result<bool> {
     }
     // initialNumSteps distinguishes identical text in successive user turns;
     // missing counters fall back to text deduplication. Never persist prompt text.
-    let key = fingerprint(&(payload.initial_num_steps, &payload.last_user_input));
+    let key = fingerprint(&json!([payload.initial_num_steps, payload.last_user_input]));
     let previous: Option<String> = db
         .query_row(
             "select prompt_key from antigravity_prompts where session_id=?",
@@ -196,16 +213,24 @@ fn completed_step(payload: &Payload) -> Result<Option<Value>> {
     Ok(found)
 }
 
+/// Observed run_command results put `Command exited with code N.` in a header
+/// (after `Created At`/`Completed At` lines, possibly repeated in a truncation
+/// preview) followed by `Command output:` and the raw output. Only the header is
+/// searched, so the output body cannot fake an exit status. Content without a
+/// `Command output:` line is all header.
 pub(crate) fn command_exit(text: &str) -> Option<i64> {
-    // Observed run_command footer. Anchored whole line, not arbitrary mentions
-    // of an exit code in source files or command output.
-    text.lines().rev().take(12).find_map(|line| {
-        line.trim()
-            .strip_prefix("Command exited with code ")?
-            .strip_suffix('.')?
-            .parse()
-            .ok()
-    })
+    text.lines()
+        .map(str::trim_end)
+        .take_while(|line| *line != "Command output:")
+        .find_map(|line| {
+            let code = line
+                .strip_prefix("Command exited with code ")?
+                .strip_suffix('.')?;
+            let digits = code.strip_prefix('-').unwrap_or(code);
+            (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+                .then(|| code.parse().ok())
+                .flatten()
+        })
 }
 
 fn tool_hook(payload: &Payload) -> Hook {
@@ -238,74 +263,113 @@ fn tool_hook(payload: &Payload) -> Hook {
     hook
 }
 
-fn drain(root: &Path, db: &Connection, session: &str) -> Result<Vec<String>> {
-    let tx = db.unchecked_transaction()?;
-    let notes = tx
-        .prepare("select note from antigravity_pending where session_id=? order by created,rowid")?
-        .query_map([session], |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut messages = vec![];
-    for note in notes {
-        let value: Value = serde_json::from_str(&note)?;
-        if let Some(message) = value["hookSpecificOutput"]["additionalContext"].as_str() {
-            messages.push(message.to_owned());
-            if let (Some(source), Some(paths)) =
-                (value["source"].as_str(), value["pages"].as_array())
-            {
-                let paths = paths
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>();
-                crate::usage::log(root, session, source, &paths);
-            }
-        }
-    }
-    tx.execute(
-        "delete from antigravity_pending where session_id=?",
-        [session],
-    )?;
-    tx.commit()?;
-    Ok(messages)
+struct Pending {
+    rowid: i64,
+    note: Option<Value>,
 }
 
-pub(crate) fn run(command: &Commands) -> Result<Value> {
-    let payload = read_payload()?;
+/// Select queued notes without deleting them; `commit_drain` removes exactly
+/// these rows once the reply is built, so a failure in between keeps them queued
+/// and a note staged meanwhile is not removed.
+fn pending(db: &Connection, session: &str) -> Result<Vec<Pending>> {
+    Ok(db
+        .prepare(
+            "select rowid, note from antigravity_pending where session_id=? order by created,rowid",
+        )?
+        .query_map([session], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?
+        .map(|row| {
+            row.map(|(rowid, note)| Pending {
+                rowid,
+                // A malformed note can never be delivered: drop it with the rest.
+                note: serde_json::from_str(&note).ok(),
+            })
+        })
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+fn message(pending: &Pending) -> Option<&str> {
+    pending.note.as_ref()?["hookSpecificOutput"]["additionalContext"].as_str()
+}
+
+fn commit_drain(root: &Path, db: &Connection, session: &str, drained: &[Pending]) -> Result<()> {
+    let tx = db.unchecked_transaction()?;
+    {
+        let mut delete = tx.prepare("delete from antigravity_pending where rowid=?")?;
+        for item in drained {
+            delete.execute([item.rowid])?;
+        }
+    }
+    tx.commit()?;
+    // Usage counts injections: only notes that were part of the reply.
+    for note in drained
+        .iter()
+        .filter(|item| message(item).is_some())
+        .filter_map(|item| item.note.as_ref())
+    {
+        if let (Some(source), Some(paths)) = (note["source"].as_str(), note["pages"].as_array()) {
+            let paths = paths
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            crate::usage::log(root, session, source, &paths);
+        }
+    }
+    Ok(())
+}
+
+fn prompt_message(
+    root: &Path,
+    db: &Connection,
+    args: &crate::remind::Args,
+    payload: &Payload,
+) -> Result<Option<String>> {
+    if !new_prompt(db, payload)? {
+        return Ok(None);
+    }
+    let text = crate::remind::messages(root, db, args, payload.hook())?;
+    Ok((!text.is_empty()).then_some(text))
+}
+
+/// Antigravity kills a hook after its 5 s timeout; keep the lock wait well below it.
+const MAX_LOCK_WAIT: Duration = Duration::from_millis(3000);
+
+pub(crate) fn run(command: &Commands, input: &[u8]) -> Result<Value> {
+    let payload: Payload = serde_json::from_slice(input)?;
     let empty = output(&payload.hook_event_name, "");
     // This integration never gates tools, even if invoked manually as PreToolUse.
     if payload.hook_event_name == "PreToolUse" || payload.conversation_id.is_empty() {
         return Ok(empty);
     }
     let root = crate::wiki_root();
-    fs::create_dir_all(&root)?;
-    let mut lock = fd_lock::RwLock::new(
-        OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(root.join(".lock"))?,
-    );
-    let Ok(_guard) = lock.try_write() else {
-        return Ok(empty);
-    };
+    Ok(crate::with_hook_lock(&root, MAX_LOCK_WAIT, || {
+        run_locked(command, &root, &payload)
+    })?
+    .unwrap_or(empty))
+}
+
+fn run_locked(command: &Commands, root: &Path, payload: &Payload) -> Result<Value> {
+    let empty = output(&payload.hook_event_name, "");
     let needs_index = matches!(command, Commands::Context(_) | Commands::Recall(_))
         || matches!(command, Commands::Remind(args) if !args.event && payload.hook_event_name == "PreInvocation" && payload.invocation_num == Some(1));
     let mut db = if needs_index {
-        crate::ensure_layout(&root)?;
-        crate::index::open(&root)?
+        crate::ensure_layout(root)?;
+        crate::index::open(root)?
     } else {
         Connection::open(root.join("index.sqlite"))?
     };
     db.busy_timeout(Duration::from_millis(50))?;
     if needs_index {
-        crate::index::refresh(&root, &mut db)?;
+        crate::index::refresh(root, &mut db)?;
     }
     initialize(&db)?;
     let session = &payload.conversation_id;
     match command {
         Commands::Context(args) if payload.hook_event_name == "SessionStart" => {
             let text =
-                crate::context::render(&root, &db, args, Some(session), Path::new(payload.cwd()))?;
+                crate::context::render(root, &db, args, Some(session), Path::new(payload.cwd()))?;
             Ok(output("SessionStart", &text))
         }
         Commands::Remind(args)
@@ -315,14 +379,21 @@ pub(crate) fn run(command: &Commands) -> Result<Value> {
                     "PreInvocation" | "PostInvocation"
                 ) =>
         {
-            let mut messages = drain(&root, &db, session)?;
-            if new_prompt(&db, &payload)? {
-                let text = crate::remind::messages(&root, &db, args, payload.hook())?;
-                if !text.is_empty() {
-                    messages.push(text);
-                }
+            let drained = pending(&db, session)?;
+            let mut messages: Vec<String> = drained
+                .iter()
+                .filter_map(message)
+                .map(str::to_owned)
+                .collect();
+            // A prompt reminder failure must not cost the already staged notes.
+            match prompt_message(root, &db, args, payload) {
+                Ok(Some(text)) => messages.push(text),
+                Ok(None) => {}
+                Err(e) => eprintln!("agent-wiki: {e:#}"),
             }
-            Ok(output(&payload.hook_event_name, &messages.join("\n")))
+            let reply = output(&payload.hook_event_name, &messages.join("\n"));
+            commit_drain(root, &db, session, &drained)?;
+            Ok(reply)
         }
         Commands::Recall(_) | Commands::Remind(_) if payload.hook_event_name == "PostToolUse" => {
             let source = if matches!(command, Commands::Recall(_)) {
@@ -335,7 +406,7 @@ pub(crate) fn run(command: &Commands) -> Result<Value> {
             if seen {
                 return Ok(empty);
             }
-            let mut hook = tool_hook(&payload);
+            let mut hook = tool_hook(payload);
             let note = match command {
                 Commands::Recall(args) => {
                     if payload.tool_call.name == "read_file"
@@ -352,7 +423,7 @@ pub(crate) fn run(command: &Commands) -> Result<Value> {
                             hook.tool_response = json!({"output": crate::hook_payload::diagnostic_lines(&hook.response_text()).join("\n")});
                         }
                     }
-                    crate::recall::decide(&root, &db, &hook, args)?
+                    crate::recall::decide(root, &db, &hook, args)?
                 }
                 Commands::Remind(args) => crate::remind_event::decide(&db, &hook, args.failures)?
                     .map(|message| {
@@ -377,7 +448,7 @@ pub(crate) fn run(command: &Commands) -> Result<Value> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -447,5 +518,111 @@ mod tests {
         p.hook_event_name = "PostInvocation".into();
         assert!(!new_prompt(&db, &p)?);
         Ok(())
+    }
+    /// A real-shaped run_command result: header, then arbitrarily long output.
+    pub(crate) fn command_result(code: i64, output: &[&str]) -> String {
+        format!(
+            "Created At: 2026-11-26T22:19:04+09:00\nCompleted At: 2026-11-26T22:19:15+09:00\n\
+             Command exited with code {code}.\n\nCommand output:\n{}",
+            output.join("\n")
+        )
+    }
+
+    #[test]
+    fn command_exit_reads_only_the_header_before_command_output() {
+        let long: Vec<String> = (0..30).map(|i| format!("line {i}")).collect();
+        let long: Vec<&str> = long.iter().map(String::as_str).collect();
+        assert_eq!(command_exit(&command_result(1, &long)), Some(1));
+        assert_eq!(command_exit(&command_result(0, &long)), Some(0));
+        assert_eq!(command_exit(&command_result(-9, &[])), Some(-9));
+        // An exit line inside the output body is not the command's status.
+        let mut trap = long.clone();
+        trap.push("Command exited with code 1.");
+        assert_eq!(command_exit(&command_result(0, &trap)), Some(0));
+        let headerless = format!("Command output:\n{}", trap.join("\n"));
+        assert_eq!(command_exit(&headerless), None);
+        // Truncated results repeat the header inside a preview, still before the body.
+        let truncated = "Created At: x\nThe tool's output was truncated.\n\nHere is a preview:\n\
+                         Created At: x\nCommand exited with code 2.\n\nCommand output:\nbody";
+        assert_eq!(command_exit(truncated), Some(2));
+        // Without a Command output line, the whole (synthetic) content is header.
+        assert_eq!(
+            command_exit("error: x\nCommand exited with code 1."),
+            Some(1)
+        );
+        for bad in [
+            "Command exited with code +1.",
+            "Command exited with code 1",
+            "  Command exited with code 1.",
+            "Command exited with code .",
+            "Command exited with code 1.5.",
+        ] {
+            assert_eq!(command_exit(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn fingerprints_are_fixed_fnv1a_values() {
+        assert_eq!(fnv1a(b""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a(b"a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(fnv1a(b"foobar"), 0x8594_4171_f739_67e8);
+        assert_eq!(
+            fingerprint(&json!("a")),
+            format!("{:016x}", fnv1a(b"\"a\""))
+        );
+        assert_ne!(
+            fingerprint(&json!([1, "a"])),
+            fingerprint(&json!([null, "a"]))
+        );
+    }
+
+    #[test]
+    fn drain_deletes_only_selected_rows() -> Result<()> {
+        let db = Connection::open_in_memory()?;
+        initialize(&db)?;
+        let stage = |key: &str, text: &str| {
+            db.execute(
+                "insert into antigravity_pending values ('one','recall',?,?,unixepoch())",
+                params![
+                    key,
+                    crate::hook_payload::additional_context("PostToolUse", text).to_string()
+                ],
+            )
+        };
+        stage("a", "first note")?;
+        db.execute(
+            "insert into antigravity_pending values ('one','recall','bad','not json',unixepoch())",
+            [],
+        )?;
+        let drained = pending(&db, "one")?;
+        assert_eq!(
+            drained.iter().filter_map(message).collect::<Vec<_>>(),
+            ["first note"]
+        );
+        // Staged after the selection: must survive this drain.
+        stage("b", "second note")?;
+        commit_drain(Path::new("/nonexistent"), &db, "one", &drained)?;
+        let left = pending(&db, "one")?;
+        assert_eq!(
+            left.iter().filter_map(message).collect::<Vec<_>>(),
+            ["second note"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn partial_payloads_still_identify_pretooluse() {
+        assert_eq!(
+            event_name(br#"{"hookEventName":"PreToolUse","invocationNum":"bad"}"#),
+            "PreToolUse"
+        );
+        assert!(
+            serde_json::from_slice::<Payload>(
+                br#"{"hookEventName":"PreToolUse","invocationNum":"bad"}"#
+            )
+            .is_err()
+        );
+        assert_eq!(event_name(b"not json"), "");
+        assert_eq!(event_name(b"[]"), "");
     }
 }

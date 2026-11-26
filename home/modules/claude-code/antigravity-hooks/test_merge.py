@@ -39,6 +39,50 @@ class MergeTests(unittest.TestCase):
             self.assertTrue(merge.install(path, "/nix/store/two/bin/agent-wiki"))
             self.assertEqual(next(path.parent.glob("*.agent-wiki-backup-*")).read_bytes(), original)
 
+    def test_store_path_rebuilds_do_not_accumulate_backups(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "hooks.json"
+            user = {"other": {"Stop": [{"command": "other"}]}}
+            path.write_text(json.dumps(user))
+            backups = lambda: sorted(path.parent.glob("*.agent-wiki-backup-*"))
+            for build in range(5):
+                self.assertTrue(merge.install(path, f"/nix/store/build-{build}/bin/agent-wiki"))
+                self.assertEqual(len(backups()), 1)
+            # The single backup is the user's pre-install file, byte for byte.
+            self.assertEqual(json.loads(backups()[0].read_text()), user)
+            self.assertEqual(backups()[0].stat().st_mode & 0o777, 0o600)
+            # A change to content the merger does not own gets its own backup once.
+            document = json.loads(path.read_text())
+            document["other"]["enabled"] = False
+            path.write_text(json.dumps(document))
+            self.assertTrue(merge.install(path, "/nix/store/build-5/bin/agent-wiki"))
+            self.assertTrue(merge.install(path, "/nix/store/build-6/bin/agent-wiki"))
+            self.assertEqual(len(backups()), 2)
+
+    def test_fresh_install_rebuilds_need_no_backup_and_keep_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "hooks.json"
+            self.assertTrue(merge.install(path, "/nix/store/one/bin/agent-wiki"))
+            self.assertTrue(merge.install(path, "/nix/store/two/bin/agent-wiki"))
+            # Only the owned entry existed: one backup at most, never one per build.
+            self.assertLessEqual(len(list(path.parent.glob("*.agent-wiki-backup-*"))), 1)
+            path.chmod(0o640)
+            self.assertTrue(merge.install(path, "/nix/store/three/bin/agent-wiki"))
+            self.assertEqual(path.stat().st_mode & 0o777, 0o640)
+            self.assertIn("/nix/store/three/", path.read_text())
+
+    def test_symlinked_backup_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "hooks.json"
+            path.write_text("{}")
+            backup = path.with_name(f"hooks.json.agent-wiki-backup-{merge.foreign_digest({})}")
+            target = Path(directory) / "elsewhere"
+            target.write_text("{}")
+            backup.symlink_to(target)
+            with self.assertRaises(ValueError):
+                merge.install(path, "/bin/wiki")
+            self.assertEqual(path.read_text(), "{}")
+
     def test_malformed_and_symlinks_are_untouched(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "hooks.json"

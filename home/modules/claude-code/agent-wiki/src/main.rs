@@ -211,41 +211,60 @@ fn run(command: &Commands) -> Result<i32> {
         remind_event::run(&root, args)?;
         return Ok(0);
     }
-    fs::create_dir_all(&root)?;
-    let mut lock = fd_lock::RwLock::new(
+    if matches!(
+        command,
+        Commands::Context(_) | Commands::Remind(_) | Commands::Recall(_)
+    ) {
+        return Ok(
+            with_hook_lock(&root, Duration::MAX, || run_locked(&root, command))?.unwrap_or(0),
+        );
+    }
+    let mut lock = open_lock(&root)?;
+    let _guard = lock.write()?;
+    run_locked(&root, command)
+}
+
+fn open_lock(root: &Path) -> Result<fd_lock::RwLock<fs::File>> {
+    fs::create_dir_all(root)?;
+    Ok(fd_lock::RwLock::new(
         fs::OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
             .open(root.join(".lock"))?,
-    );
-    if matches!(
-        command,
-        Commands::Context(_) | Commands::Remind(_) | Commands::Recall(_)
-    ) {
-        let timeout = Duration::from_millis(
-            crate::compat::var("AGENT_WIKI_HOOK_LOCK_MS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(2000),
-        );
-        let started = Instant::now();
-        loop {
-            match lock.try_write() {
-                Ok(_guard) => return run_locked(&root, command),
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    let remaining = timeout.saturating_sub(started.elapsed());
-                    if remaining.is_zero() {
-                        return Ok(0);
-                    }
-                    thread::sleep(remaining.min(Duration::from_millis(25)));
+    ))
+}
+
+/// Hooks must not stall a session behind another wiki process: wait for the wiki
+/// lock at most `AGENT_WIKI_HOOK_LOCK_MS` (default 2000, capped by `max`), then
+/// give up with `None` and let the hook produce nothing.
+fn with_hook_lock<T>(
+    root: &Path,
+    max: Duration,
+    f: impl FnOnce() -> Result<T>,
+) -> Result<Option<T>> {
+    let mut lock = open_lock(root)?;
+    let timeout = Duration::from_millis(
+        crate::compat::var("AGENT_WIKI_HOOK_LOCK_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(2000),
+    )
+    .min(max);
+    let started = Instant::now();
+    loop {
+        match lock.try_write() {
+            Ok(_guard) => return f().map(Some),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                let remaining = timeout.saturating_sub(started.elapsed());
+                if remaining.is_zero() {
+                    return Ok(None);
                 }
-                Err(e) => return Err(e.into()),
+                thread::sleep(remaining.min(Duration::from_millis(25)));
             }
+            Err(e) => return Err(e.into()),
         }
     }
-    let _guard = lock.write()?;
-    run_locked(&root, command)
 }
 
 fn run_locked(root: &Path, command: &Commands) -> Result<i32> {
@@ -304,7 +323,12 @@ fn main() {
     });
     let cli = Cli::try_parse().unwrap_or_else(|e| {
         if antigravity {
-            println!("{{}}");
+            // Still answer a PreToolUse payload with its required decision.
+            let input = antigravity::read_input().unwrap_or_default();
+            println!(
+                "{}",
+                antigravity::output(&antigravity::event_name(&input), "")
+            );
         }
         if is_hook {
             eprintln!("{e}");
@@ -322,15 +346,22 @@ fn main() {
             println!("{{}}");
             let _ = io::stdout().flush();
         }
-        let result = std::panic::catch_unwind(|| match &cli.command {
-            Commands::Record(args) => records::run(args).map(|_| serde_json::json!({})),
-            command => antigravity::run(command),
-        })
-        .unwrap_or_else(|_| Err(anyhow::anyhow!("Antigravity hook failed")));
+        let mut event = String::new();
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &cli.command {
+                Commands::Record(args) => records::run(args).map(|_| serde_json::json!({})),
+                command => {
+                    let input = antigravity::read_input()?;
+                    event = antigravity::event_name(&input);
+                    antigravity::run(command, &input)
+                }
+            }))
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("Antigravity hook failed")));
         let failed = result.is_err();
         let output = result.unwrap_or_else(|e| {
             eprintln!("agent-wiki: {e:#}");
-            serde_json::json!({})
+            // Error fallback still carries PreToolUse's required decision.
+            antigravity::output(&event, "")
         });
         if !record {
             println!("{output}");

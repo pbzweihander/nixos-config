@@ -51,6 +51,16 @@ impl Fixture {
     }
 
     fn run_raw(&self, args: &[&str], input: &str, expect_errors: bool) -> Value {
+        self.run_env(args, input, expect_errors, &[])
+    }
+
+    fn run_env(
+        &self,
+        args: &[&str],
+        input: &str,
+        expect_errors: bool,
+        env: &[(&str, &str)],
+    ) -> Value {
         let mut child = Command::new(env!("CARGO_BIN_EXE_agent-wiki"))
             .args(args)
             .args(["--harness", "antigravity"])
@@ -60,6 +70,7 @@ impl Fixture {
             .env("AGENT_WIKI_SOCKET", "")
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .envs(env.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -84,6 +95,17 @@ impl Fixture {
         self.run_raw(args, &input.to_string(), false)
     }
 
+    fn lock(&self) -> fd_lock::RwLock<fs::File> {
+        wiki_lock(&self.0)
+    }
+
+    fn pending(&self) -> i64 {
+        rusqlite::Connection::open(self.0.join("wiki/index.sqlite"))
+            .unwrap()
+            .query_row("select count(*) from antigravity_pending", [], |r| r.get(0))
+            .unwrap()
+    }
+
     fn transcript(&self, rows: &[Value]) {
         fs::write(
             self.0.join("transcript.jsonl"),
@@ -97,6 +119,17 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+fn wiki_lock(root: &std::path::Path) -> fd_lock::RwLock<fs::File> {
+    fd_lock::RwLock::new(
+        fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(root.join("wiki/.lock"))
+            .unwrap(),
+    )
 }
 
 fn text(output: &Value) -> &str {
@@ -262,15 +295,220 @@ fn every_noop_and_error_path_is_strict_json_and_pretool_allows() {
         f.run(&["recall"], &f.payload("PreToolUse")),
         json!({"decision":"allow"})
     );
-    let file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(f.0.join("wiki/.lock"))
-        .unwrap();
-    let mut lock = fd_lock::RwLock::new(file);
+    // Failure paths keep PreToolUse's required decision whenever the event is
+    // readable: bad flags, and JSON whose other fields do not fit the payload.
+    let pretool = f.payload("PreToolUse").to_string();
+    assert_eq!(
+        f.run_raw(&["recall", "--unknown-option"], &pretool, true),
+        json!({"decision":"allow"})
+    );
+    let mut partial = f.payload("PreToolUse");
+    partial["invocationNum"] = json!("not a number");
+    for args in [vec!["context"], vec!["remind"], vec!["recall"]] {
+        assert_eq!(
+            f.run_raw(&args, &partial.to_string(), true),
+            json!({"decision":"allow"})
+        );
+    }
+    let mut lock = f.lock();
     let _guard = lock.write().unwrap();
-    assert_eq!(f.run(&["context"], &f.payload("SessionStart")), json!({}));
+    let start = Instant::now();
+    assert_eq!(
+        f.run_env(
+            &["context"],
+            &f.payload("SessionStart").to_string(),
+            false,
+            &[("AGENT_WIKI_HOOK_LOCK_MS", "100")]
+        ),
+        json!({})
+    );
+    assert!(start.elapsed() < Duration::from_secs(2));
+    // The wait is capped below Antigravity's 5 s hook timeout.
+    let start = Instant::now();
+    assert_eq!(
+        f.run_env(
+            &["context"],
+            &f.payload("SessionStart").to_string(),
+            false,
+            &[("AGENT_WIKI_HOOK_LOCK_MS", "60000")]
+        ),
+        json!({})
+    );
+    assert!(start.elapsed() < Duration::from_millis(4500));
+}
+
+#[test]
+fn hooks_wait_for_a_briefly_held_wiki_lock() {
+    let f = Fixture::new();
+    f.transcript(&[json!({"step_index":5,"type":"GENERIC","status":"DONE","content":"skill"})]);
+    let mut p = f.payload("PostToolUse");
+    p["toolCall"] =
+        json!({"id":"skill", "name":"read_file", "args":{"Path":"/tmp/skills/testing/SKILL.md"}});
+    p["stepIdx"] = json!(5);
+    let env = [("AGENT_WIKI_HOOK_LOCK_MS", "2000")];
+    let hold = |f: &Fixture| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let path = f.0.clone();
+        let handle = std::thread::spawn(move || {
+            let mut lock = wiki_lock(&path);
+            let guard = lock.write().unwrap();
+            tx.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(400));
+            drop(guard);
+        });
+        rx.recv().unwrap();
+        handle
+    };
+    for (args, payload) in [
+        (vec!["context"], f.payload("SessionStart")),
+        (vec!["recall"], p.clone()),
+    ] {
+        let held = hold(&f);
+        let start = Instant::now();
+        let result = f.run_env(&args, &payload.to_string(), false, &env);
+        assert!(
+            start.elapsed() >= Duration::from_millis(300),
+            "{args:?} did not wait"
+        );
+        if args == ["context"] {
+            assert!(text(&result).contains("Current project: demo"));
+        } else {
+            assert_eq!(result, json!({}));
+        }
+        held.join().unwrap();
+    }
+    assert_eq!(f.pending(), 1);
+    let held = hold(&f);
+    let result = f.run_env(
+        &["remind"],
+        &f.payload("PostInvocation").to_string(),
+        false,
+        &env,
+    );
+    held.join().unwrap();
+    assert!(text(&result).contains("testing skill"));
+    assert_eq!(f.pending(), 0);
+}
+
+#[test]
+fn failing_prompt_reminder_still_delivers_staged_notes() {
+    let f = Fixture::new();
+    f.transcript(&[json!({"step_index":5,"type":"GENERIC","status":"DONE","content":"skill"})]);
+    let mut p = f.payload("PostToolUse");
+    p["toolCall"] =
+        json!({"id":"skill", "name":"read_file", "args":{"Path":"/tmp/skills/testing/SKILL.md"}});
+    p["stepIdx"] = json!(5);
+    assert_eq!(f.run(&["recall"], &p), json!({}));
+    assert_eq!(f.pending(), 1);
+    // A new prompt whose transcript is unreadable makes remind::messages fail.
+    let mut prompt = f.payload("PreInvocation");
+    prompt["transcriptPath"] = json!(f.0.join("wiki"));
+    prompt["initialNumSteps"] = json!(7);
+    let result = f.run_raw(&["remind"], &prompt.to_string(), true);
+    assert!(text(&result).contains("testing skill"), "{result}");
+    assert_eq!(f.pending(), 0);
+    let db = rusqlite::Connection::open(f.0.join("wiki/usage.sqlite")).unwrap();
+    let logged: i64 = db
+        .query_row(
+            "select count(*) from injections where source='recall-skill'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(logged, 1);
+    prompt["invocationNum"] = json!(2);
+    assert_eq!(f.run_raw(&["remind"], &prompt.to_string(), true), json!({}));
+}
+
+fn long_output(code: i64, extra: &[&str]) -> String {
+    let mut lines: Vec<String> = (0..30)
+        .map(|i| format!("   Compiling crate-{i} v0.1.0"))
+        .collect();
+    lines.insert(
+        25,
+        "error: cannot establish app-server socket mount isolation".into(),
+    );
+    lines.extend(extra.iter().map(|s| s.to_string()));
+    format!(
+        "Created At: 2026-11-26T22:19:04+09:00\nCompleted At: 2026-11-26T22:19:15+09:00\n\
+         Command exited with code {code}.\n\nCommand output:\n{}",
+        lines.join("\n")
+    )
+}
+
+#[test]
+fn exit_header_is_read_before_long_command_output() {
+    let f = Fixture::new();
+    f.transcript(&[
+        json!({"step_index":8,"type":"GENERIC","status":"DONE","created_at":"2026-11-26T10:00:02Z","content":long_output(1, &[])}),
+        json!({"step_index":9,"type":"GENERIC","status":"DONE","created_at":"2026-11-26T10:00:03Z","content":long_output(0, &[])}),
+        // Exit 0 header; a quoted exit line in the output body is not a failure.
+        json!({"step_index":10,"type":"GENERIC","status":"DONE","created_at":"2026-11-26T10:00:04Z","content":long_output(0, &["Command exited with code 1."])}),
+    ]);
+    let mut drain = f.payload("PostInvocation");
+    let state = |f: &Fixture| -> i64 {
+        rusqlite::Connection::open(f.0.join("wiki/index.sqlite"))
+            .unwrap()
+            .query_row(
+                "select coalesce(sum(failures),0) from remind_event_state",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let mut p = f.payload("PostToolUse");
+    p["toolCall"] =
+        json!({"id":"build", "name":"run_command", "args":{"CommandLine":"cargo build"}});
+    p["stepIdx"] = json!(8);
+    assert_eq!(f.run(&["recall"], &p), json!({}));
+    assert_eq!(f.run(&["remind", "--event"], &p), json!({}));
+    let note = f.run(&["remind"], &drain);
+    assert!(text(&note).contains("Bash failure"), "{note}");
+    assert!(!text(&note).contains("exit status unavailable"), "{note}");
+    assert_eq!(state(&f), 1);
+    // Exit 0 with long output and a quoted exit line: successful commits, no failures.
+    // Each in its own conversation: the commit event fires once per window.
+    for (conversation, step) in [("conversation-one", 9), ("trap", 10)] {
+        p["conversationId"] = json!(conversation);
+        drain["conversationId"] = json!(conversation);
+        p["toolCall"] = json!({"id":"commit", "name":"run_command", "args":{"CommandLine":"git commit -m fix"}});
+        p["stepIdx"] = json!(step);
+        assert_eq!(f.run(&["recall"], &p), json!({}));
+        assert_eq!(f.run(&["remind", "--event"], &p), json!({}));
+        let note = text(&f.run(&["remind"], &drain)).to_owned();
+        assert!(note.contains("committed changes"), "{note}");
+        assert!(!note.contains("Bash failure"), "{note}");
+        // The commit resolves the streak; the quoted exit line adds no failure.
+        assert_eq!(state(&f), 0);
+    }
+    let mut stop = f.payload("Stop");
+    stop["terminationReason"] = json!("NO_TOOL_CALL");
+    let mut rows: Vec<Value> = vec![
+        json!({"step_index":0,"type":"USER_INPUT","status":"DONE","created_at":"2026-11-26T10:00:00Z","content":"빌드"}),
+    ];
+    rows.extend(
+        fs::read_to_string(f.0.join("transcript.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap()),
+    );
+    f.transcript(&rows);
+    assert_eq!(f.run(&["record", "--wait"], &stop), json!({}));
+    let db = rusqlite::Connection::open(f.0.join("state/agent-wiki/records.sqlite")).unwrap();
+    let body: String = db
+        .query_row(
+            "select body from records where session_id='conversation-one'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let r: Value = serde_json::from_str(&body).unwrap();
+    let failures = r["failures"].as_array().unwrap();
+    assert_eq!(failures.len(), 1, "{r}");
+    assert_eq!(
+        failures[0]["errors"],
+        json!(["error: cannot establish app-server socket mount isolation"])
+    );
 }
 
 #[test]

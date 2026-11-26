@@ -1051,4 +1051,50 @@ mod tests {
         assert!(legacy.originator.is_empty() && legacy.source.is_empty());
         Ok(())
     }
+    #[test]
+    fn antigravity_exit_header_is_found_before_long_output() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!("records-agy-{}", std::process::id()));
+        fs::create_dir_all(&dir)?;
+        let path = dir.join("transcript.jsonl");
+        let mut body: Vec<String> = (0..30).map(|i| format!("compiling crate {i}")).collect();
+        body.insert(20, "error: linker failed on long output".into());
+        let body: Vec<&str> = body.iter().map(String::as_str).collect();
+        // Distinct error text: a miscounted trap row must not merge into the real failure.
+        let mut trap: Vec<&str> = body
+            .iter()
+            .map(|l| {
+                if l.starts_with("error:") {
+                    "error: quoted in passing output"
+                } else {
+                    l
+                }
+            })
+            .collect();
+        trap.push("Command exited with code 1.");
+        let rows = [
+            serde_json::json!({"step_index":0,"type":"USER_INPUT","status":"DONE","content":"빌드"}),
+            serde_json::json!({"step_index":1,"type":"GENERIC","status":"DONE",
+                "content":crate::antigravity::tests::command_result(1, &body)}),
+            serde_json::json!({"step_index":2,"type":"GENERIC","status":"DONE",
+                "content":crate::antigravity::tests::command_result(0, &body)}),
+            serde_json::json!({"step_index":3,"type":"GENERIC","status":"DONE",
+                "content":crate::antigravity::tests::command_result(0, &trap)}),
+        ];
+        fs::write(
+            &path,
+            rows.iter().map(|r| format!("{r}\n")).collect::<String>(),
+        )?;
+        let hook = Hook {
+            antigravity: true,
+            session_id: "agy".into(),
+            cwd: "/project".into(),
+            ..Hook::default()
+        };
+        let record = extract_antigravity(&path, &hook)?.unwrap();
+        fs::remove_dir_all(&dir)?;
+        assert_eq!(record.failures.len(), 1);
+        let failure = record.failures.iter().next().unwrap();
+        assert_eq!(failure.errors, ["error: linker failed on long output"]);
+        Ok(())
+    }
 }
