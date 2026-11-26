@@ -55,7 +55,8 @@ pub fn codex_source_dirs() -> Result<Vec<PathBuf>> {
 
 pub fn antigravity_source_dirs() -> Result<Vec<PathBuf>> {
     let gemini = home().join(".gemini");
-    resolve_source_dirs(
+    resolve_dirs(
+        |err| accessible::<()>(Err(err)),
         crate::compat::var_os("AGENT_WIKI_ANTIGRAVITY_SESSIONS_DIRS").as_deref(),
         &["antigravity-cli", "antigravity", "antigravity-ide"]
             .map(|app| gemini.join(app).join("brain")),
@@ -99,6 +100,15 @@ pub fn source_dirs() -> Result<Vec<PathBuf>> {
 }
 
 fn resolve_source_dirs(value: Option<&OsStr>, fallback: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    resolve_dirs(|err| existing::<()>(Err(err)), value, fallback)
+}
+
+// `skip` returns Ok(None) for errors that only drop that directory.
+fn resolve_dirs(
+    skip: impl Fn(std::io::Error) -> Result<Option<()>>,
+    value: Option<&OsStr>,
+    fallback: &[PathBuf],
+) -> Result<Vec<PathBuf>> {
     let candidates = match value.filter(|v| !v.is_empty()) {
         Some(value) => env::split_paths(value)
             .filter(|p| !p.as_os_str().is_empty())
@@ -109,8 +119,10 @@ fn resolve_source_dirs(value: Option<&OsStr>, fallback: &[PathBuf]) -> Result<Ve
     for dir in candidates {
         let canonical = match fs::canonicalize(&dir) {
             Ok(path) => path,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(err) => return Err(err).with_context(|| format!("canonicalize {}", dir.display())),
+            Err(err) => {
+                skip(err).with_context(|| format!("canonicalize {}", dir.display()))?;
+                continue;
+            }
         };
         if !dirs.contains(&canonical) {
             dirs.push(canonical);
@@ -196,8 +208,15 @@ fn orca_workspace(cwd: &str) -> bool {
         .any(|pair| pair == [".orca", "bots"] || pair == ["orca", "workspaces"])
 }
 
+/// A local filesystem path from a `file://` URI: an empty or `localhost` authority,
+/// an absolute path, percent-decoded to valid UTF-8. Anything else is not a cwd.
 fn file_uri_path(uri: &str) -> Option<String> {
-    let path = uri.strip_prefix("file://")?;
+    let rest = uri.strip_prefix("file://")?;
+    let slash = rest.find('/')?;
+    let (authority, path) = rest.split_at(slash);
+    if !(authority.is_empty() || authority.eq_ignore_ascii_case("localhost")) {
+        return None;
+    }
     let bytes = path.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -217,7 +236,19 @@ fn file_uri_path(uri: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-// Best effort: a missing or unparsable cache only loses the project label.
+/// The first usable local workspace among a conversation's `WorkspaceURIs`.
+fn workspace(uris: &Value) -> Option<String> {
+    match uris {
+        Value::String(uri) => file_uri_path(uri),
+        Value::Array(uris) => uris
+            .iter()
+            .filter_map(Value::as_str)
+            .find_map(file_uri_path),
+        _ => None,
+    }
+}
+
+// Best effort: a missing, unreadable or unparsable cache only loses the workspace.
 fn antigravity_workspaces(brain: &Path) -> HashMap<String, String> {
     let Some(bytes) = brain
         .parent()
@@ -234,35 +265,56 @@ fn antigravity_workspaces(brain: &Path) -> HashMap<String, String> {
     conversations
         .iter()
         .filter_map(|(id, conversation)| {
-            let uri = conversation["summary"]["WorkspaceURIs"].get(0)?.as_str()?;
-            Some((id.clone(), file_uri_path(uri)?))
+            Some((
+                id.clone(),
+                workspace(&conversation["summary"]["WorkspaceURIs"])?,
+            ))
         })
         .collect()
 }
 
+// Antigravity sources are skipped, not fatal, when they are missing, not a
+// directory, or not readable (another user's or a half-created conversation):
+// one bad conversation must not break searching every harness.
+fn accessible<T>(result: std::io::Result<T>) -> Result<Option<T>> {
+    use std::io::ErrorKind::{NotADirectory, NotFound, PermissionDenied};
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(err) if matches!(err.kind(), NotFound | PermissionDenied | NotADirectory) => Ok(None),
+        Err(err) => Err(err.into()),
+    }
+}
+
 pub fn antigravity_paths(dir: &Path) -> Result<Vec<(PathBuf, Antigravity)>> {
     let mut paths = vec![];
-    let Some(entries) = existing(fs::read_dir(dir))? else {
+    let Some(entries) = accessible(fs::read_dir(dir))? else {
         return Ok(paths);
     };
     let workspaces = antigravity_workspaces(dir);
     for entry in entries {
-        let entry = entry?;
-        if !existing(fs::metadata(entry.path()))?.is_some_and(|meta| meta.is_dir()) {
+        let Some(entry) = accessible(entry)? else {
             continue;
-        }
+        };
         let candidate = entry.path().join(".system_generated/logs/transcript.jsonl");
-        let Some(meta) = existing(fs::metadata(&candidate))? else {
+        let Some(meta) = accessible(fs::metadata(&candidate))? else {
             continue;
         };
-        // Another user's or a half-created conversation must not fail the search.
-        if !meta.is_file() || File::open(&candidate).is_err() {
+        if !meta.is_file() || accessible(File::open(&candidate))?.is_none() {
             continue;
         }
-        let Some(path) = existing(fs::canonicalize(&candidate))? else {
+        let Some(path) = accessible(fs::canonicalize(&candidate))? else {
             continue;
         };
-        let conversation = entry.file_name().to_string_lossy().into_owned();
+        // The conversation is named by its real directory, so a symlinked alias
+        // of a conversation directory resolves to the same session.
+        let Some(conversation) = path
+            .ancestors()
+            .nth(3)
+            .and_then(Path::file_name)
+            .map(|name| name.to_string_lossy().into_owned())
+        else {
+            continue;
+        };
         let cwd = workspaces.get(&conversation).cloned().unwrap_or_default();
         paths.push((path, Antigravity { conversation, cwd }));
     }
@@ -375,69 +427,78 @@ fn parse_codex(meta: &transcript::Codex, line: &[u8], offset: u64) -> Option<Mes
     })
 }
 
-// Hook and client injections Antigravity appends to a USER_INPUT step.
-const PROMPT_NOISE: [&str; 3] = [
+// Blocks Antigravity and hooks add around the user's words in a USER_INPUT step.
+const INJECTED: [&str; 3] = [
     "SYSTEM_MESSAGE",
     "ADDITIONAL_METADATA",
     "USER_SETTINGS_CHANGE",
 ];
+// The line Antigravity puts before an injected <SYSTEM_MESSAGE> block.
+const SYSTEM_PREAMBLE: &str = "The following is a <SYSTEM_MESSAGE> not actually sent by the user.";
+const REQUEST_OPEN: &str = "<USER_REQUEST>";
+const REQUEST_CLOSE: &str = "</USER_REQUEST>";
 
-fn tag_blocks<'a>(text: &'a str, tag: &str) -> Vec<&'a str> {
-    let (open, close) = (format!("<{tag}>"), format!("</{tag}>"));
-    let mut blocks = vec![];
-    let mut rest = text;
-    while let Some(start) = rest.find(&open) {
-        let body = &rest[start + open.len()..];
-        match body.find(&close) {
-            Some(end) => {
-                blocks.push(&body[..end]);
-                rest = &body[end + close.len()..];
-            }
-            None => {
-                // A truncated step keeps what the user wrote.
-                blocks.push(body);
+/// Consumes one injected block (or preamble line) at the start of `text`. An
+/// unclosed block runs to the end: truncated steps end inside metadata.
+fn injected_block(text: &str) -> Option<&str> {
+    if let Some(rest) = text.strip_prefix(SYSTEM_PREAMBLE) {
+        return Some(rest.find('\n').map_or("", |i| &rest[i + 1..]));
+    }
+    let tag = INJECTED.iter().find(|tag| {
+        text.strip_prefix('<')
+            .and_then(|t| t.strip_prefix(**tag))
+            .is_some_and(|t| t.starts_with('>'))
+    })?;
+    let close = format!("</{tag}>");
+    Some(text.find(&close).map_or("", |i| &text[i + close.len()..]))
+}
+
+/// Skips leading injected blocks; None when something else follows.
+fn skip_injected(mut text: &str) -> &str {
+    loop {
+        text = text.trim_start();
+        match injected_block(text) {
+            Some(rest) => text = rest,
+            None => return text,
+        }
+    }
+}
+
+fn only_injected(text: &str) -> bool {
+    skip_injected(text).is_empty()
+}
+
+/// The user's own words in an Antigravity USER_INPUT step.
+///
+/// Every observed step is `<USER_REQUEST>…</USER_REQUEST>` followed by injected
+/// `<ADDITIONAL_METADATA>`, `<USER_SETTINGS_CHANGE>` or hook `<SYSTEM_MESSAGE>`
+/// blocks. The request ends at the *last* `</USER_REQUEST>` after which only injected
+/// blocks remain, so literal or nested tags the user wrote stay in the text; nothing
+/// inside the request is stripped. Without a closing tag (a truncated step) the whole
+/// remainder is kept. A step without the envelope keeps everything before its
+/// trailing run of injected blocks.
+fn antigravity_prompt(content: &str) -> String {
+    let content = skip_injected(content);
+    let text = if let Some(body) = content.strip_prefix(REQUEST_OPEN) {
+        body.rmatch_indices(REQUEST_CLOSE)
+            .find(|(i, _)| only_injected(&body[i + REQUEST_CLOSE.len()..]))
+            .map_or(body, |(i, _)| &body[..i])
+    } else {
+        // Earliest line start from which only injected blocks follow.
+        let mut end = content.len();
+        let starts = std::iter::once(0).chain(content.match_indices('\n').map(|(i, _)| i + 1));
+        for start in starts {
+            let rest = &content[start..];
+            if !rest.trim().is_empty()
+                && injected_block(rest.trim_start()).is_some()
+                && only_injected(rest)
+            {
+                end = start;
                 break;
             }
         }
-    }
-    blocks
-}
-
-fn strip_tag_blocks(text: &str, tag: &str) -> String {
-    let (open, close) = (format!("<{tag}>"), format!("</{tag}>"));
-    let mut out = String::new();
-    let mut rest = text;
-    while let Some(start) = rest.find(&open) {
-        let Some(length) = rest[start..].find(&close) else {
-            break;
-        };
-        // Antigravity introduces an injected block with a one-line preamble that
-        // names the tag ("The following is a <SYSTEM_MESSAGE> not actually ...").
-        let line = rest[..start].rfind('\n').map_or(0, |i| i + 1);
-        let cut = if rest[line..start].starts_with("The following is a ") {
-            line
-        } else {
-            start
-        };
-        out.push_str(&rest[..cut]);
-        rest = &rest[start + length + close.len()..];
-    }
-    out.push_str(rest);
-    out
-}
-
-/// The user's own words in an Antigravity USER_INPUT step. Orca wraps prompts in
-/// `<USER_REQUEST>`; metadata, settings changes and hook `<SYSTEM_MESSAGE>`s are noise.
-fn antigravity_prompt(content: &str) -> String {
-    let requests = tag_blocks(content, "USER_REQUEST");
-    let mut text = if requests.is_empty() {
-        content.to_owned()
-    } else {
-        requests.join("\n")
+        &content[..end]
     };
-    for tag in PROMPT_NOISE {
-        text = strip_tag_blocks(&text, tag);
-    }
     text.trim().to_owned()
 }
 
@@ -544,6 +605,16 @@ fn initialize(db: &Connection) -> Result<()> {
             ))?;
         }
     }
+    // The Antigravity workspace a transcript was indexed with: it comes from a
+    // separate metadata cache that can appear or change without a transcript write.
+    let has_workspace: bool = db.query_row(
+        "select exists(select 1 from pragma_table_info('transcripts') where name = 'workspace')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !has_workspace {
+        db.execute_batch("alter table transcripts add column workspace text not null default '';")?;
+    }
     if version.is_none_or(|version| version < INDEX_FORMAT) {
         let tx = db.unchecked_transaction()?;
         tx.execute_batch("delete from messages; delete from transcripts;")?;
@@ -602,9 +673,11 @@ fn refresh_sources(
         .keys()
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
-    let indexed: HashMap<String, (i64, i64, i64)> = db
-        .prepare("select path, offset, size, mtime_ns from transcripts")?
-        .query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?))))?
+    let indexed: HashMap<String, (i64, i64, i64, String)> = db
+        .prepare("select path, offset, size, mtime_ns, workspace from transcripts")?
+        .query_map([], |r| {
+            Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+        })?
         .collect::<rusqlite::Result<_>>()?;
     let tx = db.transaction()?;
     for path in indexed.keys().filter(|p| !on_disk.contains(*p)) {
@@ -613,13 +686,26 @@ fn refresh_sources(
     }
     for (path, source) in &paths {
         let path_str = path.to_string_lossy();
-        let file = File::open(path)?;
+        let (file, workspace) = match source {
+            Source::Transcript => (File::open(path)?, ""),
+            Source::Antigravity(meta) => match accessible(File::open(path))? {
+                Some(file) => (file, meta.cwd.as_str()),
+                None => continue,
+            },
+        };
         let (mtime, size) = index::stamp(&file.metadata()?);
         let old = indexed.get(path_str.as_ref());
-        if old.is_some_and(|(_, s, t)| (*s, *t) == (size, mtime)) {
+        let moved = old.is_some_and(|o| o.3 != workspace);
+        if !moved && old.is_some_and(|o| (o.1, o.2) == (size, mtime)) {
             continue;
         }
         let mut offset = old.map_or(0, |o| o.0);
+        if moved {
+            // Late or changed metadata: project, originator and the curator cwd
+            // check all depend on it, so the conversation is indexed again.
+            tx.execute("delete from messages where path = ?", [path_str.as_ref()])?;
+            offset = 0;
+        }
         if size < offset {
             // Truncation may drop a message another file also held until --reindex.
             tx.execute("delete from messages where path = ?", [path_str.as_ref()])?;
@@ -639,8 +725,8 @@ fn refresh_sources(
         if excluded.is_some() {
             tx.execute("delete from messages where path = ?", [path_str.as_ref()])?;
             tx.execute(
-                "insert or replace into transcripts(path, offset, size, mtime_ns) values (?,?,?,?)",
-                params![path_str.as_ref(), size, size, mtime],
+                "insert or replace into transcripts(path, offset, size, mtime_ns, workspace) values (?,?,?,?,?)",
+                params![path_str.as_ref(), size, size, mtime, workspace],
             )?;
             continue;
         }
@@ -658,7 +744,7 @@ fn refresh_sources(
             }
             Ok(())
         })?;
-        tx.execute("insert into transcripts(path, offset, size, mtime_ns) values (?,?,?,?) on conflict(path) do update set offset=excluded.offset, size=excluded.size, mtime_ns=excluded.mtime_ns", params![path_str.as_ref(), i64::try_from(offset)?, size, mtime])?;
+        tx.execute("insert into transcripts(path, offset, size, mtime_ns, workspace) values (?,?,?,?,?) on conflict(path) do update set offset=excluded.offset, size=excluded.size, mtime_ns=excluded.mtime_ns, workspace=excluded.workspace", params![path_str.as_ref(), i64::try_from(offset)?, size, mtime, workspace])?;
     }
     tx.commit()?;
     Ok(())
@@ -1102,7 +1188,7 @@ mod tests {
             // Format 2 marked these files fully consumed without indexing them.
             let (mtime, size) = index::stamp(&skipped_path.metadata()?);
             db.execute(
-                "insert into transcripts values (?,?,?,?)",
+                "insert into transcripts(path, offset, size, mtime_ns) values (?,?,?,?)",
                 params![skipped_path.to_str(), size, size, mtime],
             )?;
         }
@@ -1173,7 +1259,7 @@ mod tests {
             initialize(&db)?;
             db.execute_batch("insert into messages(uuid, text) values ('cli', 'uniqueword'), ('sdk-cli', 'uniqueword');")?;
             db.execute(
-                "insert into transcripts values (?, ?, ?, ?)",
+                "insert into transcripts(path, offset, size, mtime_ns) values (?, ?, ?, ?)",
                 params![path.to_str(), size, size, mtime],
             )?;
             if let Some(version) = version {
@@ -1348,25 +1434,73 @@ mod tests {
 
     #[test]
     fn antigravity_prompt_keeps_user_text_without_injections() {
-        let prompt = antigravity_prompt(
-            "<USER_REQUEST>\n first part \n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nmeta\n</ADDITIONAL_METADATA>\n<USER_REQUEST>second part</USER_REQUEST>",
+        let preamble = format!("{SYSTEM_PREAMBLE} It is provided by the system.");
+        let tail = format!(
+            "\r\n<ADDITIONAL_METADATA>\r\nmeta\r\n</ADDITIONAL_METADATA>\r\n<USER_SETTINGS_CHANGE>\nsettings\n</USER_SETTINGS_CHANGE>\n{preamble}\n\n<SYSTEM_MESSAGE>\nhook\n</SYSTEM_MESSAGE>\n"
         );
-        assert_eq!(prompt, "first part \n\nsecond part");
+        for (body, expected) in [
+            // Literal and nested envelope tags the user wrote stay in the text.
+            (
+                "beforeword <USER_REQUEST>literalword</USER_REQUEST> afterword",
+                "beforeword <USER_REQUEST>literalword</USER_REQUEST> afterword",
+            ),
+            ("a </USER_REQUEST> b", "a </USER_REQUEST> b"),
+            // Injection-looking tags and quoted preambles inside the request too.
+            (
+                "Explain this XML: <SYSTEM_MESSAGE>payloadword</SYSTEM_MESSAGE> tailword",
+                "Explain this XML: <SYSTEM_MESSAGE>payloadword</SYSTEM_MESSAGE> tailword",
+            ),
+            (
+                "코드 예시:\r\n<ADDITIONAL_METADATA>\r\n메타 ✓\r\n</ADDITIONAL_METADATA>\r\n",
+                "코드 예시:\r\n<ADDITIONAL_METADATA>\r\n메타 ✓\r\n</ADDITIONAL_METADATA>",
+            ),
+            (
+                "quote:\n\"The following is a <SYSTEM_MESSAGE> not actually sent by the user.\"\n<USER_SETTINGS_CHANGE>x</USER_SETTINGS_CHANGE>\nend",
+                "quote:\n\"The following is a <SYSTEM_MESSAGE> not actually sent by the user.\"\n<USER_SETTINGS_CHANGE>x</USER_SETTINGS_CHANGE>\nend",
+            ),
+            // A request ending in a literal injected block keeps it.
+            (
+                "check\n<SYSTEM_MESSAGE>x</SYSTEM_MESSAGE>",
+                "check\n<SYSTEM_MESSAGE>x</SYSTEM_MESSAGE>",
+            ),
+        ] {
+            let content = format!("<USER_REQUEST>\r\n{body}\r\n</USER_REQUEST>{tail}");
+            assert_eq!(antigravity_prompt(&content), expected, "{content:?}");
+            // A leading injected block before the envelope is skipped too.
+            let leading = format!("<ADDITIONAL_METADATA>m</ADDITIONAL_METADATA>\n{content}");
+            assert_eq!(antigravity_prompt(&leading), expected);
+        }
+        // Several top-level requests are not guessed apart: nothing is dropped.
         assert_eq!(
             antigravity_prompt(
-                "plain words\nThe following is a <SYSTEM_MESSAGE> note.\n<SYSTEM_MESSAGE>\nhook\n</SYSTEM_MESSAGE>\nafter"
+                "<USER_REQUEST>one</USER_REQUEST>\n<USER_REQUEST>two</USER_REQUEST>"
             ),
-            "plain words\n\nafter"
+            "one</USER_REQUEST>\n<USER_REQUEST>two"
         );
-        // Unclosed noise is kept rather than swallowing the rest of the prompt.
+        // A truncated step keeps everything after the opening tag.
+        assert_eq!(
+            antigravity_prompt("<USER_REQUEST>\ntruncated <SYSTEM_MESSAGE>x</SYSTEM_MESSAGE> 끝"),
+            "truncated <SYSTEM_MESSAGE>x</SYSTEM_MESSAGE> 끝"
+        );
+        // So does a step truncated inside its trailing metadata.
+        assert_eq!(
+            antigravity_prompt(
+                "<USER_REQUEST>done</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current"
+            ),
+            "done"
+        );
+        // Without the envelope, only the trailing run of injected blocks goes.
+        assert_eq!(
+            antigravity_prompt(&format!(
+                "plain <SYSTEM_MESSAGE>kept</SYSTEM_MESSAGE> words{tail}"
+            )),
+            "plain <SYSTEM_MESSAGE>kept</SYSTEM_MESSAGE> words"
+        );
         assert_eq!(
             antigravity_prompt("see <SYSTEM_MESSAGE> tag"),
             "see <SYSTEM_MESSAGE> tag"
         );
-        assert_eq!(
-            antigravity_prompt("<USER_REQUEST>\ntruncated request"),
-            "truncated request"
-        );
+        assert_eq!(antigravity_prompt(&tail), "");
         assert_eq!(
             antigravity_prompt("<ADDITIONAL_METADATA>x</ADDITIONAL_METADATA>"),
             ""
@@ -1453,6 +1587,36 @@ mod tests {
             Some("/bad%zz%")
         );
         assert_eq!(file_uri_path("https://x"), None);
+        assert_eq!(
+            file_uri_path("file://localhost/srv/repo").as_deref(),
+            Some("/srv/repo")
+        );
+        assert_eq!(
+            file_uri_path("file://LOCALHOST/srv/repo").as_deref(),
+            Some("/srv/repo")
+        );
+        assert_eq!(file_uri_path("file://remotehost/srv/repo"), None);
+        assert_eq!(file_uri_path("file://localhost"), None);
+        assert_eq!(file_uri_path("file:///bad%FFutf8"), None);
+        assert_eq!(file_uri_path("file:///half%E2%9C"), None);
+        assert_eq!(
+            workspace(&serde_json::json!([
+                1,
+                "https://x",
+                "file://remotehost/a",
+                "file:///bad%FF",
+                "file:///first",
+                "file:///second"
+            ]))
+            .as_deref(),
+            Some("/first")
+        );
+        assert_eq!(
+            workspace(&serde_json::json!("file:///only")).as_deref(),
+            Some("/only")
+        );
+        assert_eq!(workspace(&serde_json::json!(["file://remotehost/a"])), None);
+        assert_eq!(workspace(&Value::Null), None);
     }
 
     #[test]
@@ -1650,6 +1814,269 @@ mod tests {
             0
         );
         Ok(())
+    }
+
+    fn write_metadata(brain: &Path, conversation: &str, uris: Value) -> Result<()> {
+        let cache = brain.parent().unwrap().join("cache");
+        fs::create_dir_all(&cache)?;
+        fs::write(
+            cache.join("conversation_metadata.json"),
+            serde_json::json!({"conversations": {conversation: {"summary": {"WorkspaceURIs": uris}}}})
+                .to_string(),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn antigravity_late_metadata_updates_rows_and_excludes_curator_runs() -> Result<()> {
+        let tmp = TestDir::new()?;
+        let brain = brain(
+            &tmp.0,
+            "antigravity-cli",
+            "late",
+            None,
+            &antigravity_fixture(),
+        )?;
+        let path = brain.join("late/.system_generated/logs/transcript.jsonl");
+        let stamp = index::stamp(&path.metadata()?);
+        let dirs = [brain.clone()];
+        let mut db = Connection::open_in_memory()?;
+        initialize(&db)?;
+        let rows = |db: &Connection| -> Result<Vec<(String, String, i64)>> {
+            Ok(db
+                .prepare("select project, originator, count(*) from messages where session_id='late' group by 1, 2")?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect::<rusqlite::Result<_>>()?)
+        };
+        refresh_sources(&mut db, &[], &[], &dirs)?;
+        assert_eq!(rows(&db)?, [(String::new(), String::new(), 2)]);
+        // Metadata appears later; the transcript itself is unchanged.
+        write_metadata(
+            &brain,
+            "late",
+            serde_json::json!(["file:///home/u/.orca/bots/bot-7"]),
+        )?;
+        refresh_sources(&mut db, &[], &[], &dirs)?;
+        assert_eq!(index::stamp(&path.metadata()?), stamp);
+        assert_eq!(rows(&db)?, [("bot-7".into(), ANTIGRAVITY_ORCA.into(), 2)]);
+        // It changes to a plain workspace.
+        write_metadata(
+            &brain,
+            "late",
+            serde_json::json!(["file://localhost/repos/plain"]),
+        )?;
+        refresh_sources(&mut db, &[], &[], &dirs)?;
+        assert_eq!(rows(&db)?, [("plain".into(), String::new(), 2)]);
+        // Then it reveals a curator worktree: indexed rows disappear at once.
+        let cache =
+            crate::env_path("XDG_CACHE_HOME").unwrap_or_else(|| crate::home().join(".cache"));
+        let curator = cache.join("wiki-curator/worktree");
+        write_metadata(
+            &brain,
+            "late",
+            serde_json::json!([format!("file://{}", curator.display())]),
+        )?;
+        refresh_sources(&mut db, &[], &[], &dirs)?;
+        assert!(rows(&db)?.is_empty());
+        assert_eq!(
+            count(
+                &db,
+                "select count(*) from messages_fts where messages_fts match 'zephyrprompt'"
+            )?,
+            0
+        );
+        refresh_sources(&mut db, &[], &[], &dirs)?;
+        assert!(rows(&db)?.is_empty());
+        // A corrected cache brings the conversation back without --reindex.
+        write_metadata(&brain, "late", serde_json::json!(["file:///repos/back"]))?;
+        refresh_sources(&mut db, &[], &[], &dirs)?;
+        assert_eq!(rows(&db)?, [("back".into(), String::new(), 2)]);
+        // A removed cache clears the workspace again.
+        fs::remove_file(
+            tmp.0
+                .join("antigravity-cli/cache/conversation_metadata.json"),
+        )?;
+        refresh_sources(&mut db, &[], &[], &dirs)?;
+        assert_eq!(rows(&db)?, [(String::new(), String::new(), 2)]);
+        Ok(())
+    }
+
+    #[test]
+    fn antigravity_running_steps_duplicates_and_late_curator_marker() -> Result<()> {
+        use std::io::Write;
+        let tmp = TestDir::new()?;
+        let first = antigravity_step(
+            0,
+            "USER_INPUT",
+            "DONE",
+            serde_json::json!({"content": "<USER_REQUEST>steady prompt</USER_REQUEST>"}),
+        );
+        let brain = brain(&tmp.0, "antigravity-cli", "steps", None, &first)?;
+        let path = brain.join("steps/.system_generated/logs/transcript.jsonl");
+        let dirs = [brain.clone()];
+        let mut db = Connection::open_in_memory()?;
+        initialize(&db)?;
+        let append = |text: String| -> Result<()> {
+            fs::OpenOptions::new()
+                .append(true)
+                .open(&path)?
+                .write_all(text.as_bytes())?;
+            Ok(())
+        };
+        append(antigravity_step(
+            1,
+            "PLANNER_RESPONSE",
+            "RUNNING",
+            serde_json::json!({"content": "draftword"}),
+        ))?;
+        refresh_sources(&mut db, &[], &[], &dirs)?;
+        assert_eq!(
+            count(
+                &db,
+                "select count(*) from messages where session_id='steps'"
+            )?,
+            1
+        );
+        append(antigravity_step(
+            1,
+            "PLANNER_RESPONSE",
+            "DONE",
+            serde_json::json!({"content": "finalword"}),
+        ))?;
+        // A repeated completed step keeps the first completed copy.
+        append(antigravity_step(
+            1,
+            "PLANNER_RESPONSE",
+            "DONE",
+            serde_json::json!({"content": "duplicateword"}),
+        ))?;
+        refresh_sources(&mut db, &[], &[], &dirs)?;
+        assert_eq!(
+            count(
+                &db,
+                "select count(*) from messages where session_id='steps'"
+            )?,
+            2
+        );
+        for (word, n) in [("draftword", 0), ("finalword", 1), ("duplicateword", 0)] {
+            assert_eq!(
+                count(
+                    &db,
+                    &format!("select count(*) from messages_fts where messages_fts match '{word}'")
+                )?,
+                n,
+                "{word}"
+            );
+        }
+        // A curator conversation whose rows arrive after it was first excluded.
+        let marker = format!(
+            "<USER_REQUEST>\n{}\ncuratorword\n</USER_REQUEST>",
+            transcript::CURATOR_MARKER
+        );
+        brain_at(
+            &brain,
+            "curator",
+            &antigravity_step(
+                0,
+                "USER_INPUT",
+                "DONE",
+                serde_json::json!({"content": marker}),
+            ),
+        )?;
+        refresh_sources(&mut db, &[], &[], &dirs)?;
+        fs::OpenOptions::new()
+            .append(true)
+            .open(brain.join("curator/.system_generated/logs/transcript.jsonl"))?
+            .write_all(
+                antigravity_step(
+                    1,
+                    "PLANNER_RESPONSE",
+                    "DONE",
+                    serde_json::json!({"content": "curatorlateword"}),
+                )
+                .as_bytes(),
+            )?;
+        refresh_sources(&mut db, &[], &[], &dirs)?;
+        assert_eq!(
+            count(
+                &db,
+                "select count(*) from messages where session_id='curator'"
+            )?,
+            0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn antigravity_inaccessible_sources_are_skipped() -> Result<()> {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let tmp = TestDir::new()?;
+        let text = antigravity_fixture();
+        let readable = brain(&tmp.0, "readable", "ok", None, &text)?;
+        let locked_root = brain(&tmp.0, "locked-root", "hidden-root", None, &text)?;
+        let blocked = brain(&tmp.0, "blocked", "ok-too", None, &text)?;
+        for conversation in ["conv-dir", "logs-dir", "file"] {
+            brain_at(&blocked, conversation, &text)?;
+        }
+        // A symlinked alias of a conversation directory is the same conversation.
+        symlink(blocked.join("ok-too"), blocked.join("alias"))?;
+        let locked = [
+            locked_root.clone(),
+            blocked.join("conv-dir"),
+            blocked.join("logs-dir/.system_generated/logs"),
+            blocked.join("file/.system_generated/logs/transcript.jsonl"),
+        ];
+        for path in &locked {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o000))?;
+        }
+        let restore = || {
+            for path in &locked {
+                let mode = if path.is_file() { 0o644 } else { 0o755 };
+                let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
+            }
+        };
+        // root ignores permission bits; there is nothing to exercise then.
+        if File::open(&locked[3]).is_ok() {
+            restore();
+            return Ok(());
+        }
+        let result = (|| -> Result<()> {
+            let list = env::join_paths([
+                &readable,
+                &locked_root,
+                &blocked,
+                &locked_root.join("below"),
+            ])?;
+            let dirs = resolve_dirs(|err| accessible::<()>(Err(err)), Some(&list), &[])?;
+            assert_eq!(dirs.len(), 3);
+            let found: Vec<_> = dirs
+                .iter()
+                .map(|dir| antigravity_paths(dir))
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .flatten()
+                .map(|(_, meta)| meta.conversation)
+                .collect();
+            // The alias is listed under the real name; refresh keeps one copy.
+            assert_eq!(found, ["ok", "ok-too", "ok-too"]);
+            let mut db = Connection::open_in_memory()?;
+            initialize(&db)?;
+            refresh_sources(&mut db, &[], &[], &dirs)?;
+            assert_eq!(
+                count(&db, "select count(distinct session_id) from messages")?,
+                2
+            );
+            assert_eq!(
+                count(
+                    &db,
+                    "select count(*) from messages where session_id = 'alias'"
+                )?,
+                0
+            );
+            Ok(())
+        })();
+        restore();
+        result
     }
 
     fn brain_at(brain: &Path, conversation: &str, text: &str) -> Result<()> {

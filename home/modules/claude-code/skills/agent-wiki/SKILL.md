@@ -217,7 +217,8 @@ up to three hits per session. `--context K` includes K messages before and after
 each hit. `--after` and `--before` accept `YYYY-MM-DD`, `7d`, `24h`, or `2w`;
 `--after` is inclusive and `--before` is exclusive, with dates at midnight UTC.
 `--exclude-session ID` and the `CLAUDE_SESSION_ID`, `CODEX_THREAD_ID` and
-`ANTIGRAVITY_CONVERSATION_ID` environment variables exclude the current session. `--reindex` rebuilds the transcript index. Only `sessions` updates
+`ANTIGRAVITY_CONVERSATION_ID` environment variables exclude the current session from
+message search; `--records` honors only `--exclude-session` for Antigravity. `--reindex` rebuilds the transcript index. Only `sessions` updates
 this text index. `stats` and `lint` separately scan transcript tool calls for wiki usage.
 
 Sources are the colon-separated directories in `$AGENT_WIKI_SESSIONS_DIRS`;
@@ -243,13 +244,17 @@ identify a runner, not whether it did real delegated work or a scripted one-shot
 Antigravity conversations come from `$AGENT_WIKI_ANTIGRAVITY_SESSIONS_DIRS`, a
 colon-separated list of `brain` directories defaulting to `~/.gemini/antigravity-cli/brain`,
 `~/.gemini/antigravity/brain` and `~/.gemini/antigravity-ide/brain`; each
-`<conversation-id>/.system_generated/logs/transcript.jsonl` is one session. Only finished
-`USER_INPUT` prompts (the `<USER_REQUEST>` text, without `<ADDITIONAL_METADATA>`,
-`<USER_SETTINGS_CHANGE>` or hook `<SYSTEM_MESSAGE>` blocks) and `PLANNER_RESPONSE` prose
-are indexed; thinking, tool calls, `GENERIC` tool output and `SYSTEM_MESSAGE` steps are
-not. The project comes from the app's `cache/conversation_metadata.json` workspace;
-conversations in `.orca/bots/` or `orca/workspaces/` are labeled `antigravity/orca`, and
-`--harness antigravity` matches both labels.
+`<conversation-id>/.system_generated/logs/transcript.jsonl` is one session; unreadable
+directories and files are skipped. Only finished `USER_INPUT` prompts and
+`PLANNER_RESPONSE` prose are indexed; thinking, tool calls, `GENERIC` tool output and
+`SYSTEM_MESSAGE` steps are not. A prompt keeps everything inside its outer
+`<USER_REQUEST>` envelope, which ends at the last `</USER_REQUEST>` followed only by
+injected `<ADDITIONAL_METADATA>`, `<USER_SETTINGS_CHANGE>` or hook `<SYSTEM_MESSAGE>`
+blocks; tags a user writes inside the request stay searchable. The project comes from
+the first local `file://` URI in the app's `cache/conversation_metadata.json`
+`WorkspaceURIs`; when that changes, the conversation is reindexed (and dropped if it
+is a curator worktree). Conversations in `.orca/bots/` or `orca/workspaces/` are
+labeled `antigravity/orca`, and `--harness antigravity` matches both labels.
 All harnesses exclude wiki-curator runs by their first-prompt marker
 `[wiki-curator automation]`, with cwd under `$XDG_CACHE_HOME/wiki-curator/`
 (or `~/.cache/wiki-curator/`) as a fallback for older runs. The marker survives

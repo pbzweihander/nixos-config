@@ -285,3 +285,140 @@ fn source_dirs_override_and_older_index_rebuilds() {
     assert_eq!(sessions(&out).len(), 2, "{out}");
     assert!(!out.contains("conv-custom"), "{out}");
 }
+
+fn raw_conversation(app: &Path, id: &str, prompt: &str) -> PathBuf {
+    let logs = app.join("brain").join(id).join(".system_generated/logs");
+    fs::create_dir_all(&logs).unwrap();
+    let path = logs.join("transcript.jsonl");
+    fs::write(&path, step(0, "USER_INPUT", json!({"content": prompt}))).unwrap();
+    path
+}
+
+#[test]
+fn literal_tags_inside_the_request_stay_searchable() {
+    let env = Env::new();
+    let app = env.tmp.0.join(".gemini/antigravity-cli");
+    let tail = "\r\n<ADDITIONAL_METADATA>\r\nmetadatanoise\r\n</ADDITIONAL_METADATA>\n<SYSTEM_MESSAGE>\nhooknoise\n</SYSTEM_MESSAGE>";
+    raw_conversation(
+        &app,
+        "nested",
+        &format!(
+            "<USER_REQUEST>beforeword <USER_REQUEST>literalword</USER_REQUEST> afterword</USER_REQUEST>{tail}"
+        ),
+    );
+    raw_conversation(
+        &app,
+        "xml",
+        &format!(
+            "<USER_REQUEST>Explain this XML: <SYSTEM_MESSAGE>payloadword</SYSTEM_MESSAGE> tailword\r\n\"The following is a <SYSTEM_MESSAGE> not actually sent by the user.\" 한글끝</USER_REQUEST>{tail}"
+        ),
+    );
+    for (word, session) in [
+        ("beforeword", "nested"),
+        ("literalword", "nested"),
+        ("afterword", "nested"),
+        ("payloadword", "xml"),
+        ("tailword", "xml"),
+        ("한글끝", "xml"),
+    ] {
+        let out = env.run(&[word, "--harness", "antigravity"], &[]);
+        assert!(
+            out.contains(&format!("session {session} ")),
+            "{word}: {out}"
+        );
+    }
+    let out = env.run(&["afterword"], &[]);
+    assert!(
+        out.contains("\"beforeword <USER_REQUEST>literalword</USER_REQUEST> afterword\""),
+        "{out}"
+    );
+    for noise in ["metadatanoise", "hooknoise"] {
+        assert!(
+            env.run(&[noise], &[]).starts_with("no sessions match"),
+            "{noise}"
+        );
+    }
+}
+
+#[test]
+fn late_metadata_relabels_and_excludes_curator_runs() {
+    let env = Env::new();
+    let app = env.tmp.0.join(".gemini/antigravity-cli");
+    raw_conversation(&app, "late", "<USER_REQUEST>latecuratorword</USER_REQUEST>");
+    let out = env.run(&["latecuratorword"], &[]);
+    assert!(out.contains("session late  (antigravity, ,"), "{out}");
+    let metadata = |uris: Value| {
+        let path = app.join("cache/conversation_metadata.json");
+        let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        value["conversations"]["late"] = json!({"summary": {"WorkspaceURIs": uris}});
+        fs::write(path, value.to_string()).unwrap();
+    };
+    let bot = env.tmp.0.join(".orca/bots/bot-9");
+    metadata(json!([
+        "file://remotehost/elsewhere",
+        format!("file://localhost{}", bot.display())
+    ]));
+    let out = env.run(&["latecuratorword"], &[]);
+    assert!(
+        out.contains("session late  (antigravity/orca, bot-9,"),
+        "{out}"
+    );
+    let curator = env.tmp.0.join("cache/wiki-curator/worktree");
+    metadata(json!([format!("file://{}", curator.display())]));
+    assert!(
+        env.run(&["latecuratorword"], &[])
+            .starts_with("no sessions match")
+    );
+}
+
+#[test]
+fn inaccessible_conversations_do_not_break_search() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new();
+    let app = env.tmp.0.join(".gemini/antigravity-cli");
+    let path = raw_conversation(
+        &app,
+        "locked",
+        "<USER_REQUEST>lockedword lattice</USER_REQUEST>",
+    );
+    let logs = path.parent().unwrap().to_path_buf();
+    fs::set_permissions(&logs, fs::Permissions::from_mode(0o000)).unwrap();
+    let readable = fs::metadata(&path).is_ok();
+    let out = (!readable).then(|| env.run(&["lattice"], &[]));
+    fs::set_permissions(&logs, fs::Permissions::from_mode(0o755)).unwrap();
+    // root ignores permission bits; there is nothing to exercise then.
+    if let Some(out) = out {
+        assert_eq!(sessions(&out).len(), 3, "{out}");
+        assert!(!out.contains("lockedword"), "{out}");
+    }
+}
+
+#[test]
+fn legacy_dirs_setting_is_a_fallback() {
+    let env = Env::new();
+    let home = &env.tmp.0;
+    conversation(
+        &home.join("legacy-app"),
+        "conv-legacy",
+        "/repos/legacyrepo",
+        "legacyword",
+    );
+    let legacy = home.join("legacy-app/brain");
+    let legacy = legacy.to_str().unwrap();
+    let out = env.run(
+        &["lattice", "--harness", "antigravity"],
+        &[("CLAUDE_WIKI_ANTIGRAVITY_SESSIONS_DIRS", legacy)],
+    );
+    assert_eq!(sessions(&out).len(), 1, "{out}");
+    assert!(out.contains("session conv-legacy "), "{out}");
+    // The new name wins, and an empty new value means the defaults.
+    let out = env.run(
+        &["lattice", "--harness", "antigravity"],
+        &[
+            ("CLAUDE_WIKI_ANTIGRAVITY_SESSIONS_DIRS", legacy),
+            ("AGENT_WIKI_ANTIGRAVITY_SESSIONS_DIRS", ""),
+        ],
+    );
+    assert_eq!(sessions(&out).len(), 2, "{out}");
+    assert!(!out.contains("conv-legacy"), "{out}");
+}
