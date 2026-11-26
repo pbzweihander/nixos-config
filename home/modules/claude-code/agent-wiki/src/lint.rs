@@ -26,6 +26,9 @@ struct Report {
     #[serde(rename = "broken-links")]
     broken_links: Vec<Finding>,
     duplicates: Vec<Duplicate>,
+    /// Pages the index blocks (`files.blocked`), with the scanner category. Nothing
+    /// else is reported from such a page: its content is not read.
+    blocked: Vec<Finding>,
     frontmatter: Vec<Finding>,
     #[serde(rename = "log-growth")]
     log_growth: Vec<Finding>,
@@ -175,17 +178,13 @@ fn snapshot_slug(date: &Regex, stem: &str, created: &str) -> bool {
         .any(|d| created.is_none_or(|c| (d - c).num_days().abs() <= 7))
 }
 
-fn worklist(root: &Path, db: &Connection, now: i64) -> Result<Report> {
+fn worklist(root: &Path, db: &Connection, usage: Option<&Connection>, now: i64) -> Result<Report> {
     static DATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d{4}-\d{2}-\d{2}").unwrap());
     static LOG: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"\d{4}-\d{2}-\d{2}|\bRound\s+\d+\b|^Update\b").unwrap());
-    let unread = if root.join("usage.sqlite").is_file() {
-        let usage = usage::open(root)?;
-        usage::scanned(&usage)?
-            .then(|| usage::read_pages(&usage, i64::MIN))
-            .transpose()?
-    } else {
-        None
+    let unread = match usage {
+        Some(usage) if usage::scanned(usage)? => Some(usage::read_pages(usage, i64::MIN)?),
+        _ => None,
     };
     let mut result = Report {
         unread: unread.as_ref().map(|_| vec![]),
@@ -202,8 +201,6 @@ fn worklist(root: &Path, db: &Connection, now: i64) -> Result<Report> {
         .query_map([], index::Row::read)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for row in rows {
-        let text = pages::read(&root.join(&row.path))?;
-        let page = pages::parse(&text, &row.path);
         let add = |items: &mut Vec<Finding>, detail: String| {
             items.push(Finding {
                 detail,
@@ -211,6 +208,17 @@ fn worklist(root: &Path, db: &Connection, now: i64) -> Result<Report> {
                 usage: usage::PageUsage::default(),
             });
         };
+        // A blocked page is one finding. Its content must be fixed before anything
+        // derived from it is worth reporting, and must not be quoted meanwhile.
+        if !row.blocked.is_empty() {
+            add(&mut result.blocked, row.blocked.clone());
+            continue;
+        }
+        // Deleted since the index was refreshed.
+        let Ok(text) = pages::read(&root.join(&row.path)) else {
+            continue;
+        };
+        let page = pages::parse(&text, &row.path);
         for problem in &page.problems {
             add(&mut result.frontmatter, scan::redact(problem));
         }
@@ -244,7 +252,7 @@ fn worklist(root: &Path, db: &Connection, now: i64) -> Result<Report> {
         if matches!(page.kind.as_str(), "knowledge" | "followups") {
             let count = pages::sections(&text)
                 .iter()
-                .filter(|s| LOG.is_match(s.heading.rsplit(" > ").next().unwrap_or_default()))
+                .filter(|s| LOG.is_match(&s.title))
                 .count();
             if count >= 3 {
                 add(
@@ -278,16 +286,14 @@ fn worklist(root: &Path, db: &Connection, now: i64) -> Result<Report> {
                 add(items, "older than 14 days, never read".into());
             }
         }
-        if row.blocked.is_empty() {
-            if let Some(percent) = pages::non_korean_percent(&page.body) {
-                add(
-                    &mut result.non_korean,
-                    format!("prose is {percent}% Hangul"),
-                );
-            }
-            for tag in page.tags.split_whitespace().collect::<HashSet<_>>() {
-                tags.entry(tag.into()).or_default().push(row.path.clone());
-            }
+        if let Some(percent) = pages::non_korean_percent(&page.body) {
+            add(
+                &mut result.non_korean,
+                format!("prose is {percent}% Hangul"),
+            );
+        }
+        for tag in page.tags.split_whitespace().collect::<HashSet<_>>() {
+            tags.entry(tag.into()).or_default().push(row.path.clone());
         }
     }
     for (tag, paths) in tags {
@@ -324,6 +330,7 @@ fn prioritize(result: &mut Report, usage: &BTreeMap<String, usage::PageUsage>) {
     }
     for items in [
         &mut result.broken_links,
+        &mut result.blocked,
         &mut result.frontmatter,
         &mut result.log_growth,
         &mut result.missing_queries,
@@ -368,7 +375,7 @@ fn print_items(items: &[impl Item], all: bool) {
 pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
     let usage = usage::refresh(root)?;
     let now = Utc::now().timestamp();
-    let mut result = worklist(root, db, now)?;
+    let mut result = worklist(root, db, Some(&usage), now)?;
     let eligible: HashSet<String> = db.prepare("select fts.path from fts join files on files.id=fts.rowid where files.blocked='' and (fts.type='knowledge' or (fts.type='followups' and fts.status='open'))")?
         .query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
     let available = if let Some(pairs) = semantic::pairs(args.min) {
@@ -416,6 +423,7 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
             }
         );
         print_items(&result.duplicates, args.all);
+        print_category("blocked", &result.blocked, args.all);
         print_category("frontmatter", &result.frontmatter, args.all);
         print_category("log-growth", &result.log_growth, args.all);
         print_category("missing-queries", &result.missing_queries, args.all);
@@ -469,7 +477,7 @@ mod tests {
             "remind",
             &["pages/knowledge/z.md".into()],
         );
-        let mut result = worklist(&wiki.root, &wiki.index, now)?;
+        let mut result = worklist(&wiki.root, &wiki.index, Some(&db), now)?;
         prioritize(&mut result, &usage::per_page(&db, now)?);
         assert_eq!(
             result.unread.as_ref().unwrap()[1].usage,
@@ -632,7 +640,7 @@ mod tests {
             concat!(
                 r#"{"broken-links":[{"detail":"missing","path":"a","usage":{"importance":1.5,"injected_unread":1,"last_read":123,"read_sessions":2,"reads":5}}],"#,
                 r#""duplicates":[{"a":"a","b":"b","score":0.99,"usage_a":{"importance":0.0,"injected_unread":0,"last_read":null,"read_sessions":0,"reads":0},"usage_b":{"importance":0.0,"injected_unread":0,"last_read":null,"read_sessions":0,"reads":0}}],"#,
-                r#""frontmatter":[],"log-growth":[],"missing-queries":[],"error-quotes":[],"non-korean":[],"orphans":[],"#,
+                r#""blocked":[],"frontmatter":[],"log-growth":[],"missing-queries":[],"error-quotes":[],"non-korean":[],"orphans":[],"#,
                 r#""singleton-tags":[{"path":"b","tag":"tag","usage":{"importance":0.0,"injected_unread":0,"last_read":null,"read_sessions":0,"reads":0}}],"snapshots":[],"#,
                 r#""stale-followups":[{"age_days":30,"mtime":123,"path":"c","usage":{"importance":0.0,"injected_unread":0,"last_read":null,"read_sessions":0,"reads":0}}]}"#,
             )
@@ -642,7 +650,7 @@ mod tests {
                 unread: Some(vec![]),
                 ..Report::default()
             })?,
-            r#"{"broken-links":[],"duplicates":[],"frontmatter":[],"log-growth":[],"missing-queries":[],"error-quotes":[],"non-korean":[],"orphans":[],"singleton-tags":[],"snapshots":[],"stale-followups":[],"unread":[]}"#
+            r#"{"broken-links":[],"duplicates":[],"blocked":[],"frontmatter":[],"log-growth":[],"missing-queries":[],"error-quotes":[],"non-korean":[],"orphans":[],"singleton-tags":[],"snapshots":[],"stale-followups":[],"unread":[]}"#
         );
         Ok(())
     }
@@ -680,7 +688,7 @@ mod tests {
             "update files set mtime_ns=? where path like 'pages/followups/%'",
             [(now - 20 * 86400) * 1_000_000_000],
         )?;
-        let initial = worklist(&wiki.root, &wiki.index, now)?;
+        let initial = worklist(&wiki.root, &wiki.index, None, now)?;
         assert!(initial.unread.is_none());
         assert!(initial.non_korean.is_empty());
         for (category, count) in [
@@ -695,12 +703,119 @@ mod tests {
         ] {
             assert_eq!(count, 1, "{category}: {initial:?}");
         }
-        assert_eq!(initial, worklist(&wiki.root, &wiki.index, now)?);
+        assert_eq!(initial, worklist(&wiki.root, &wiki.index, None, now)?);
         let usage = usage::open(&wiki.root)?;
         usage.execute_batch("insert into state values ('scanned', 1), ('scan_format', 4); insert into tools values ('r','s',1); insert into accesses values ('r','pages/knowledge/linked.md','read');")?;
-        let after = worklist(&wiki.root, &wiki.index, now)?;
+        let after = worklist(&wiki.root, &wiki.index, Some(&usage), now)?;
         assert_eq!(after.unread.as_ref().unwrap().len(), 3);
         assert_eq!(after.stale_followups[0].age_days, 20);
+        Ok(())
+    }
+
+    #[test]
+    fn a_blocked_page_is_one_finding_and_nothing_derived_from_its_content() -> Result<()> {
+        let mut wiki = usage::tests::Wiki::new()?;
+        let escaped = format!("\"\\x41KIA{}\"", "ABCDEFGHIJKLMNOP");
+        // Unblocked, this page would be in eight categories.
+        wiki.page(
+            "pages/knowledge/2020-01-01-blocked.md",
+            &format!(
+                "---\ntitle: Hidden: title\ntags: [lonely]\n---\n## Round 1\n## Round 2\n\
+                 ## 2020-02-03\n[[knowledge/missing]]\n'error: cannot ...'\nghp_{}\n",
+                "A".repeat(36)
+            ),
+        )?;
+        // Blocked by a value that only its decoded frontmatter shows.
+        wiki.page(
+            "pages/knowledge/decoded.md",
+            &format!("---\ntitle: {escaped}\ncreated: 2020-01-01\nqueries: [why]\n---\n[[knowledge/summary]]\n"),
+        )?;
+        // A blocked summary is a problem of the page, which stays in the index.
+        wiki.page(
+            "pages/knowledge/summary.md",
+            &format!(
+                "---\ntitle: Summary\ncreated: 2020-01-01\nqueries: [why]\nsummary: {escaped}\n---\n\
+                 [[knowledge/decoded]]\n"
+            ),
+        )?;
+        let report = worklist(&wiki.root, &wiki.index, None, Utc::now().timestamp())?;
+        assert_eq!(
+            report
+                .blocked
+                .iter()
+                .map(|f| (f.path.as_str(), f.detail.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("pages/knowledge/2020-01-01-blocked.md", "secret"),
+                ("pages/knowledge/decoded.md", "secret"),
+            ]
+        );
+        assert_eq!(
+            report
+                .frontmatter
+                .iter()
+                .map(|f| (f.path.as_str(), f.detail.as_str()))
+                .collect::<Vec<_>>(),
+            [(
+                "pages/knowledge/summary.md",
+                "has a summary the scanner blocks: secret: AKIAAB…"
+            )]
+        );
+        for (category, count) in [
+            ("broken-links", report.broken_links.len()),
+            ("error-quotes", report.error_quotes.len()),
+            ("log-growth", report.log_growth.len()),
+            ("missing-queries", report.missing_queries.len()),
+            ("non-korean", report.non_korean.len()),
+            ("orphans", report.orphans.len()),
+            ("singleton-tags", report.singleton_tags.len()),
+            ("snapshots", report.snapshots.len()),
+        ] {
+            assert_eq!(count, 0, "{category}: {report:?}");
+        }
+        let json = serde_json::to_string(&report)?;
+        assert!(
+            json.contains(
+                r#""blocked":[{"detail":"secret","path":"pages/knowledge/2020-01-01-blocked.md","#
+            ),
+            "{json}"
+        );
+        assert!(
+            !json.contains("ABCDEFGH") && !json.contains("Hidden"),
+            "{json}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn log_growth_counts_headings_by_their_own_text_outside_code() -> Result<()> {
+        let mut wiki = usage::tests::Wiki::new()?;
+        let fm = "---\ntitle: Log\ncreated: 2020-01-01\nstatus: done\n---\n";
+        // The heading's own text starts with Update, whatever ` > ` it holds.
+        wiki.page(
+            "pages/followups/breadcrumbs.md",
+            &format!("{fm}# Notes > misc\n## Update: A > B\n## Update: C > D\n## Update: E > F\n"),
+        )?;
+        // Comments in a code block inside a list item are not headings.
+        wiki.page(
+            "pages/followups/comments.md",
+            &format!(
+                "{fm}## Update one\n## Update two\n- ```sh\n  # Update the config\n  # Round 3\n  ```\n\
+                 \n    # Update indented\n"
+            ),
+        )?;
+        let report = worklist(&wiki.root, &wiki.index, None, Utc::now().timestamp())?;
+        assert_eq!(
+            report
+                .log_growth
+                .iter()
+                .map(|f| (f.path.as_str(), f.detail.as_str()))
+                .collect::<Vec<_>>(),
+            [(
+                "pages/followups/breadcrumbs.md",
+                "3 dated, Round or Update headings"
+            )]
+        );
         Ok(())
     }
 }
