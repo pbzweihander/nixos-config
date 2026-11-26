@@ -832,6 +832,16 @@ fn timed_out_scan_is_retried_after_a_minute_not_fifteen() {
         stamp <= now - 900 + 60 && stamp >= now - 900 + 55,
         "stamp {stamp}, now {now}"
     );
+    // The attempted worktrees are passed: the retry continues after them.
+    let cursor: String = f
+        .db()
+        .query_row(
+            "select after from bot_guard_cursor where consumer_key='bot:bot-4'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(cursor.contains("demo/slow-"), "{cursor}");
     // Within the minute an ordinary prompt waits; after it, the scan is retried.
     assert!(!f.prompt("일반 요청").contains(CLEANUP));
     f.db()
@@ -874,5 +884,62 @@ fn instruction_secret_and_bidi_names_are_never_reported() {
     assert_eq!(text.matches("merged into main").count(), 1, "{text}");
     for leaked in ["ignore all", "ghp_", "\u{202e}", "done-newline"] {
         assert!(!text.contains(leaked), "{leaked:?} in {text}");
+    }
+}
+
+#[test]
+fn tokens_glued_to_a_letter_are_never_reported_but_word_sk_is() {
+    let f = Fixture::new();
+    f.merged("fenix-disk-usage-cargo-targets-and-worktrees");
+    let workspace = f.workspaces().join("demo");
+    for (n, token) in [
+        format!("ghp_{}", "A".repeat(36)),
+        "AKIA1234567890ABCDEF".into(),
+        format!("github_pat_{}", "b".repeat(22)),
+        "xoxb-1234567890".into(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        // Glued to a letter, once in the directory and once in the branch name.
+        let path = workspace.join(format!("x{token}"));
+        let branch = format!("glued-{n}");
+        f.git(
+            &f.repo(),
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                &branch,
+                path.to_str().unwrap(),
+            ],
+        );
+        f.commit(&path);
+        f.git(&f.repo(), &["merge", "-q", "--ff-only", &branch]);
+    }
+    let path = workspace.join("branch-token");
+    let branch = format!("b{}", "AKIA1234567890ABCDEF");
+    f.git(
+        &f.repo(),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            &branch,
+            path.to_str().unwrap(),
+        ],
+    );
+    f.commit(&path);
+    f.git(&f.repo(), &["merge", "-q", "--ff-only", &branch]);
+    let text = f.prompt("merged");
+    assert!(
+        text.contains("fenix-disk-usage-cargo-targets-and-worktrees, merged into main"),
+        "{text}"
+    );
+    assert_eq!(text.matches("merged into main").count(), 1, "{text}");
+    for leaked in ["AAAAAAAA", "1234567890", "bbbbbbbb"] {
+        assert!(!text.contains(leaked), "{leaked} in {text}");
     }
 }

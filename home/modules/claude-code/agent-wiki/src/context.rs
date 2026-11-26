@@ -332,7 +332,7 @@ pub(crate) fn render(
     let total: i64 = db.query_row("select count(*) from files", [], |r| r.get(0))?;
     let mut pinned = format!(
         "Shared wiki: {total} pages under {}/. Search it with `agent-wiki search <terms>` before non-trivial work; load the agent-wiki skill before writing to it.\n",
-        root.display()
+        clean_identifier(&root.display().to_string())
     );
     let project = current_project(cwd);
     let overview = format!("pages/projects/{}.md", project.as_deref().unwrap_or("None"));

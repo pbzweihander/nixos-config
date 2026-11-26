@@ -479,89 +479,141 @@ struct Scan {
     found: Vec<String>,
     /// Every candidate worktree was visited.
     finished: bool,
-    /// The deadline ended the scan (or its listing) before it finished.
+    /// The deadline ended the scan before it finished.
     timed_out: bool,
-    /// Path of the last candidate visited in full.
+    /// Cursor for the next scan: the last worktree attempted, whether or not its
+    /// checks completed, or `<repo>/`[`END`] for a repository whose listing used
+    /// up the time. The next scan starts after it, so one slow entry cannot hold
+    /// every later scan at the same place.
     last: Option<String>,
 }
 
-/// Worktree directories under `root` (`<repo>/<worktree>`), sorted by path, or
-/// `None` when the deadline passes while listing them.
-fn worktrees(root: &Path, deadline: Instant) -> Option<Vec<PathBuf>> {
-    let mut paths = vec![];
-    if !directory(root) {
-        return Some(paths);
-    }
-    let Ok(root) = root.canonicalize() else {
-        return Some(paths);
+/// Sorts after every child of a directory (U+10FFFF is the largest scalar value,
+/// and paths compare by component): a cursor at `<repo>/<END>` passes that repo.
+const END: &str = "\u{10ffff}";
+
+/// Up to `max` subdirectories of `dir`, sorted by path; symlinks are not followed.
+fn child_dirs(dir: &Path, max: usize) -> Vec<PathBuf> {
+    let Ok(children) = fs::read_dir(dir) else {
+        return vec![];
     };
-    let Ok(repos) = fs::read_dir(root) else {
-        return Some(paths);
-    };
-    for repo in repos.take(256).flatten() {
-        if Instant::now() >= deadline {
-            return None;
-        }
-        if !repo.file_type().is_ok_and(|kind| kind.is_dir()) {
-            continue;
-        }
-        let Ok(children) = fs::read_dir(repo.path()) else {
-            continue;
-        };
-        paths.extend(
-            children
-                .take(1024)
-                .flatten()
-                .filter(|child| child.file_type().is_ok_and(|kind| kind.is_dir()))
-                .map(|child| child.path()),
-        );
-    }
+    let mut paths: Vec<_> = children
+        .take(max)
+        .flatten()
+        .filter(|child| child.file_type().is_ok_and(|kind| kind.is_dir()))
+        .map(|child| child.path())
+        .collect();
     paths.sort();
-    Some(paths)
+    paths
+}
+
+/// Visits the worktrees (`<repo>/<worktree>`) under `root`; see [`scan_with`].
+fn scan(root: &Path, cursor: Option<&str>, deadline: Instant) -> Scan {
+    // A symlinked root is not followed (checked before canonicalizing).
+    let repos = match directory(root).then(|| root.canonicalize()) {
+        Some(Ok(root)) => child_dirs(&root, 256),
+        _ => vec![],
+    };
+    scan_with(
+        &repos,
+        cursor.map(Path::new),
+        deadline,
+        |repo| child_dirs(repo, 1024),
+        candidate,
+    )
+}
+
+/// Which children of a repository one pass over it visits, relative to the cursor.
+#[derive(Clone, Copy)]
+enum Part {
+    All,
+    After,
+    UpTo,
 }
 
 /// Visits worktrees in path order, starting after `cursor` (where the previous
 /// scan stopped) and wrapping around, until all are visited, the deadline passes
-/// or [`MAX_LEFT_WORKTREES`] leftovers are found. Starting after the cursor keeps
-/// slow or persistently reported early entries from hiding later ones forever.
-fn scan(root: &Path, cursor: Option<&str>, deadline: Instant) -> Scan {
+/// or [`MAX_LEFT_WORKTREES`] leftovers are found. Each repository is listed just
+/// before its worktrees are visited, so a slow listing or a slow worktree costs
+/// one scan and is passed by the next, instead of hiding every later entry.
+fn scan_with(
+    repos: &[PathBuf],
+    cursor: Option<&Path>,
+    deadline: Instant,
+    mut list: impl FnMut(&Path) -> Vec<PathBuf>,
+    mut visit: impl FnMut(&Path, Instant) -> Option<String>,
+) -> Scan {
     let mut scan = Scan {
         found: vec![],
         finished: false,
         timed_out: false,
         last: None,
     };
-    let Some(paths) = worktrees(root, deadline) else {
-        scan.timed_out = true;
-        return scan;
-    };
-    let start = cursor.map_or(0, |cursor| {
-        paths
+    // The first repository that still has a child after the cursor; a cursor past
+    // every repository starts a fresh cycle.
+    let resume = cursor.and_then(|cursor| {
+        repos
             .iter()
-            .position(|path| path.as_path() > Path::new(cursor))
-            .unwrap_or(0)
+            .position(|repo| repo.join(END).as_path() > cursor)
+            .map(|start| (start, cursor))
     });
-    let mut visited = 0;
-    for path in paths[start..].iter().chain(&paths[..start]) {
+    let start = resume.map_or(0, |(start, _)| start);
+    let cursor = resume.map(|(_, cursor)| cursor);
+    let mut passes: Vec<(&Path, Part)> = repos[start..]
+        .iter()
+        .chain(&repos[..start])
+        .map(|repo| (repo.as_path(), Part::All))
+        .collect();
+    if cursor.is_some()
+        && let Some(first) = passes.first_mut()
+    {
+        // The starting repository again at the end, for its children up to the cursor.
+        first.1 = Part::After;
+        let repo = first.0;
+        passes.push((repo, Part::UpTo));
+    }
+    for (repo, part) in passes {
         if Instant::now() >= deadline {
             scan.timed_out = true;
-            break;
+            return scan;
         }
-        if scan.found.len() == MAX_LEFT_WORKTREES {
-            break;
-        }
-        let entry = candidate(path, deadline);
-        // A leftover is only reported after all its checks ran; no leftover past the
-        // deadline may mean a check was cut off, so that worktree was not visited.
-        if entry.is_none() && Instant::now() >= deadline {
+        let children = list(repo);
+        if Instant::now() >= deadline {
+            // The listing itself used up the time: pass this repository next time.
             scan.timed_out = true;
-            break;
+            scan.last = Some(repo.join(END).to_string_lossy().into_owned());
+            return scan;
         }
-        visited += 1;
-        scan.last = Some(path.to_string_lossy().into_owned());
-        scan.found.extend(entry);
+        for child in &children {
+            let wanted = match (part, cursor) {
+                (Part::After, Some(cursor)) => child.as_path() > cursor,
+                (Part::UpTo, Some(cursor)) => child.as_path() <= cursor,
+                _ => true,
+            };
+            if !wanted {
+                continue;
+            }
+            if scan.found.len() == MAX_LEFT_WORKTREES {
+                return scan;
+            }
+            if Instant::now() >= deadline {
+                scan.timed_out = true;
+                return scan;
+            }
+            let entry = visit(child, deadline);
+            // Attempted, even if its checks were cut off: the next scan starts after
+            // it, and it comes up again after the others.
+            scan.last = Some(child.to_string_lossy().into_owned());
+            // A leftover is only reported after all its checks ran; no leftover past
+            // the deadline may mean a check was cut off.
+            if entry.is_none() && Instant::now() >= deadline {
+                scan.timed_out = true;
+                return scan;
+            }
+            scan.found.extend(entry);
+        }
     }
-    scan.finished = visited == paths.len();
+    scan.finished = true;
     scan
 }
 
@@ -576,6 +628,156 @@ mod tests {
         assert!(!anchor("──── From: bot-2 (status) ────\n참고용 완료 보고"));
         for kind in ["handoff", "worker_done", "question"] {
             assert!(anchor(&format!("──── From: bot-2 ({kind}) ────\n내용")));
+        }
+    }
+
+    fn paths(names: &[&str]) -> Vec<PathBuf> {
+        names
+            .iter()
+            .map(|n| PathBuf::from(format!("/ws/{n}")))
+            .collect()
+    }
+
+    /// Children of the fake repositories: `/ws/<repo>/<name>`.
+    fn tree(repo: &Path) -> Vec<PathBuf> {
+        let names: &[&str] = match repo.file_name().and_then(|n| n.to_str()) {
+            Some("demo") => &["a", "b", "c", "z"],
+            Some("other") => &["x"],
+            _ => &[],
+        };
+        names.iter().map(|n| repo.join(n)).collect()
+    }
+
+    /// Every worktree is a leftover named after itself; `slow` ones take the
+    /// whole scan budget and report nothing.
+    fn visitor<'a>(
+        slow: &'static [&'static str],
+        seen: &'a mut Vec<String>,
+    ) -> impl FnMut(&Path, Instant) -> Option<String> + 'a {
+        move |path, deadline| {
+            let name = path.file_name()?.to_str()?.to_owned();
+            seen.push(name.clone());
+            if slow.contains(&name.as_str()) {
+                thread::sleep(
+                    deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(1),
+                );
+                return None;
+            }
+            Some(name)
+        }
+    }
+
+    #[test]
+    fn slow_first_worktree_advances_the_cursor_to_the_next_one() {
+        let repos = paths(&["demo"]);
+        let tree =
+            |repo: &Path| -> Vec<PathBuf> { ["a", "z"].iter().map(|n| repo.join(n)).collect() };
+        let mut seen = vec![];
+        let first = scan_with(
+            &repos,
+            None,
+            Instant::now() + Duration::from_millis(20),
+            tree,
+            visitor(&["a"], &mut seen),
+        );
+        assert!(first.timed_out && !first.finished);
+        assert!(first.found.is_empty());
+        assert_eq!(first.last.as_deref(), Some("/ws/demo/a"));
+        assert_eq!(seen, ["a"]);
+        // The retry starts after `a`, reports `z`, and only then wraps to `a`.
+        let mut seen = vec![];
+        let second = scan_with(
+            &repos,
+            first.last.as_deref().map(Path::new),
+            Instant::now() + Duration::from_millis(20),
+            tree,
+            visitor(&["a"], &mut seen),
+        );
+        assert_eq!(second.found, ["z"]);
+        assert_eq!(seen, ["z", "a"]);
+        assert!(second.timed_out);
+        assert_eq!(second.last.as_deref(), Some("/ws/demo/a"));
+    }
+
+    #[test]
+    fn slow_repository_listing_is_passed_by_the_next_scan() {
+        let repos = paths(&["demo", "other"]);
+        let slow_listing = |repo: &Path| {
+            if repo.ends_with("demo") {
+                thread::sleep(Duration::from_millis(30));
+            }
+            tree(repo)
+        };
+        let mut seen = vec![];
+        let first = scan_with(
+            &repos,
+            None,
+            Instant::now() + Duration::from_millis(20),
+            slow_listing,
+            visitor(&[], &mut seen),
+        );
+        assert!(first.timed_out && first.found.is_empty() && seen.is_empty());
+        assert_eq!(first.last, Some(format!("/ws/demo/{END}")));
+        let mut seen = vec![];
+        let second = scan_with(
+            &repos,
+            first.last.as_deref().map(Path::new),
+            Instant::now() + Duration::from_millis(20),
+            slow_listing,
+            visitor(&[], &mut seen),
+        );
+        assert_eq!(second.found, ["x"]);
+        assert_eq!(second.last, Some(format!("/ws/demo/{END}")));
+    }
+
+    #[test]
+    fn rotation_resumes_after_the_cursor_and_wraps_once() {
+        let repos = paths(&["demo", "other"]);
+        let far = Instant::now() + Duration::from_secs(5);
+        let mut seen = vec![];
+        let scan = scan_with(
+            &repos,
+            Some(Path::new("/ws/demo/b")),
+            far,
+            tree,
+            visitor(&[], &mut seen),
+        );
+        assert!(scan.finished && !scan.timed_out);
+        assert_eq!(seen, ["c", "z", "x", "a", "b"]);
+        // The cap stops the scan and leaves the cursor at the last one attempted.
+        let six = |repo: &Path| {
+            let mut children = tree(repo);
+            if repo.ends_with("other") {
+                children.push(repo.join("y"));
+            }
+            children
+        };
+        let mut seen = vec![];
+        let scan = scan_with(&repos, None, far, six, visitor(&[], &mut seen));
+        assert_eq!(scan.found, ["a", "b", "c", "z", "x"]);
+        assert!(!scan.finished && !scan.timed_out);
+        assert_eq!(scan.last.as_deref(), Some("/ws/other/x"));
+        let mut seen = vec![];
+        let scan = scan_with(
+            &repos,
+            scan.last.as_deref().map(Path::new),
+            far,
+            six,
+            visitor(&[], &mut seen),
+        );
+        assert_eq!(scan.found, ["y", "a", "b", "c", "z"]);
+        // A cursor past everything (or in a removed repository) starts afresh.
+        for cursor in ["/zz/none", "/ws/other/zzz", "/ws/gone/a"] {
+            let mut seen = vec![];
+            let scan = scan_with(
+                &repos,
+                Some(Path::new(cursor)),
+                far,
+                tree,
+                visitor(&[], &mut seen),
+            );
+            assert!(scan.finished, "{cursor}");
+            assert_eq!(seen.len(), 5, "{cursor}: {seen:?}");
         }
     }
 
