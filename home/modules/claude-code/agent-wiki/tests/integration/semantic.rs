@@ -69,9 +69,36 @@ fn default_wiki_directory_uses_existing_legacy_data_until_migrated() {
         command
             .env_remove("CLAUDE_WIKI_DIR")
             .env_remove("AGENT_WIKI_DIR")
-            .env("XDG_DATA_HOME", &data);
+            .env("XDG_DATA_HOME", &data)
+            .env("XDG_STATE_HOME", wiki.0.join("default-state"));
         assert!(run(command, "").contains("foo cache notes"));
-        assert!(!(if legacy { new } else { old }).exists());
+        assert!(!(if legacy { &new } else { &old }).exists());
+        assert!(
+            wiki.0
+                .join("default-state")
+                .join("agent-wiki")
+                .join("index.sqlite")
+                .exists()
+        );
+        // An overridden data home without a state home must stay isolated too.
+        let mut command = wiki.command(&["list"]);
+        command
+            .env_remove("CLAUDE_WIKI_DIR")
+            .env_remove("AGENT_WIKI_DIR")
+            .env("XDG_DATA_HOME", &data)
+            .env_remove("XDG_STATE_HOME")
+            .env_remove("AGENT_WIKI_STATE_DIR")
+            .env_remove("CLAUDE_WIKI_STATE_DIR");
+        assert!(run(command, "").contains("foo cache notes"));
+        assert!(
+            data.join(if legacy {
+                "claude-wiki-state"
+            } else {
+                "agent-wiki-state"
+            })
+            .join("index.sqlite")
+            .exists()
+        );
     }
 }
 
@@ -696,7 +723,7 @@ fn probe_bm25_matches_search_ranks_and_never_indexes_questions() {
     fs::write(&path, "---\ntitle: foo\ncreated: 2026-09-29\nqueries: [questiononlytoken]\n---\n# Recovery\nDetails.\n").unwrap();
     let output = run_output(wiki.command(&["check", "--probe", "knowledge/foo"]), "");
     assert_eq!(output.status.code(), Some(1));
-    let db = rusqlite::Connection::open(wiki.0.join("wiki/index.sqlite")).unwrap();
+    let db = rusqlite::Connection::open(wiki.0.join("wiki-state/index.sqlite")).unwrap();
     for table in ["fts", "sections_fts"] {
         let matches: i64 = db
             .query_row(
@@ -1192,7 +1219,7 @@ fn reminder_and_recall_log_only_emitted_pages_and_share_seen_state() {
     let (output, _) = wiki.respond(&["remind"], &json!({"session_id":"shared", "prompt":"cache"}).to_string(),
         json!({"ok":true, "results":[{"path":"knowledge/foo", "score":1.0}, {"path":"knowledge/bar", "score":0.9}]}));
     assert!(output.is_empty());
-    let db = rusqlite::Connection::open(wiki.0.join("wiki/usage.sqlite")).unwrap();
+    let db = rusqlite::Connection::open(wiki.0.join("wiki-state/usage.sqlite")).unwrap();
     assert_eq!(
         db.query_row(
             "select count(*) from injections where source='recall-skill' and session_id='shared'",
@@ -1398,7 +1425,7 @@ fn context_logs_only_overview_and_retained_project_lists_and_bounds_stdin() {
         &json!({"session_id":"context-session"}).to_string(),
     );
     assert!(output.contains("Recently updated:"));
-    let db = rusqlite::Connection::open(wiki.0.join("wiki/usage.sqlite")).unwrap();
+    let db = rusqlite::Connection::open(wiki.0.join("wiki-state/usage.sqlite")).unwrap();
     let paths: Vec<String> = db
         .prepare("select path from injections order by path")
         .unwrap()
@@ -1677,7 +1704,7 @@ fn context_waits_for_a_busy_lock_and_then_prints_its_summary() {
     let mut lock = fd_lock::RwLock::new(
         fs::OpenOptions::new()
             .write(true)
-            .open(wiki.0.join("wiki/.lock"))
+            .open(wiki.0.join("wiki-state/wiki.lock"))
             .unwrap(),
     );
     let guard = lock.write().unwrap();
@@ -1711,7 +1738,7 @@ fn hooks_respect_lock_deadline_and_non_hooks_still_wait() {
     let mut lock = fd_lock::RwLock::new(
         fs::OpenOptions::new()
             .write(true)
-            .open(wiki.0.join("wiki/.lock"))
+            .open(wiki.0.join("wiki-state/wiki.lock"))
             .unwrap(),
     );
     let guard = lock.write().unwrap();
@@ -1766,23 +1793,27 @@ fn hooks_respect_lock_deadline_and_non_hooks_still_wait() {
 }
 
 #[test]
-fn event_reminders_skip_busy_locks_and_fail_open_on_sqlite_contention() {
+fn event_reminders_bypass_wiki_locks_and_fail_open_on_sqlite_contention() {
     let wiki = Wiki::new();
     let input = json!({"session_id":"event-lock", "hook_event_name":"PreCompact"}).to_string();
     let mut lock = fd_lock::RwLock::new(
         fs::OpenOptions::new()
             .write(true)
-            .open(wiki.0.join("wiki/.lock"))
+            .open(wiki.0.join("wiki-state/wiki.lock"))
             .unwrap(),
     );
     let guard = lock.write().unwrap();
     let started = Instant::now();
     let output = run_output(wiki.command(&["remind", "--event"]), &input);
     assert!(started.elapsed() < Duration::from_secs(1));
-    assert!(output.status.success() && output.stdout.is_empty() && output.stderr.is_empty());
+    assert!(
+        output.status.success()
+            && String::from_utf8_lossy(&output.stdout).contains("context compaction")
+    );
     drop(guard);
 
-    let db = rusqlite::Connection::open(wiki.0.join("wiki/index.sqlite")).unwrap();
+    let input = input.replace("event-lock", "event-busy");
+    let db = rusqlite::Connection::open(wiki.0.join("wiki-state/state.sqlite")).unwrap();
     db.execute_batch("begin exclusive").unwrap();
     let started = Instant::now();
     let output = run_output(wiki.command(&["remind", "--event"]), &input);
@@ -1808,7 +1839,7 @@ fn event_reminders_do_not_refresh_pages_or_connect_to_semantic_daemon() {
     .to_string();
     assert!(run(wiki.command(&["remind", "--event"]), &input).contains("you just committed"));
     assert_no_connection(&listener);
-    let db = rusqlite::Connection::open(wiki.0.join("wiki/index.sqlite")).unwrap();
+    let db = rusqlite::Connection::open(wiki.0.join("wiki-state/index.sqlite")).unwrap();
     let count: i64 = db
         .query_row(
             "select count(*) from files where path='pages/knowledge/new.md'",

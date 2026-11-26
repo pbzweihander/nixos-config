@@ -234,7 +234,7 @@ fn source_dirs_override_and_older_index_rebuilds() {
     // version changes, so the triggers and FTS table match a real older index.
     env.run(&["lattice"], &[]);
     {
-        let db = rusqlite::Connection::open(home.join("wiki/sessions.sqlite")).unwrap();
+        let db = rusqlite::Connection::open(home.join("wiki-state/sessions.sqlite")).unwrap();
         db.execute_batch(
             "update state set value = 4 where key = 'index_format';
              insert into messages(session_id, uuid, ts, role, project, branch, text, harness)
@@ -262,7 +262,7 @@ fn source_dirs_override_and_older_index_rebuilds() {
     );
     // The rebuild happens once: a row added after it survives the next run.
     {
-        let db = rusqlite::Connection::open(home.join("wiki/sessions.sqlite")).unwrap();
+        let db = rusqlite::Connection::open(home.join("wiki-state/sessions.sqlite")).unwrap();
         db.execute_batch(
             "insert into messages(session_id, uuid, ts, role, project, branch, text, harness)
                  values ('kept', 'kept', '2026-11-01T00:00:00.000Z', 'user', '', '', 'keptword', 'claude');",
@@ -270,7 +270,7 @@ fn source_dirs_override_and_older_index_rebuilds() {
         .unwrap();
     }
     assert!(env.run(&["keptword"], &[]).contains("session kept"));
-    let db = rusqlite::Connection::open(home.join("wiki/sessions.sqlite")).unwrap();
+    let db = rusqlite::Connection::open(home.join("wiki-state/sessions.sqlite")).unwrap();
     let format: i64 = db
         .query_row(
             "select value from state where key='index_format'",
@@ -457,7 +457,7 @@ fn cross_harness_usage_scans_and_orders_subsecond_reads() {
         serde_json::from_slice::<Value>(&out.stdout).unwrap()
     };
     stats();
-    let db = rusqlite::Connection::open(home.join("wiki/usage.sqlite")).unwrap();
+    let db = rusqlite::Connection::open(home.join("wiki-state/usage.sqlite")).unwrap();
     for session in ["cx", "conv-orca"] {
         db.execute(
             "insert into injections values (?, 'pages/knowledge/usage.md', 'context', 1795737600)",

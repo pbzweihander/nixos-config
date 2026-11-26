@@ -123,7 +123,7 @@ impl Fixture {
     }
 
     fn pending(&self) -> i64 {
-        rusqlite::Connection::open(self.0.join("wiki/index.sqlite"))
+        rusqlite::Connection::open(self.0.join("wiki-state/state.sqlite"))
             .unwrap()
             .query_row("select count(*) from antigravity_pending", [], |r| r.get(0))
             .unwrap()
@@ -145,12 +145,13 @@ impl Drop for Fixture {
 }
 
 fn wiki_lock(root: &std::path::Path) -> fd_lock::RwLock<fs::File> {
+    fs::create_dir_all(root.join("wiki-state")).unwrap();
     fd_lock::RwLock::new(
         fs::OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
-            .open(root.join("wiki/.lock"))
+            .open(root.join("wiki-state/wiki.lock"))
             .unwrap(),
     )
 }
@@ -168,7 +169,7 @@ fn context_uses_camelcase_session_and_workspace_fallback_and_logs_injections() {
     let result = f.run(&["context"], &p);
     assert!(text(&result).contains("Current project: demo"));
     assert!(text(&result).contains("프로젝트 요약"));
-    let db = rusqlite::Connection::open(f.0.join("wiki/usage.sqlite")).unwrap();
+    let db = rusqlite::Connection::open(f.0.join("wiki-state/usage.sqlite")).unwrap();
     let session: String = db
         .query_row(
             "select session_id from injections where source='context' limit 1",
@@ -218,7 +219,7 @@ fn bulletins_share_bot_seen_state_across_session_start_and_new_prompts() {
     start["conversationId"] = json!("conversation-three");
     assert!(!text(&f.run(&["context"], &start)).contains("agent-wiki bulletin:"));
 
-    let db = rusqlite::Connection::open(f.0.join("wiki/usage.sqlite")).unwrap();
+    let db = rusqlite::Connection::open(f.0.join("wiki-state/usage.sqlite")).unwrap();
     let seen: Vec<(String, String, i64)> = db
         .prepare("select consumer_key, page_path, seen_mtime from bulletin_seen order by page_path")
         .unwrap()
@@ -272,7 +273,7 @@ fn manual_context_without_hook_input_does_not_consume_bot_bulletins() {
             .unwrap()
             .contains("agent-wiki bulletin:")
     );
-    assert!(!f.0.join("wiki/usage.sqlite").exists());
+    assert!(!f.0.join("wiki-state/usage.sqlite").exists());
     let start = f.payload("SessionStart");
     let result = f.run_env(
         &["context"],
@@ -331,7 +332,7 @@ fn skill_and_failure_notes_are_staged_then_drained_once_at_either_boundary() {
     drain["invocationNum"] = json!(2);
     assert!(text(&f.run(&["remind"], &drain)).contains("socket.md"));
     assert_eq!(f.run(&["remind"], &drain), json!({}));
-    let db = rusqlite::Connection::open(f.0.join("wiki/usage.sqlite")).unwrap();
+    let db = rusqlite::Connection::open(f.0.join("wiki-state/usage.sqlite")).unwrap();
     let count: i64 = db
         .query_row(
             "select count(*) from injections where source in ('recall-skill','recall-failure')",
@@ -385,7 +386,7 @@ fn event_failure_replays_do_not_inflate_debugging_streak_and_sync_resets_prompts
     for _ in 0..3 {
         assert_eq!(f.run(&["remind", "--event"], &p), json!({}));
     }
-    let db = rusqlite::Connection::open(f.0.join("wiki/index.sqlite")).unwrap();
+    let db = rusqlite::Connection::open(f.0.join("wiki-state/state.sqlite")).unwrap();
     assert_eq!(
         db.query_row("select failures from remind_event_state", [], |r| r
             .get::<_, i64>(0))
@@ -533,7 +534,7 @@ fn failing_prompt_reminder_still_delivers_staged_notes() {
     let result = f.run_raw(&["remind"], &prompt.to_string(), true);
     assert!(text(&result).contains("testing skill"), "{result}");
     assert_eq!(f.pending(), 0);
-    let db = rusqlite::Connection::open(f.0.join("wiki/usage.sqlite")).unwrap();
+    let db = rusqlite::Connection::open(f.0.join("wiki-state/usage.sqlite")).unwrap();
     let logged: i64 = db
         .query_row(
             "select count(*) from injections where source='recall-skill'",
@@ -573,7 +574,7 @@ fn exit_header_is_read_before_long_command_output() {
     ]);
     let mut drain = f.payload("PostInvocation");
     let state = |f: &Fixture| -> i64 {
-        rusqlite::Connection::open(f.0.join("wiki/index.sqlite"))
+        rusqlite::Connection::open(f.0.join("wiki-state/state.sqlite"))
             .unwrap()
             .query_row(
                 "select coalesce(sum(failures),0) from remind_event_state",
@@ -620,7 +621,7 @@ fn exit_header_is_read_before_long_command_output() {
     );
     f.transcript(&rows);
     assert_eq!(f.run(&["record", "--wait"], &stop), json!({}));
-    let db = rusqlite::Connection::open(f.0.join("state/agent-wiki/records.sqlite")).unwrap();
+    let db = rusqlite::Connection::open(f.0.join("wiki-state/records.sqlite")).unwrap();
     let body: String = db
         .query_row(
             "select body from records where session_id='conversation-one'",
@@ -652,7 +653,7 @@ fn stop_records_observed_schema_and_detaches_without_holding_stdout() {
     p["fullyIdle"] = json!(true);
     p["continuationActive"] = json!(true);
     assert_eq!(f.run(&["record", "--wait"], &p), json!({}));
-    let db = rusqlite::Connection::open(f.0.join("state/agent-wiki/records.sqlite")).unwrap();
+    let db = rusqlite::Connection::open(f.0.join("wiki-state/records.sqlite")).unwrap();
     let body: String = db
         .query_row(
             "select body from records where session_id='conversation-one'",
@@ -686,5 +687,79 @@ fn stop_records_observed_schema_and_detaches_without_holding_stdout() {
         }
         assert!(start.elapsed() < Duration::from_secs(5));
         std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn staging_failure_rolls_back_seen_state_and_can_be_retried() {
+    let f = Fixture::new();
+    f.run(&["context"], &f.payload("SessionStart"));
+    let db = rusqlite::Connection::open(f.0.join("wiki-state/state.sqlite")).unwrap();
+    db.execute_batch("create trigger reject_pending before insert on antigravity_pending begin select raise(abort,'injected failure'); end;").unwrap();
+    f.transcript(&[json!({"step_index":5,"type":"GENERIC","status":"DONE","content":"skill"})]);
+    let mut p = f.payload("PostToolUse");
+    p["toolCall"] = json!({"id":"atomic-skill", "name":"read_file", "args":{"Path":"/tmp/skills/testing/SKILL.md"}});
+    p["stepIdx"] = json!(5);
+    assert_eq!(f.run_raw(&["recall"], &p.to_string(), true), json!({}));
+    assert_eq!(
+        db.query_row("select count(*) from recall_seen", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.query_row("select count(*) from antigravity_tools", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(f.pending(), 0);
+    db.execute_batch("drop trigger reject_pending").unwrap();
+    assert_eq!(f.run(&["recall"], &p), json!({}));
+    assert_eq!(f.pending(), 1);
+}
+
+#[test]
+fn manual_cli_errors_help_and_hook_stdin_deadline() {
+    let f = Fixture::new();
+    for cmd in ["context", "remind", "recall"] {
+        let out = f.command(&[cmd, "--bad-flag"]).output().unwrap();
+        assert!(!out.status.success());
+        let out = f.command(&[cmd, "--help"]).output().unwrap();
+        assert!(out.status.success() && !out.stdout.is_empty() && out.stderr.is_empty());
+        let out = f.command(&[cmd, "--hook", "--bad-flag"]).output().unwrap();
+        assert!(out.status.success());
+    }
+    let help = f
+        .command(&["context", "--harness", "antigravity", "--help"])
+        .output()
+        .unwrap();
+    assert!(help.status.success() && help.stderr.is_empty());
+    assert!(!help.stdout.starts_with(b"{}"));
+    let out = f.command(&["context"]).env_remove("HOME").output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("HOME"));
+    for cmd in ["remind", "recall"] {
+        let mut child = f
+            .command(&[cmd, "--hook"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pipe = child.stdin.take().unwrap();
+        let start = Instant::now();
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            if start.elapsed() > Duration::from_secs(2) {
+                child.kill().unwrap();
+                panic!("hook blocked on open stdin");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        drop(pipe);
     }
 }

@@ -2,7 +2,7 @@
 //! every consumer (an Orca bot, or otherwise a session) at turn or session start.
 //!
 //! A page counts as changed when its indexed `files.mtime_ns` differs from the value
-//! the consumer last saw. Seen state lives in git-ignored `usage.sqlite`, so a rebuilt
+//! the consumer last saw. Seen state lives in private `usage.sqlite`, so a rebuilt
 //! page index does not re-announce anything that did not change on disk.
 use anyhow::{Result, bail};
 use chrono::{Local, TimeZone, Utc};
@@ -1016,7 +1016,7 @@ mod tests {
         let mut wiki = Wiki::new()?;
         wiki.page("pages/knowledge/notice.md", BULLETIN)?;
         open_seen(&wiki.root)?;
-        let holder = Connection::open(wiki.root.join("usage.sqlite"))?;
+        let holder = Connection::open(crate::storage::dir(&wiki.root).join("usage.sqlite"))?;
         holder.execute_batch("begin exclusive")?;
         let started = std::time::Instant::now();
         assert_eq!(check(&wiki, "s1"), None);

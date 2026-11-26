@@ -14,6 +14,7 @@ sessions_dir=$HOME/transcripts
 export AGENT_WIKI_SESSIONS_DIRS=$sessions_dir
 export AGENT_WIKI_CODEX_SESSIONS_DIRS=$HOME/codex-transcripts
 export XDG_STATE_HOME=$HOME/state
+export AGENT_WIKI_STATE_DIR=$XDG_STATE_HOME/agent-wiki
 unset AGENT_WIKI_RECALL_MIN_WINDOWS AGENT_WIKI_RECALL_MAX_SKILL_PAGES AGENT_WIKI_RECALL_MAX_PAGES
 unset CLAUDE_SESSION_ID CODEX_THREAD_ID AGENT_WIKI_CONTEXT_BUDGET AGENT_WIKI_OVERVIEW_BUDGET AGENT_WIKI_REMIND_INTERVAL
 unset AGENT_WIKI_REMIND_FAILURES
@@ -337,7 +338,7 @@ for ((i=1; i<=15; i++)); do
     [ -z "$out" ] || fail "sync did not reset reminder count" remind "$out"
   fi
 done
-out=$(printf 'invalid json' | "$wiki" remind 2>/dev/null)
+out=$(printf 'invalid json' | "$wiki" remind --hook 2>/dev/null)
 [ -z "$out" ] || fail "remind printed an error to stdout" remind "$out"
 
 # Event reminders share interval state, but do not need the page index or daemon.
@@ -361,7 +362,7 @@ printf '%s\n' '{"session_id":"debug-event","hook_event_name":"PostToolUse","tool
 check "passing test resolves debugging streak" 'resolved a debugging streak' "$wiki" remind --event <"$HOME/event-test.json"
 check_not "event malformed stdin fails open" '.' bash -c 'printf invalid | "$1" remind --event 2>/dev/null' _ "$wiki"
 check_not "event malformed args fail open" '.' bash -c '"$1" remind --event --failures 0 2>/dev/null' _ "$wiki" </dev/null
-check_not "event unavailable state fails open" '.' bash -c 'AGENT_WIKI_DIR="$2" "$1" remind --event 2>/dev/null' _ "$wiki" "$HOME/event.json" <"$HOME/event.json"
+check_not "event unavailable state fails open" '.' bash -c 'AGENT_WIKI_STATE_DIR="$2" "$1" remind --event 2>/dev/null' _ "$wiki" "$HOME/event.json" <"$HOME/event.json"
 
 # Skill tags are scoped to the hook cwd, even when it names a worktree.
 for project in demo other; do
@@ -413,8 +414,8 @@ check_not "recall successful output requires a session for its budget" '.' "$wik
   <<<'{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_response":{"stderr":"error building bubblewrap command cannot establish app-server socket mount isolation"}}'
 check_not "recall ignores interrupted failures" '.' "$wiki" recall \
   <<<'{"hook_event_name":"PostToolUseFailure","tool_name":"Bash","is_interrupt":true,"error":"error building bubblewrap command cannot establish app-server socket mount isolation"}'
-check_not "recall malformed stdin exits zero without stdout" '.' bash -c '"$1" recall 2>/dev/null' _ "$wiki" <<<'invalid json'
-check_not "recall malformed arguments exit zero without stdout" '.' bash -c '"$1" recall --unknown 2>/dev/null' _ "$wiki" </dev/null
+check_not "recall malformed stdin exits zero without stdout" '.' bash -c '"$1" recall --hook 2>/dev/null' _ "$wiki" <<<'invalid json'
+check_not "recall malformed arguments exit zero without stdout" '.' bash -c '"$1" recall --hook --unknown 2>/dev/null' _ "$wiki" </dev/null
 check_not "recall empty stdin" '.' "$wiki" recall </dev/null
 check "recall explain ignores seen pages" '"candidates":\[{' "$wiki" recall --explain <<<"$recall_input"
 
@@ -580,13 +581,13 @@ check "title hint" 'quote the title: title: "broken: title"' echo "$out"
 
 
 # Transcript-derived databases remain private even after repairing old modes.
-for db in "$AGENT_WIKI_DIR/sessions.sqlite" "$AGENT_WIKI_DIR/usage.sqlite"; do
+for db in "$AGENT_WIKI_STATE_DIR/sessions.sqlite" "$AGENT_WIKI_STATE_DIR/usage.sqlite"; do
   test "$(stat -c %a "$db")" = 600
   chmod 644 "$db"
 done
 "$wiki" sessions orbital > /dev/null
 "$wiki" stats --json > /dev/null
-for db in "$AGENT_WIKI_DIR/sessions.sqlite" "$AGENT_WIKI_DIR/usage.sqlite"; do
+for db in "$AGENT_WIKI_STATE_DIR/sessions.sqlite" "$AGENT_WIKI_STATE_DIR/usage.sqlite"; do
   test "$(stat -c %a "$db")" = 600
 done
 

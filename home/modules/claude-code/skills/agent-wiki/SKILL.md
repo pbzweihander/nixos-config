@@ -37,9 +37,21 @@ wiki tag `claude-wiki` and historical page text unchanged.
   pages/projects/<project>.md            one overview per project
   pages/followups/<slug>.md              work left for a later session
   pages/history/<YYYY-MM-DD>-<slug>.md   what one task did
-  index.sqlite                           derived page BM25 index and reminder state, git-ignored
-  sessions.sqlite                        derived transcript BM25 index, git-ignored
+  .gitignore
+~/.local/state/agent-wiki/              private runtime directory (0700)
+  index.sqlite                           rebuildable page BM25 index
+  state.sqlite                           persistent hook state and transcript cursors
+  sessions.sqlite                        transcript BM25 index
+  usage.sqlite                           usage and injection history
+  records.sqlite                         private session records
+  *.lock                                 independent wiki, sessions, and usage locks
 ```
+
+Runtime files are private (0600). `AGENT_WIKI_STATE_DIR` (or `CLAUDE_WIKI_STATE_DIR`)
+overrides the state directory; custom wiki roots default to a sibling `<root>-state`
+directory, isolating test fixtures even with an inherited `XDG_STATE_HOME`. Legacy
+SQLite files migrate at startup; conflicting real databases require manual
+reconciliation. `sync --rebuild` preserves hook state and history.
 
 The markdown pages are the source of truth. Every `agent-wiki` command first
 re-indexes pages whose mtime or size changed, so pages edited with Edit or Write are

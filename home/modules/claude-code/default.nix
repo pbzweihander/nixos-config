@@ -184,7 +184,7 @@ let
           hooks = [
             {
               type = "command";
-              command = "agent-wiki context";
+              command = "agent-wiki context --hook";
             }
           ];
         }
@@ -196,7 +196,7 @@ let
           hooks = [
             {
               type = "command";
-              command = "agent-wiki remind";
+              command = "agent-wiki remind --hook";
             }
           ];
         }
@@ -219,7 +219,7 @@ let
           hooks = [
             {
               type = "command";
-              command = "agent-wiki recall";
+              command = "agent-wiki recall --hook";
               timeout = 5;
             }
           ];
@@ -246,7 +246,7 @@ let
           hooks = [
             {
               type = "command";
-              command = "agent-wiki recall";
+              command = "agent-wiki recall --hook";
               timeout = 5;
             }
           ];
@@ -257,7 +257,7 @@ let
           hooks = [
             {
               type = "command";
-              command = "agent-wiki recall";
+              command = "agent-wiki recall --hook";
               timeout = 5;
             }
           ];

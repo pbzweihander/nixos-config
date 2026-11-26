@@ -197,10 +197,10 @@ impl Claim {
 }
 
 /// Claims this bot's scan, or `None` while another scan is throttled or in progress.
-fn claim(root: &Path, key: &str, bypass: bool) -> rusqlite::Result<Option<Claim>> {
+fn claim(root: &Path, key: &str, bypass: bool) -> anyhow::Result<Option<Claim>> {
     // Open directly: usage::open initializes unrelated transcript schemas and
     // permits a 50 ms busy wait per statement. This table is independently owned.
-    let db = Connection::open(root.join("usage.sqlite"))?;
+    let db = crate::storage::open(root, "usage.sqlite")?;
     db.busy_timeout(Duration::ZERO)?;
     db.execute_batch(
         "create table if not exists bot_guard_state(consumer_key text primary key, last_worktree_check integer not null);

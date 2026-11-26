@@ -15,7 +15,7 @@ from unittest.mock import patch
 import numpy as np
 
 from wiki_embed.core import (CPU_MODEL, GPU_MODEL, Chunk, Entry, Page, Section, Snapshot,
-                             Thresholds, cache_path, chunk_page, load_snapshot, read_catalog,
+                             Thresholds, state_dir, cache_path, chunk_page, load_snapshot, read_catalog,
                              refresh_snapshot, retrieve, save_snapshot, section_for_line, similar, pairs, probe)
 from wiki_embed.daemon import Daemon, Server, Tier
 from wiki_embed.policy import Reading, TierPolicy, read_gpu
@@ -422,11 +422,12 @@ class StoreTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name) / "wiki"
         (self.root / "pages/knowledge").mkdir(parents=True)
         self.path = self.root / "pages/knowledge/foo.md"
         self.path.write_text("---\ntitle: Test\ntags: [one, two]\n---\n## Heading\nbody")
-        self.db = sqlite3.connect(self.root / "index.sqlite")
+        state_dir(self.root).mkdir(parents=True)
+        self.db = sqlite3.connect(state_dir(self.root) / "index.sqlite")
         self.addCleanup(self.db.close)
         self.db.executescript("CREATE TABLE files(id INTEGER PRIMARY KEY, path TEXT, mtime_ns INTEGER, size INTEGER, blocked TEXT);"
                               "CREATE TABLE sections(id INTEGER PRIMARY KEY, file_id INTEGER, heading TEXT, start_line INTEGER, end_line INTEGER);")

@@ -55,13 +55,71 @@ pub fn wiki_skill(name: &str) -> bool {
 }
 
 pub fn sync_command(command: &str) -> bool {
-    command.contains("agent-wiki sync") || command.contains("claude-wiki sync")
+    use crate::usage::{ShellToken, shell_tokens};
+    shell_tokens(command)
+        .split(|t| matches!(t, ShellToken::Op(";" | "&&" | "||" | "|" | "&" | "(" | ")")))
+        .any(|segment| {
+            let words: Vec<_> = segment
+                .iter()
+                .filter_map(|t| {
+                    if let ShellToken::Word(word) = t {
+                        Some(word.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let words = words.as_slice();
+            let start = words
+                .iter()
+                .position(|word| !word.contains('='))
+                .unwrap_or(words.len());
+            let mut words = &words[start..];
+            if words
+                .first()
+                .is_some_and(|word| matches!(*word, "env" | "command" | "exec"))
+            {
+                words = &words[1..];
+                while words
+                    .first()
+                    .is_some_and(|word| word.starts_with('-') || word.contains('='))
+                {
+                    words = &words[1..];
+                }
+            }
+            words.len() >= 2
+                && words[1] == "sync"
+                && Path::new(words[0])
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(wiki_skill)
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn sync_requires_an_executed_command() {
+        for command in [
+            "agent-wiki sync",
+            "cd /tmp && /bin/claude-wiki sync -m x",
+            "env X=y agent-wiki sync",
+            "X=y command agent-wiki sync",
+        ] {
+            assert!(sync_command(command), "{command}");
+        }
+        for command in [
+            "echo 'agent-wiki sync'",
+            "rg 'agent-wiki sync'",
+            "printf '%s' 'agent-wiki sync'",
+            "echo agent-wiki sync",
+            "cat agent-wiki sync",
+        ] {
+            assert!(!sync_command(command), "{command}");
+        }
+    }
     #[test]
     fn historical_paths_remain_attributable_without_existing_files() {
         for active in ["agent-wiki", "claude-wiki"] {

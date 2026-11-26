@@ -83,9 +83,27 @@ def chunk_page(text, page_id):
     return tuple(result)
 
 
+def state_dir(root):
+    for key in ("AGENT_WIKI_STATE_DIR", "CLAUDE_WIKI_STATE_DIR"):
+        if key in os.environ:
+            if not os.environ[key]:
+                raise ValueError(f"{key} must not be empty")
+            return Path(os.environ[key]).expanduser()
+    def compatible(base):
+        new, old = base / "agent-wiki", base / "claude-wiki"
+        return old if not new.exists() and old.exists() else new
+    home_data = Path.home() / ".local/share"
+    data = Path(os.environ.get("XDG_DATA_HOME", home_data))
+    default = compatible(data)
+    if root == default and (data == home_data or "XDG_STATE_HOME" in os.environ):
+        return compatible(Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")))
+    root = root.resolve()
+    return root.with_name(root.name + "-state")
+
+
 def read_catalog(root):
     # Never create or migrate the Rust CLI's database, even on a fresh login.
-    with closing(sqlite3.connect((root / "index.sqlite").as_uri() + "?mode=ro", uri=True)) as db:
+    with closing(sqlite3.connect((state_dir(root) / "index.sqlite").as_uri() + "?mode=ro", uri=True)) as db:
         db.execute("PRAGMA query_only = ON")
         db.execute("BEGIN")
         sections = {}
@@ -129,14 +147,17 @@ class Snapshot:
 
 
 def cache_path(root, model):
-    return root / ("vectors-" + model.replace("/", "--") + ".npz")
+    return state_dir(root) / ("vectors-" + model.replace("/", "--") + ".npz")
 
 
 def save_snapshot(path, model, snapshot):
     metadata = {"version": CACHE_VERSION, "model": model, "indexed_at": snapshot.indexed_at,
                 "entries": [{"page": asdict(e.page), "chunks": [asdict(c) for c in e.chunks]}
                             for e in snapshot.entries]}
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if path.parent.is_symlink():
+        raise ValueError("state directory must not be a symlink")
+    path.parent.chmod(0o700)
     fd, temporary = tempfile.mkstemp(prefix=path.name, suffix=".tmp", dir=path.parent)
     try:
         with os.fdopen(fd, "wb") as stream:

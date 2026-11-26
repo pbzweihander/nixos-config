@@ -1,12 +1,11 @@
 use crate::index::{COLUMNS, JOIN, Row};
 use anyhow::Result;
 use clap::Args as ClapArgs;
-use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    time::Duration,
 };
 
 #[derive(ClapArgs)]
@@ -33,12 +32,11 @@ struct Report {
 
 fn report(root: &Path, index: &Connection, session: &str) -> Result<Report> {
     let mut pages: Vec<Page> = vec![];
-    let usage_path = root.join("usage.sqlite");
+    let usage_path = crate::storage::dir(root).join("usage.sqlite");
     if !usage_path.exists() {
         return Ok(Report { pages });
     }
-    let usage = Connection::open_with_flags(usage_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    usage.busy_timeout(Duration::from_millis(50))?;
+    let usage = crate::storage::open(root, "usage.sqlite")?;
     let root = root.canonicalize()?;
     let mut positions = HashMap::<String, usize>::new();
     let mut stmt = usage.prepare(

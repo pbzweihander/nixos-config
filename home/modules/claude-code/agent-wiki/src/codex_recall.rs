@@ -3,11 +3,7 @@
 use anyhow::Result;
 use regex::Regex;
 use rusqlite::{Connection, params};
-use std::{
-    collections::{HashSet, hash_map::DefaultHasher},
-    hash::{Hash, Hasher},
-    sync::LazyLock,
-};
+use std::{collections::HashSet, sync::LazyLock};
 
 const SESSION_LIMIT: i64 = 3;
 
@@ -19,10 +15,13 @@ fn key(line: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase();
-    let mut hash = DefaultHasher::new();
-    NUMBERS.replace_all(&normalized, "#").hash(&mut hash);
-    // This is a non-security deduplication key, not persisted raw error text.
-    format!("{:016x}", hash.finish())
+    let hash = NUMBERS
+        .replace_all(&normalized, "#")
+        .bytes()
+        .fold(0xcbf29ce484222325u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+        });
+    format!("{hash:016x}")
 }
 
 pub fn pending(
@@ -65,7 +64,7 @@ pub fn pending(
 }
 
 pub fn record(db: &Connection, session: &str, lines: &[(String, String)]) -> Result<()> {
-    let tx = db.unchecked_transaction()?;
+    let tx = crate::state::transaction(db)?;
     for (_, key) in lines {
         tx.execute(
             "insert or ignore into codex_recall_lines values (?,?)",
@@ -85,6 +84,10 @@ pub fn record(db: &Connection, session: &str, lines: &[(String, String)]) -> Res
 mod tests {
     use super::*;
 
+    #[test]
+    fn fingerprint_is_stable_fnv1a() {
+        assert_eq!(key("hello"), "a430d84680aabd0b");
+    }
     #[test]
     fn deduplicates_normalized_lines_and_caps_emissions_per_session() -> Result<()> {
         let db = Connection::open_in_memory()?;

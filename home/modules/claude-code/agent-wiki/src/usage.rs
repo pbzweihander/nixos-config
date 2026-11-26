@@ -37,7 +37,7 @@ fn transcript_tables(db: &Connection) -> Result<()> {
 }
 
 pub fn open(root: &Path) -> Result<Connection> {
-    let db = sessions::private_db(&root.join("usage.sqlite"))?;
+    let db = crate::storage::open(root, "usage.sqlite")?;
     db.busy_timeout(Duration::from_millis(50))?;
     db.execute_batch("create table if not exists injections(session_id text, path text, source text, at integer);
         create index if not exists injections_session on injections(session_id, path, at);
@@ -145,12 +145,12 @@ pub(crate) fn page_path(root: &Path, path: &str, cwd: &Path) -> Option<String> {
 }
 
 #[derive(Debug)]
-enum ShellToken {
+pub(crate) enum ShellToken {
     Word(String),
     Op(&'static str),
 }
 
-fn shell_tokens(command: &str) -> Vec<ShellToken> {
+pub(crate) fn shell_tokens(command: &str) -> Vec<ShellToken> {
     let mut tokens = vec![];
     let mut heredocs: VecDeque<(String, bool)> = VecDeque::new();
     let mut rest = command;
@@ -714,6 +714,8 @@ pub fn per_page(db: &Connection, now: i64) -> Result<BTreeMap<String, PageUsage>
 }
 
 pub fn refresh(root: &Path) -> Result<Connection> {
+    let mut lock = crate::storage::lock(root, "usage.lock")?;
+    let _guard = lock.write()?;
     let mut db = open(root)?;
     scan_sources(
         root,
@@ -1221,6 +1223,7 @@ pub(crate) mod tests {
     }
     impl Drop for Wiki {
         fn drop(&mut self) {
+            let _ = fs::remove_dir_all(crate::storage::dir(&self.root));
             let _ = fs::remove_dir_all(&self.root);
         }
     }

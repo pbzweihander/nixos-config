@@ -169,9 +169,14 @@ fn read_prompt_until(input: impl Read + Send + 'static, wait: Duration) -> Strin
     valid_prefix(&bytes)
 }
 
+static PROMPT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+pub fn prepare_input() {
+    let _ = PROMPT.set(read_prompt_until(io::stdin(), STDIN_WAIT));
+}
+
 pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
-    let prompt = read_prompt_until(io::stdin(), STDIN_WAIT);
-    let hits = semantic::related_with_timeout(&prompt, Duration::from_millis(args.timeout_ms));
+    let prompt = PROMPT.get_or_init(|| read_prompt_until(io::stdin(), STDIN_WAIT));
+    let hits = semantic::related_with_timeout(prompt, Duration::from_millis(args.timeout_ms));
     let report = report(root, db, args, hits)?;
     if args.json {
         println!("{}", serde_json::to_string(&report)?);
@@ -308,12 +313,20 @@ mod tests {
             args.source = source.map(str::to_owned);
             let report = report(&wiki.root, &wiki.index, &args, hits())?;
             assert_eq!(report.overview, Some(wiki.root.join(&overview)));
-            assert!(!wiki.root.join("usage.sqlite").exists());
+            assert!(
+                !crate::storage::dir(&wiki.root)
+                    .join("usage.sqlite")
+                    .exists()
+            );
         }
         args.session = Some("session".into());
         args.source = Some("mod-agent".into());
         report(&wiki.root, &wiki.index, &args, vec![])?;
-        assert!(!wiki.root.join("usage.sqlite").exists());
+        assert!(
+            !crate::storage::dir(&wiki.root)
+                .join("usage.sqlite")
+                .exists()
+        );
         report(&wiki.root, &wiki.index, &args, hits())?;
         let usage = usage::open(&wiki.root)?;
         let logged: Vec<(String, String, String)> = usage

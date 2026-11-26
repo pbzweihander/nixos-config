@@ -62,7 +62,8 @@ impl Fixture {
         self.root.join("orca/workspaces")
     }
     fn db(&self) -> Connection {
-        Connection::open(self.root.join("wiki/usage.sqlite")).unwrap()
+        fs::create_dir_all(self.root.join("wiki-state")).unwrap();
+        Connection::open(self.root.join("wiki-state/usage.sqlite")).unwrap()
     }
 
     fn git(&self, cwd: &Path, args: &[&str]) -> String {

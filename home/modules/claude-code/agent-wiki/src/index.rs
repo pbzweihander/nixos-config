@@ -6,7 +6,6 @@ use std::{
     fs, io,
     os::unix::fs::MetadataExt,
     path::Path,
-    time::Duration,
 };
 
 // Raise it whenever a page would be indexed differently, `files.blocked` included:
@@ -20,7 +19,7 @@ pub const COLUMNS: &str = "fts.path, fts.type, fts.status, fts.title, fts.projec
 pub const JOIN: &str = "from fts join files on files.id = fts.rowid";
 
 pub fn remove_index(root: &Path, name: &str) -> Result<()> {
-    for entry in fs::read_dir(root)? {
+    for entry in fs::read_dir(crate::storage::prepare(root)?)? {
         let entry = entry?;
         if entry.file_name().to_string_lossy().starts_with(name) {
             fs::remove_file(entry.path())?;
@@ -30,15 +29,30 @@ pub fn remove_index(root: &Path, name: &str) -> Result<()> {
 }
 
 pub fn open(root: &Path) -> Result<Connection> {
-    let db = Connection::open(root.join("index.sqlite"))?;
-    db.busy_timeout(Duration::from_secs(30))?;
+    let db = crate::state::open(root)?;
+    let path = crate::storage::prepare(root)?.join("index.sqlite");
+    drop(crate::sessions::private_db(&path)?);
+    db.execute(
+        "attach database ? as pages_index",
+        [path.to_string_lossy().as_ref()],
+    )?;
     initialize(&db)?;
     Ok(db)
 }
 
 fn initialize(db: &Connection) -> Result<()> {
-    if db.query_row("pragma user_version", [], |r| r.get::<_, i64>(0))? != SCHEMA_VERSION {
-        db.execute_batch(&format!("begin;
+    let attached = db
+        .prepare("pragma database_list")?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .iter()
+        .any(|name| name == "pages_index");
+    let schema = if attached { "pages_index." } else { "" };
+    if db.query_row(&format!("pragma {schema}user_version"), [], |r| {
+        r.get::<_, i64>(0)
+    })? != SCHEMA_VERSION
+    {
+        let mut ddl = format!("begin;
             drop table if exists files; drop table if exists fts; drop table if exists links;
             drop table if exists sections; drop table if exists sections_fts;
             create table files(id integer primary key, path text unique, mtime_ns integer, size integer, blocked text not null default '');
@@ -54,11 +68,31 @@ fn initialize(db: &Connection) -> Result<()> {
             create index sections_file on sections(file_id);
             create virtual table sections_fts using fts5(heading, body,
                 tokenize = 'porter unicode61 remove_diacritics 2');
-            pragma user_version = {SCHEMA_VERSION}; commit;"))?;
+            pragma {schema}user_version = {SCHEMA_VERSION}; commit;");
+        for name in [
+            "files",
+            "fts",
+            "links",
+            "sections",
+            "sections_fts",
+            "links_to_path",
+            "sections_file",
+        ] {
+            for prefix in [
+                "drop table if exists ",
+                "create table ",
+                "create virtual table ",
+                "create index ",
+            ] {
+                ddl = ddl.replace(
+                    &format!("{prefix}{name}"),
+                    &format!("{prefix}{schema}{name}"),
+                );
+            }
+        }
+        db.execute_batch(&ddl)?;
     }
-    db.execute_batch("create table if not exists remind_state(session_id text primary key, prompts integer not null, offset integer not null);
-        create table if not exists recall_seen(session_id text, path text, primary key(session_id, path));
-        create table if not exists recall_state(session_id text primary key, offset integer not null);")?;
+    crate::state::initialize(db)?;
     Ok(())
 }
 
@@ -456,7 +490,7 @@ mod tests {
         assert_eq!(blocked(&wiki, rel)?, "secret");
         // As schema 5 indexed it: unblocked, and the file has not changed since.
         wiki.index
-            .execute_batch("update files set blocked = ''; pragma user_version = 5;")?;
+            .execute_batch("update files set blocked = ''; pragma pages_index.user_version = 5;")?;
         refresh(&wiki.root, &mut wiki.index)?;
         assert_eq!(blocked(&wiki, rel)?, "");
         // Opening the index again notices the version and reads every page anew.

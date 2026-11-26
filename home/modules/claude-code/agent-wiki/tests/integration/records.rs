@@ -33,7 +33,7 @@ fn detached_hook(legacy: bool) {
     let state = tmp.0.join(if legacy {
         "state/claude-wiki"
     } else {
-        "state/agent-wiki"
+        "wiki-state"
     });
     if legacy {
         fs::create_dir_all(&state).unwrap();
@@ -51,6 +51,18 @@ fn detached_hook(legacy: bool) {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if legacy {
+        command.env("AGENT_WIKI_STATE_DIR", &state);
+    } else {
+        // The detached worker must preserve --dir even without a root/state env.
+        command
+            .arg("--dir")
+            .arg(&wiki)
+            .env_remove("AGENT_WIKI_DIR")
+            .env_remove("CLAUDE_WIKI_DIR")
+            .env_remove("AGENT_WIKI_STATE_DIR")
+            .env_remove("CLAUDE_WIKI_STATE_DIR");
+    }
     let start = Instant::now();
     let mut child = command.spawn().unwrap();
     write!(
@@ -136,6 +148,7 @@ fn backfill_includes_orca_and_exec_and_reports_exclusion_reasons() {
         command
             .args(args)
             .env("XDG_STATE_HOME", tmp.0.join("state"))
+            .env("AGENT_WIKI_STATE_DIR", tmp.0.join("state/agent-wiki"))
             .env("CLAUDE_WIKI_SESSIONS_DIRS", tmp.0.join("claude"))
             .env("CLAUDE_WIKI_CODEX_SESSIONS_DIRS", tmp.0.join("codex"))
             .env("CLAUDE_WIKI_DIR", tmp.0.join("wiki"))
@@ -190,6 +203,7 @@ fn curator_exclusion_applies_to_both_formats_and_rebuilds_old_indexes() {
             .env("HOME", &tmp.0)
             .env("XDG_CACHE_HOME", tmp.0.join("cache"))
             .env("XDG_STATE_HOME", tmp.0.join("state"))
+            .env("AGENT_WIKI_STATE_DIR", tmp.0.join("state/agent-wiki"))
             .env("CLAUDE_WIKI_DIR", tmp.0.join("wiki"))
             .env("CLAUDE_WIKI_SESSIONS_DIRS", tmp.0.join("claude"))
             .env("CLAUDE_WIKI_CODEX_SESSIONS_DIRS", tmp.0.join("codex"))
@@ -264,7 +278,7 @@ fn curator_exclusion_applies_to_both_formats_and_rebuilds_old_indexes() {
     assert!(output.contains("\"wiki_curator_cwd\":4"), "{output}");
     assert!(output.contains("claude_jobs_tmp"), "{output}");
     command(&["sessions", "journal"]);
-    let db = rusqlite::Connection::open(tmp.0.join("wiki/sessions.sqlite")).unwrap();
+    let db = rusqlite::Connection::open(tmp.0.join("state/agent-wiki/sessions.sqlite")).unwrap();
     assert_eq!(
         db.query_row("select count(distinct session_id) from messages", [], |r| r
             .get::<_, i64>(0))
@@ -326,6 +340,7 @@ fn decoded_prompts_utc_boundaries_and_denied_writes() {
             .args(args)
             .env("HOME", &tmp.0)
             .env("XDG_STATE_HOME", tmp.0.join("state"))
+            .env("AGENT_WIKI_STATE_DIR", tmp.0.join("state/agent-wiki"))
             .env("AGENT_WIKI_DIR", tmp.0.join("wiki"))
             .env("AGENT_WIKI_SOCKET", "")
             .env("AGENT_WIKI_SESSIONS_DIRS", "::")

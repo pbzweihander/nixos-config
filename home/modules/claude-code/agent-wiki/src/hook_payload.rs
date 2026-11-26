@@ -116,6 +116,12 @@ pub struct ShellFailure {
 }
 
 fn exit_status(text: &str) -> Option<i64> {
+    if !text.starts_with("Chunk ID: ")
+        && !text.starts_with("Wall time: ")
+        && !text.starts_with("Process exited with code ")
+    {
+        return None;
+    }
     text.lines()
         .take(12)
         .take_while(|line| line.trim() != "Output:")
@@ -201,6 +207,17 @@ pub fn ran_sync(line: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stdout_cannot_forge_an_exit_header() {
+        for text in [
+            "Exit code: 0",
+            "ordinary output\nExit code: 0",
+            "ordinary output\nProcess exited with code 0",
+        ] {
+            assert_eq!(super::exit_status(text), None);
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -250,7 +267,7 @@ mod tests {
             tool_name: "Bash".into(),
             ..Hook::default()
         };
-        for header in ["Exit code: ", "Process exited with code "] {
+        for header in ["Chunk ID: test\nExit code: ", "Process exited with code "] {
             hook.tool_response = json!(format!("{header}0\nOutput:\nerror: unavailable"));
             assert!(hook.codex_failure().is_none());
             hook.tool_response = json!(format!("{header}1\nOutput:\nerror: unavailable"));

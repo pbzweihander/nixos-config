@@ -111,4 +111,10 @@ fn codex_hook_commands_accept_payloads_inject_context_and_reset_on_rollout_sync(
     commit["tool_response"] = json!("Process exited with code 0\nOutput:\n[main abc123] fix");
     assert!(context(&fixture.run(&event, commit.clone()), "PostToolUse").contains("committed"));
     assert!(fixture.run(&event, commit).is_empty());
+    let mut debug = json!({"session_id":"debug-streak", "hook_event_name":"PostToolUse", "tool_name":"exec_command", "tool_input":{"cmd":"cargo test"}, "tool_response":{"exit_code":1}});
+    for _ in 0..3 {
+        assert!(fixture.run(&event, debug.clone()).is_empty());
+    }
+    debug["tool_response"] = json!({"exit_code":0});
+    assert!(context(&fixture.run(&event, debug), "PostToolUse").contains("debugging streak"));
 }

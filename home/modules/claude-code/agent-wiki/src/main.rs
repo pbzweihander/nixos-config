@@ -5,6 +5,7 @@ mod bulletin;
 mod codex_recall;
 mod compat;
 mod context;
+mod hook_io;
 mod hook_payload;
 mod index;
 mod injections;
@@ -20,6 +21,8 @@ mod scan;
 mod search;
 mod semantic;
 mod sessions;
+mod state;
+mod storage;
 mod sync;
 mod transcript;
 mod usage;
@@ -41,6 +44,10 @@ use std::{
     about = "Shared markdown wiki for Claude Code and Codex sessions, searched with SQLite FTS5 (BM25)."
 )]
 struct Cli {
+    #[arg(long, global = true)]
+    hook: bool,
+    #[arg(long, global = true)]
+    dir: Option<PathBuf>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -121,7 +128,7 @@ fn env_path(key: &str) -> Option<PathBuf> {
 }
 
 fn home() -> PathBuf {
-    env_path("HOME").unwrap_or_else(|| PathBuf::from("."))
+    env_path("HOME").expect("HOME is unset; set HOME to the user home directory")
 }
 
 fn expand_home(path: &Path) -> PathBuf {
@@ -134,7 +141,11 @@ fn expand_home(path: &Path) -> PathBuf {
     }
 }
 
+static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 fn wiki_root() -> PathBuf {
+    if let Some(root) = ROOT.get() {
+        return root.clone();
+    }
     crate::compat::var_os("AGENT_WIKI_DIR")
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
@@ -148,6 +159,7 @@ fn wiki_root() -> PathBuf {
 
 fn git(root: &Path, args: &[&str]) -> Result<String> {
     let out = Command::new("git")
+        .arg("--literal-pathspecs")
         .arg("-C")
         .arg(root)
         .args(args)
@@ -169,13 +181,14 @@ fn ensure_layout(root: &Path) -> Result<()> {
         fs::create_dir_all(root.join("pages").join(kind))?;
     }
     let ignore = root.join(".gitignore");
-    let mut text = match fs::read_to_string(&ignore) {
-        Ok(text) => text,
+    let original = fs::read_to_string(&ignore);
+    let mut text = match &original {
+        Ok(text) => text.clone(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => "index.sqlite*\n.lock\n".into(),
-        Err(e) => return Err(e.into()),
+        Err(e) => return Err(anyhow::anyhow!("{e}")),
     };
-    // wiki-embed writes vectors-<model>.npz here; like the indexes it is derived from
-    // the pages and rebuilt in seconds, so it never belongs in history.
+    // Keep legacy ignore rules so an older binary cannot accidentally commit
+    // derived files; current binaries keep them in the private state directory.
     for derived in ["sessions.sqlite*", "usage.sqlite*", "vectors-*.npz"] {
         if !text.lines().any(|s| s == derived) {
             if !text.is_empty() && !text.ends_with('\n') {
@@ -185,13 +198,21 @@ fn ensure_layout(root: &Path) -> Result<()> {
             text.push('\n');
         }
     }
-    if fs::read_to_string(&ignore).ok().as_ref() != Some(&text) {
+    if original.ok().as_ref() != Some(&text) {
         fs::write(ignore, text)?;
     }
     if !root.join(".git").exists() {
         git(root, &["init", "-q"])?;
         // Hooks commit unattended and must not depend on a signing key.
         git(root, &["config", "commit.gpgsign", "false"])?;
+        for (key, fallback) in [
+            ("user.name", "agent-wiki"),
+            ("user.email", "agent-wiki@localhost"),
+        ] {
+            if git(root, &["config", "--get", key]).is_err() {
+                git(root, &["config", "--local", key, fallback])?;
+            }
+        }
     }
     Ok(())
 }
@@ -208,6 +229,32 @@ fn run(command: &Commands) -> Result<i32> {
         return Ok(0);
     }
     let root = wiki_root();
+    if let Commands::Sessions(args) = command {
+        ensure_layout(&root)?;
+        let mut lock = storage::lock(&root, "sessions.lock")?;
+        let _guard = lock.write()?;
+        sessions::run(&root, args)?;
+        return Ok(0);
+    }
+    if matches!(command, Commands::Related(_)) {
+        related::prepare_input();
+    }
+    if matches!(command, Commands::Stats(_) | Commands::Lint(_)) {
+        let db = {
+            let mut lock = open_lock(&root)?;
+            let _guard = lock.write()?;
+            ensure_layout(&root)?;
+            let mut db = index::open(&root)?;
+            index::refresh(&root, &mut db)?;
+            db
+        };
+        match command {
+            Commands::Stats(args) => usage::run(&root, &db, args)?,
+            Commands::Lint(args) => lint::run(&root, &db, args)?,
+            _ => unreachable!(),
+        }
+        return Ok(0);
+    }
     if let Commands::Remind(args) = command
         && args.event
     {
@@ -229,14 +276,7 @@ fn run(command: &Commands) -> Result<i32> {
 }
 
 fn open_lock(root: &Path) -> Result<fd_lock::RwLock<fs::File>> {
-    fs::create_dir_all(root)?;
-    Ok(fd_lock::RwLock::new(
-        fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(root.join(".lock"))?,
-    ))
+    storage::lock(root, "wiki.lock")
 }
 
 /// Hooks must not stall a session behind another wiki process: wait for the wiki
@@ -274,7 +314,8 @@ fn with_hook_lock<T>(
 fn run_locked(root: &Path, command: &Commands) -> Result<i32> {
     ensure_layout(root)?;
     if matches!(command, Commands::Sync { rebuild: true, .. }) {
-        index::remove_index(root, "index.sqlite")?;
+        let db = index::open(root)?;
+        db.execute_batch("pragma pages_index.user_version=0")?;
     }
     let mut db = index::open(root)?;
     index::refresh(root, &mut db)?;
@@ -314,20 +355,36 @@ fn run_locked(root: &Path, command: &Commands) -> Result<i32> {
 
 fn main() {
     let argv: Vec<_> = env::args().collect();
-    let antigravity = argv
-        .get(1)
+    let mut arguments = argv.iter().skip(1);
+    let subcommand = loop {
+        match arguments.next() {
+            Some(arg) if arg == "--dir" => {
+                arguments.next();
+            }
+            Some(arg) if arg.starts_with('-') => continue,
+            other => break other,
+        }
+    };
+    let antigravity = subcommand
         .is_some_and(|s| matches!(s.as_str(), "context" | "recall" | "remind" | "record"))
         && (argv.windows(2).any(|s| s == ["--harness", "antigravity"])
             || argv.iter().any(|s| s == "--harness=antigravity"));
     // Even malformed hook arguments must not interrupt a session.
-    let is_hook = env::args_os().nth(1).is_some_and(|s| {
-        s == "remind"
-            || s == "recall"
-            || s == "context"
-            || (s == "record" && !env::args_os().any(|s| s == "--backfill" || s == "--wait"))
+    let is_hook = subcommand.is_some_and(|s| {
+        (matches!(s.as_str(), "context" | "remind" | "recall")
+            && argv.iter().any(|arg| {
+                arg == "--hook"
+                    || arg == "--event"
+                    || arg == "--harness"
+                    || arg.starts_with("--harness=")
+            }))
+            || (s == "record"
+                && !argv
+                    .iter()
+                    .any(|arg| matches!(arg.as_str(), "--backfill" | "--wait")))
     });
     let cli = Cli::try_parse().unwrap_or_else(|e| {
-        if antigravity {
+        if antigravity && e.exit_code() != 0 {
             // Still answer a PreToolUse payload with its required decision.
             let input = antigravity::read_input().unwrap_or_default();
             println!(
@@ -335,13 +392,20 @@ fn main() {
                 antigravity::output(&antigravity::event_name(&input), "")
             );
         }
-        if is_hook {
+        if is_hook && e.exit_code() != 0 {
             eprintln!("{e}");
         } else {
             let _ = e.print();
         }
         std::process::exit(if is_hook { 0 } else { e.exit_code() });
     });
+    if env_path("HOME").is_none() {
+        eprintln!("agent-wiki: HOME is unset; set HOME to the user home directory");
+        std::process::exit(if is_hook { 0 } else { 1 });
+    }
+    if let Some(path) = &cli.dir {
+        let _ = ROOT.set(expand_home(path));
+    }
     if antigravity {
         // One JSON reply on every path, including malformed payloads, busy locks
         // and panics. Stop acknowledges before transcript IO or detached work.

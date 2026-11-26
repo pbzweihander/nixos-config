@@ -111,8 +111,9 @@ published as the index grows: `status.pages` and `status.chunks` report progress
 and requests can search that partial index. Progress is checkpointed every five
 seconds and at completion or handoff. An interrupted page is finished by the next
 tier; already completed pages are reused. The shared atomic
-`vectors-BAAI--bge-m3.npz` cache lives in `$XDG_DATA_HOME/agent-wiki` (default
-`~/.local/share/agent-wiki`). Cache files contain no pickle objects. Requests
+`vectors-BAAI--bge-m3.npz` cache lives beside `index.sqlite` in `$XDG_STATE_HOME/agent-wiki` (default
+`~/.local/state/agent-wiki`). `AGENT_WIKI_STATE_DIR` overrides this path; custom wiki
+roots use a sibling `<root>-state` directory when no override is set. Cache files contain no pickle objects. Requests
 never wait on the refresh, model loader, or telemetry reader. During initial
 startup, requests return a warmup error until a model and some vectors are available
 (an empty catalog is ready immediately);

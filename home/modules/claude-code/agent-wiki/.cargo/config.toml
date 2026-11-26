@@ -1,4 +1,4 @@
 [env]
 # One integration binary now runs all harnesses. Keep process-heavy deadline
 # tests from oversubscribing large hosts; callers can override this explicitly.
-RUST_TEST_THREADS = { value = "8", force = false }
+RUST_TEST_THREADS = { value = "4", force = false }

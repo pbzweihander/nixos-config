@@ -1,6 +1,6 @@
 # Event reminders
 
-`agent-wiki remind --event` accepts hook JSON on stdin. It reuses `index.sqlite`
+`agent-wiki remind --event` accepts hook JSON on stdin. It uses private `state.sqlite` outside the Markdown repository
 and the interval reminder's session ID, prompt count, and transcript cursor.
 The ordinary `agent-wiki remind` path and semantic suggestions are unchanged.
 

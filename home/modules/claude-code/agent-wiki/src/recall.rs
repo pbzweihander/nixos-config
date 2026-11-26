@@ -7,8 +7,6 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
     collections::HashSet,
-    fs::File,
-    io,
     path::{Component, Path, PathBuf},
     sync::LazyLock,
 };
@@ -404,6 +402,7 @@ fn session_seen(db: &Connection, id: &str) -> Result<HashSet<String>> {
 }
 
 pub fn transcript_seen(
+    root: &Path,
     db: &Connection,
     id: &str,
     transcript_path: Option<&str>,
@@ -418,60 +417,73 @@ pub fn transcript_seen(
         .optional()?
         .unwrap_or(0);
     let mut added = vec![];
-    if let Some(path) = transcript_path {
-        match File::open(path) {
-            Ok(file) => {
-                if file.metadata()?.len() < offset as u64 {
-                    offset = 0;
+    let tx = crate::state::transaction(db)?;
+    let paths: HashSet<String> = db
+        .prepare("select path from files")?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    offset = i64::try_from(
+        crate::hook_io::lines(
+            db,
+            &format!("recall:{id}"),
+            transcript_path,
+            offset as u64,
+            |line| {
+                let Ok(value) = serde_json::from_slice::<Value>(line) else {
+                    return Ok(());
+                };
+                if value["type"] == "PLANNER_RESPONSE"
+                    && let Some(calls) = value["tool_calls"].as_array()
+                {
+                    for call in calls {
+                        for m in PAGE_PATH.find_iter(&call["args"].to_string()) {
+                            let rel = m.as_str();
+                            if paths.contains(rel) && seen.insert(rel.to_owned()) {
+                                added.push(rel.to_owned());
+                            }
+                        }
+                    }
                 }
-                let paths: HashSet<String> = db
-                    .prepare("select path from files")?
-                    .query_map([], |r| r.get(0))?
-                    .collect::<rusqlite::Result<_>>()?;
-                offset = i64::try_from(crate::sessions::complete_lines(
-                    file,
-                    offset as u64,
-                    |line| {
-                        let Ok(value) = serde_json::from_slice::<Value>(line) else {
-                            return Ok(());
-                        };
-                        if value["type"] == "PLANNER_RESPONSE"
-                            && let Some(calls) = value["tool_calls"].as_array()
-                        {
-                            for call in calls {
-                                for m in PAGE_PATH.find_iter(&call["args"].to_string()) {
-                                    let rel = m.as_str();
-                                    if paths.contains(rel) && seen.insert(rel.to_owned()) {
-                                        added.push(rel.to_owned());
-                                    }
-                                }
+                if value["type"] == "assistant"
+                    && let Some(parts) = value["message"]["content"].as_array()
+                {
+                    for part in parts.iter().filter(|p| p["type"] == "tool_use") {
+                        // One pass over the input rather than one per page: a
+                        // resumed session hands over its whole transcript at once.
+                        // An absolute path contains its relative form.
+                        let input = part["input"].to_string();
+                        for m in PAGE_PATH.find_iter(&input) {
+                            let rel = m.as_str();
+                            if paths.contains(rel) && seen.insert(rel.to_owned()) {
+                                added.push(rel.to_owned());
                             }
                         }
-                        if value["type"] == "assistant"
-                            && let Some(parts) = value["message"]["content"].as_array()
-                        {
-                            for part in parts.iter().filter(|p| p["type"] == "tool_use") {
-                                // One pass over the input rather than one per page: a
-                                // resumed session hands over its whole transcript at once.
-                                // An absolute path contains its relative form.
-                                let input = part["input"].to_string();
-                                for m in PAGE_PATH.find_iter(&input) {
-                                    let rel = m.as_str();
-                                    if paths.contains(rel) && seen.insert(rel.to_owned()) {
-                                        added.push(rel.to_owned());
-                                    }
-                                }
-                            }
+                    }
+                }
+                if value["type"] == "response_item"
+                    && value["payload"]["type"] == "function_call"
+                    && value["payload"]["name"]
+                        .as_str()
+                        .is_some_and(crate::hook_payload::shell_tool)
+                    && let Some(arguments) = value["payload"]["arguments"]
+                        .as_str()
+                        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                {
+                    let command = arguments["cmd"]
+                        .as_str()
+                        .or_else(|| arguments["command"].as_str())
+                        .unwrap_or_default();
+                    for (rel, kind) in crate::usage::bash_accesses(root, command, root) {
+                        if kind == "read" && paths.contains(&rel) && seen.insert(rel.clone()) {
+                            added.push(rel);
                         }
-                        Ok(())
-                    },
-                )?)?;
-            }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => eprintln!("agent-wiki: cannot read recall transcript: {e}"),
-        }
-    }
-    let tx = db.unchecked_transaction()?;
+                    }
+                }
+                Ok(())
+            },
+        )?
+        .0,
+    )?;
     mark_seen(&tx, id, &added)?;
     tx.execute("insert into recall_state(session_id, offset) values (?, ?) on conflict(session_id) do update set offset = excluded.offset", params![id, offset])?;
     tx.commit()?;
@@ -488,6 +500,7 @@ pub(crate) fn decide(
         HashSet::new()
     } else {
         transcript_seen(
+            root,
             db,
             hook.session_id.as_deref().unwrap_or_default(),
             hook.transcript_path.as_deref(),
@@ -659,7 +672,7 @@ pub(crate) fn decide(
 }
 
 pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
-    let input = io::read_to_string(io::stdin())?;
+    let input = crate::hook_io::stdin()?;
     if input.trim().is_empty() {
         return Ok(());
     }
@@ -1042,8 +1055,31 @@ mod tests {
     }
     impl Drop for Wiki {
         fn drop(&mut self) {
+            let _ = fs::remove_dir_all(crate::storage::dir(&self.root));
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn codex_exec_reads_populate_seen_without_counting_echo_or_writes() -> Result<()> {
+        let wiki = Wiki::new()?;
+        for name in ["read", "echoed", "written"] {
+            wiki.page(name, "", "", "body")?;
+        }
+        let path = crate::storage::dir(&wiki.root).join("rollout.jsonl");
+        let commands = [
+            format!("cat {}/pages/knowledge/read.md", wiki.root.display()),
+            format!("echo {}/pages/knowledge/echoed.md", wiki.root.display()),
+            format!(
+                "echo x > {}/pages/knowledge/written.md",
+                wiki.root.display()
+            ),
+        ];
+        let text = commands.iter().map(|cmd| json!({"type":"response_item", "payload":{"type":"function_call", "name":"exec_command", "arguments":json!({"cmd":cmd}).to_string()}}).to_string() + "\n").collect::<String>();
+        fs::write(&path, text)?;
+        let seen = transcript_seen(&wiki.root, &wiki.db, "codex-read", path.to_str())?;
+        assert_eq!(seen, HashSet::from(["pages/knowledge/read.md".into()]));
+        Ok(())
     }
 
     #[test]
@@ -1550,6 +1586,7 @@ mod tests {
         };
         assert!(
             transcript_seen(
+                &wiki.root,
                 &wiki.db,
                 h.session_id.as_deref().unwrap_or_default(),
                 h.transcript_path.as_deref()
@@ -1573,6 +1610,7 @@ mod tests {
         );
         fs::write(&path, format!("bad json\n{ignored}\n{prose}\n{one}\n{two}"))?;
         let seen = transcript_seen(
+            &wiki.root,
             &wiki.db,
             h.session_id.as_deref().unwrap_or_default(),
             h.transcript_path.as_deref(),
@@ -1584,6 +1622,7 @@ mod tests {
             .write_all(b"\n")?;
         assert_eq!(
             transcript_seen(
+                &wiki.root,
                 &wiki.db,
                 h.session_id.as_deref().unwrap_or_default(),
                 h.transcript_path.as_deref()
@@ -1599,6 +1638,7 @@ mod tests {
         fs::write(&path, format!("{three}\n"))?;
         assert_eq!(
             transcript_seen(
+                &wiki.root,
                 &wiki.db,
                 h.session_id.as_deref().unwrap_or_default(),
                 h.transcript_path.as_deref()
@@ -1609,6 +1649,7 @@ mod tests {
         mark_seen(&wiki.db, "", &["knowledge/four".into()])?;
         assert_eq!(
             transcript_seen(
+                &wiki.root,
                 &wiki.db,
                 h.session_id.as_deref().unwrap_or_default(),
                 h.transcript_path.as_deref()
@@ -1619,6 +1660,7 @@ mod tests {
         h.session_id = Some("other".into());
         assert_eq!(
             transcript_seen(
+                &wiki.root,
                 &wiki.db,
                 h.session_id.as_deref().unwrap_or_default(),
                 h.transcript_path.as_deref()

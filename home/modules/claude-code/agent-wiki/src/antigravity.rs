@@ -294,7 +294,7 @@ fn message(pending: &Pending) -> Option<&str> {
 }
 
 fn commit_drain(root: &Path, db: &Connection, session: &str, drained: &[Pending]) -> Result<()> {
-    let tx = db.unchecked_transaction()?;
+    let tx = crate::state::transaction(db)?;
     {
         let mut delete = tx.prepare("delete from antigravity_pending where rowid=?")?;
         for item in drained {
@@ -344,26 +344,27 @@ pub(crate) fn run(command: &Commands, input: &[u8]) -> Result<Value> {
         return Ok(empty);
     }
     let root = crate::wiki_root();
-    Ok(crate::with_hook_lock(&root, MAX_LOCK_WAIT, || {
-        run_locked(command, &root, &payload)
-    })?
-    .unwrap_or(empty))
+    run_locked(command, &root, &payload)
 }
 
 fn run_locked(command: &Commands, root: &Path, payload: &Payload) -> Result<Value> {
     let empty = output(&payload.hook_event_name, "");
     let needs_index = matches!(command, Commands::Context(_) | Commands::Recall(_))
         || matches!(command, Commands::Remind(args) if !args.event && payload.hook_event_name == "PreInvocation" && payload.invocation_num == Some(1));
-    let mut db = if needs_index {
-        crate::ensure_layout(root)?;
-        crate::index::open(root)?
+    let db = if needs_index {
+        let Some(db) = crate::with_hook_lock(root, MAX_LOCK_WAIT, || {
+            crate::ensure_layout(root)?;
+            let mut db = crate::index::open(root)?;
+            crate::index::refresh(root, &mut db)?;
+            Ok(db)
+        })?
+        else {
+            return Ok(empty);
+        };
+        db
     } else {
-        Connection::open(root.join("index.sqlite"))?
+        crate::state::open(root)?
     };
-    db.busy_timeout(Duration::from_millis(50))?;
-    if needs_index {
-        crate::index::refresh(root, &mut db)?;
-    }
     initialize(&db)?;
     let session = &payload.conversation_id;
     match command {
@@ -404,6 +405,8 @@ fn run_locked(command: &Commands, root: &Path, payload: &Payload) -> Result<Valu
             Ok(reply)
         }
         Commands::Recall(_) | Commands::Remind(_) if payload.hook_event_name == "PostToolUse" => {
+            let tx = crate::state::transaction(&db)?;
+            let db = &tx;
             let source = if matches!(command, Commands::Recall(_)) {
                 "recall"
             } else {
@@ -431,9 +434,9 @@ fn run_locked(command: &Commands, root: &Path, payload: &Payload) -> Result<Valu
                             hook.tool_response = json!({"output": crate::hook_payload::diagnostic_lines(&hook.response_text()).join("\n")});
                         }
                     }
-                    crate::recall::decide(root, &db, &hook, args)?
+                    crate::recall::decide(root, db, &hook, args)?
                 }
-                Commands::Remind(args) => crate::remind_event::decide(&db, &hook, args.failures)?
+                Commands::Remind(args) => crate::remind_event::decide(db, &hook, args.failures)?
                     .map(|message| {
                         crate::hook_payload::additional_context("PostToolUse", &message)
                     }),
@@ -449,6 +452,7 @@ fn run_locked(command: &Commands, root: &Path, payload: &Payload) -> Result<Valu
                 "insert or ignore into antigravity_tools values (?,?,?,unixepoch())",
                 params![session, source, key],
             )?;
+            tx.commit()?;
             Ok(empty)
         }
         _ => Ok(empty),

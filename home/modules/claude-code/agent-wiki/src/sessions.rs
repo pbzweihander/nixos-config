@@ -937,7 +937,7 @@ pub fn run(root: &Path, args: &Args) -> Result<()> {
     if args.reindex {
         index::remove_index(root, "sessions.sqlite")?;
     }
-    let mut db = private_db(&root.join("sessions.sqlite"))?;
+    let mut db = crate::storage::open(root, "sessions.sqlite")?;
     db.busy_timeout(StdDuration::from_secs(30))?;
     initialize(&db)?;
     refresh_sources(
@@ -1031,11 +1031,11 @@ pub fn run(root: &Path, args: &Args) -> Result<()> {
 // O_NOFOLLOW prevents symlink replacement between lstat and open; O_NONBLOCK
 // keeps a concurrent FIFO replacement from hanging before the descriptor check.
 #[cfg(target_os = "linux")]
-const PRIVATE_OPEN_FLAGS: i32 = 0x20000 | 0x800;
+pub(crate) const PRIVATE_OPEN_FLAGS: i32 = 0x20000 | 0x800;
 #[cfg(target_os = "macos")]
-const PRIVATE_OPEN_FLAGS: i32 = 0x100 | 0x4;
+pub(crate) const PRIVATE_OPEN_FLAGS: i32 = 0x100 | 0x4;
 
-fn repair_private_file(path: &Path, create: bool) -> Result<()> {
+pub(crate) fn repair_private_file(path: &Path, create: bool) -> Result<()> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     match fs::symlink_metadata(path) {
         Ok(meta) if !meta.is_file() => {
@@ -1092,7 +1092,13 @@ mod tests {
         let target = tmp.0.join("unrelated.txt");
         std::fs::write(&target, "unchanged")?;
         std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644))?;
-        for name in ["sessions.sqlite", "usage.sqlite"] {
+        for name in [
+            "index.sqlite",
+            "state.sqlite",
+            "sessions.sqlite",
+            "usage.sqlite",
+            "records.sqlite",
+        ] {
             let db = tmp.0.join(name);
             for suffix in ["", "-wal", "-shm", "-journal"] {
                 let link = tmp.0.join(format!("{name}{suffix}"));
@@ -1136,7 +1142,13 @@ mod tests {
     fn private_databases_repair_existing_sidecars() -> anyhow::Result<()> {
         use std::os::unix::fs::PermissionsExt;
         let tmp = TestDir::new()?;
-        for name in ["sessions.sqlite", "usage.sqlite"] {
+        for name in [
+            "index.sqlite",
+            "state.sqlite",
+            "sessions.sqlite",
+            "usage.sqlite",
+            "records.sqlite",
+        ] {
             let path = tmp.0.join(name);
             drop(super::private_db(&path)?);
             for suffix in ["", "-wal", "-shm", "-journal"] {

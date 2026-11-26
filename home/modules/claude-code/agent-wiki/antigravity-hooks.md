@@ -27,16 +27,16 @@ No PreToolUse handler is installed. A direct call with that event returns
 panics) whenever stdin is a JSON object with `hookEventName`. Stdin that is not
 JSON, or larger than 1 MiB, has no readable event and produces `{}`.
 
-Every hook, including `remind --event`, waits for the wiki lock up to
-`AGENT_WIKI_HOOK_LOCK_MS` (default 2000) like the other harnesses' hooks, capped
-at 3000 ms to stay below Antigravity's 5 s hook timeout; it then gives up with
-`{}`. Unlike Claude/Codex, `remind --event` waits too, because Antigravity runs it
-beside `recall` for the same tool and they would otherwise contend.
+Hooks that need page retrieval wait for the wiki lock up to
+`AGENT_WIKI_HOOK_LOCK_MS` (default 2000), capped at 3000 ms. Event-only
+hooks and pending-note drains bypass that lock; all state connections use a
+50 ms SQLite busy timeout before schema initialization and fail open on contention.
 `record --wait` is the synchronous diagnostic variant and still reports errors
 through its exit status and stderr, with JSON on stdout.
 
-The queue and prompt/tool deduplication tables live in the existing `index.sqlite`,
-under the wiki lock. Pending notes expire after a day and tool replay keys after
+The queue and prompt/tool deduplication tables live in private `state.sqlite`,
+independently of the page-index lock. Staging a note and its seen/event state is one
+SQLite transaction. Pending notes expire after a day and tool replay keys after
 seven days. Recall and remind share seen-page state; recall injection usage is
 logged when drained. A drain selects the queued rows, builds the whole reply
 (a failing prompt reminder is logged to stderr and does not block the notes), and

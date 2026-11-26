@@ -128,10 +128,23 @@ impl Codex {
             return None;
         }
         let text = text(&p["content"]);
+        let text = if role == "user" {
+            text.split_once("<USER_REQUEST>")
+                .and_then(|(_, tail)| tail.split_once("</USER_REQUEST>"))
+                .map_or(text.clone(), |(prompt, _)| prompt.trim().to_owned())
+        } else {
+            text
+        };
         // Environment/AGENTS instructions are user-role wrappers, not prompts.
         if text.trim().is_empty()
             || (role == "user"
-                && (text.starts_with('<') || text.starts_with("# AGENTS.md instructions")))
+                && ([
+                    "<environment_context>",
+                    "<permissions instructions>",
+                    "# AGENTS.md instructions",
+                ]
+                .iter()
+                .any(|prefix| text.starts_with(prefix))))
         {
             return None;
         }
@@ -191,5 +204,25 @@ pub fn text(value: &Value) -> String {
             .collect::<Vec<_>>()
             .join("\n"),
         _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn codex_keeps_wrapped_requests_and_ordinary_markup() {
+        let codex = Codex::default();
+        for (input, expected) in [
+            ("<USER_REQUEST>fix this</USER_REQUEST>", Some("fix this")),
+            ("<xml> is broken", Some("<xml> is broken")),
+            ("<environment_context>cwd</environment_context>", None),
+        ] {
+            let value = serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":input}]}});
+            assert_eq!(
+                codex.message(&value).map(|(_, text)| text),
+                expected.map(str::to_owned)
+            );
+        }
     }
 }

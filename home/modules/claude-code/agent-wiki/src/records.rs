@@ -1,5 +1,5 @@
 //! Deterministic local records. Never write to or inject into the shared wiki.
-use crate::{env_path, home, scan, search as page_search, sessions, transcript, usage, wiki_root};
+use crate::{scan, search as page_search, sessions, transcript, usage, wiki_root};
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use clap::Args as ClapArgs;
@@ -10,13 +10,11 @@ use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     env,
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{self, Read},
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::LazyLock,
-    time::Duration,
 };
 
 #[derive(ClapArgs)]
@@ -621,29 +619,8 @@ fn extract_antigravity(path: &Path, hook: &Hook) -> Result<Option<Record>> {
     Ok(Some(record))
 }
 
-fn state_dir() -> PathBuf {
-    crate::compat::directory(
-        &env_path("XDG_STATE_HOME").unwrap_or_else(|| home().join(".local/state")),
-    )
-}
-
 fn open() -> Result<Connection> {
-    let dir = state_dir();
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&dir)?;
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
-    let path = dir.join("records.sqlite");
-    OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .mode(0o600)
-        .open(&path)?;
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
-    let db = Connection::open(path)?;
-    db.busy_timeout(Duration::from_secs(30))?;
+    let db = crate::storage::open(&crate::wiki_root(), "records.sqlite")?;
     initialize(&db)?;
     Ok(db)
 }
@@ -785,6 +762,9 @@ pub fn run(args: &Args) -> Result<()> {
         Command::new("setsid")
             .arg("--fork")
             .arg(env::current_exe()?)
+            // Preserve a CLI custom root across the detached process boundary.
+            .arg("--dir")
+            .arg(crate::wiki_root())
             .args(["record", "--wait", "--transcript-path"])
             .arg(&hook.transcript_path)
             .args([
@@ -1012,6 +992,7 @@ mod tests {
     }
 
     use super::*;
+    use crate::home;
 
     fn fixture(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))

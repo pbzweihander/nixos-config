@@ -1,9 +1,8 @@
 use crate::hook_payload::{Harness, Hook, ran_sync};
-use crate::sessions::complete_lines;
 use anyhow::Result;
 use clap::Args as ClapArgs;
 use rusqlite::{Connection, OptionalExtension, params};
-use std::{collections::HashSet, fs::File, io, path::Path};
+use std::{collections::HashSet, path::Path};
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -20,7 +19,7 @@ pub struct Args {
 }
 
 fn update(db: &Connection, hook: Hook, interval: u64) -> Result<Option<String>> {
-    let tx = db.unchecked_transaction()?;
+    let tx = crate::state::transaction(db)?;
     let db = &tx;
     let id = hook.session_id.unwrap_or_default();
     let mut synced = false;
@@ -32,24 +31,22 @@ fn update(db: &Connection, hook: Hook, interval: u64) -> Result<Option<String>> 
         )
         .optional()?
         .unwrap_or((0, 0));
-    if let Some(path) = hook.transcript_path {
-        match File::open(path) {
-            Ok(file) => {
-                if file.metadata()?.len() < offset as u64 {
-                    offset = 0;
+    offset = i64::try_from(
+        crate::hook_io::lines(
+            db,
+            &format!("remind:{id}"),
+            hook.transcript_path.as_deref(),
+            offset as u64,
+            |line| {
+                if ran_sync(line) {
+                    prompts = 0;
+                    synced = true;
                 }
-                offset = i64::try_from(complete_lines(file, offset as u64, |line| {
-                    if ran_sync(line) {
-                        prompts = 0;
-                        synced = true;
-                    }
-                    Ok(())
-                })?)?;
-            }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => eprintln!("agent-wiki: cannot read reminder transcript: {e}"),
-        }
-    }
+                Ok(())
+            },
+        )?
+        .0,
+    )?;
     prompts = prompts.saturating_add(1);
     let message = if prompts as u64 >= interval {
         let message = format!(
@@ -94,7 +91,7 @@ fn select(
 }
 
 pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
-    let input = io::read_to_string(io::stdin())?;
+    let input = crate::hook_io::stdin()?;
     let hook = if input.trim().is_empty() {
         Hook::default()
     } else {
@@ -110,7 +107,7 @@ pub fn run(root: &Path, db: &Connection, args: &Args) -> Result<()> {
 pub(crate) fn messages(root: &Path, db: &Connection, args: &Args, hook: Hook) -> Result<String> {
     let prompt = hook.prompt.as_deref().unwrap_or_default();
     let session = hook.session_id.as_deref().unwrap_or_default();
-    let seen = crate::recall::transcript_seen(db, session, hook.transcript_path.as_deref())?;
+    let seen = crate::recall::transcript_seen(root, db, session, hook.transcript_path.as_deref())?;
     let selected = if prompt.trim_start().starts_with('<') || prompt.trim().is_empty() {
         vec![]
     } else {

@@ -3,16 +3,12 @@ use crate::hook_payload::{Harness, Hook, additional_context};
 use anyhow::{Result, ensure};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::json;
-use std::{
-    fs::{self, File, OpenOptions},
-    io::{self, BufRead, BufReader, Read, Seek, SeekFrom},
-    path::Path,
-    time::{Duration, Instant},
-};
+use std::{io::Read, path::Path};
+
+#[cfg(test)]
+use std::fs::{self, OpenOptions};
 
 const MAX_INPUT: u64 = 256 * 1024;
-const MAX_TRANSCRIPT: u64 = 4 * 1024 * 1024;
-const SCAN_BUDGET: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy)]
 enum Event {
@@ -237,43 +233,6 @@ fn successful(hook: &Hook) -> bool {
 
 // Bound work on a newly enabled hook or a large tool result. Partial JSONL lines
 // are retried; if we cannot catch up, save progress and omit this event's nudge.
-fn scan(path: Option<&str>, mut offset: u64) -> Result<(u64, bool, bool)> {
-    let Some(path) = path else {
-        return Ok((offset, false, true));
-    };
-    let metadata = match fs::metadata(path) {
-        Ok(metadata) => metadata,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok((offset, false, true)),
-        Err(e) => return Err(e.into()),
-    };
-    ensure!(
-        metadata.is_file(),
-        "reminder transcript must be a regular file"
-    );
-    let file = File::open(path)?;
-    if metadata.len() < offset {
-        offset = 0;
-    }
-    let mut reader = BufReader::new(file);
-    reader.seek(SeekFrom::Start(offset))?;
-    let mut reader = reader.take(MAX_TRANSCRIPT);
-    let started = Instant::now();
-    let mut synced = false;
-    let mut line = vec![];
-    loop {
-        if started.elapsed() >= SCAN_BUDGET {
-            return Ok((offset, synced, false));
-        }
-        line.clear();
-        let n = reader.read_until(b'\n', &mut line)?;
-        if n == 0 || !line.ends_with(b"\n") {
-            return Ok((offset, synced, reader.limit() > 0 && n == 0));
-        }
-        synced |= crate::hook_payload::ran_sync(&line);
-        offset += n as u64;
-    }
-}
-
 pub(crate) fn decide(db: &Connection, hook: &Hook, failures: u32) -> Result<Option<String>> {
     if hook
         .session_id
@@ -289,7 +248,7 @@ pub(crate) fn decide(db: &Connection, hook: &Hook, failures: u32) -> Result<Opti
         return Ok(None);
     }
     initialize(db)?;
-    let tx = db.unchecked_transaction()?;
+    let tx = crate::state::transaction(db)?;
     let id = hook.session_id.as_deref().unwrap_or_default();
     let mut state = State::load(&tx, id)?;
     let (mut prompts, offset): (i64, i64) = tx
@@ -300,7 +259,17 @@ pub(crate) fn decide(db: &Connection, hook: &Hook, failures: u32) -> Result<Opti
         )
         .optional()?
         .unwrap_or_default();
-    let (offset, synced, caught_up) = scan(hook.transcript_path.as_deref(), offset.try_into()?)?;
+    let mut synced = false;
+    let (offset, caught_up) = crate::hook_io::lines(
+        &tx,
+        &format!("remind:{id}"),
+        hook.transcript_path.as_deref(),
+        offset.try_into()?,
+        |line| {
+            synced |= crate::hook_payload::ran_sync(line);
+            Ok(())
+        },
+    )?;
     let acts = if successful(hook) {
         actions(hook.tool_input["command"].as_str().unwrap_or_default())
     } else {
@@ -390,29 +359,18 @@ fn output(hook: &Hook, message: &str) -> String {
 }
 
 pub(crate) fn run(root: &Path, args: &crate::remind::Args) -> Result<()> {
-    let mut hook = parse(io::stdin().lock())?;
+    let mut hook = parse(crate::hook_io::stdin()?.as_bytes())?;
     if args.harness == Harness::Codex {
-        if hook.exit_code() != Some(0) {
+        let Some(code) = hook.exit_code() else {
             return Ok(());
-        }
+        };
         hook.normalize_shell();
-        if !hook.tool_response.is_object() {
-            hook.tool_response = json!({"exit_code": 0});
+        if code != 0 {
+            hook.hook_event_name = "PostToolUseFailure".into();
         }
+        hook.tool_response = json!({"exit_code": code});
     }
-    fs::create_dir_all(root)?;
-    let mut lock = fd_lock::RwLock::new(
-        OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(root.join(".lock"))?,
-    );
-    let Ok(_guard) = lock.try_write() else {
-        return Ok(());
-    };
-    let db = Connection::open(root.join("index.sqlite"))?;
-    db.busy_timeout(Duration::from_millis(50))?;
+    let db = crate::state::open(root)?;
     if let Some(message) = decide(&db, &hook, args.failures)? {
         println!("{}", output(&hook, &message));
     }
@@ -641,11 +599,16 @@ mod tests {
         after_prompt(&wiki.index, "test", false, true)?;
         assert!(decide(&wiki.index, &h, 3)?.is_some()); // shared cursor does not replay sync
         fs::write(&path, "{}\n")?;
-        let (offset, synced, complete) = scan(h.transcript_path.as_deref(), 999)?;
-        assert_eq!((offset, synced, complete), (3, false, true));
-        fs::write(&path, vec![b'x'; MAX_TRANSCRIPT as usize + 1])?;
-        assert_eq!(scan(h.transcript_path.as_deref(), 0)?, (0, false, false));
-        assert!(scan(Some(wiki.root.to_str().unwrap()), 0).is_err());
+        assert_eq!(
+            crate::hook_io::lines(
+                &wiki.index,
+                "replace",
+                h.transcript_path.as_deref(),
+                999,
+                |_| Ok(())
+            )?,
+            (3, true)
+        );
         Ok(())
     }
 
