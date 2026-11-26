@@ -5,7 +5,7 @@ use clap::Args as ClapArgs;
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::Value as SqlValue};
 use serde_json::Value;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     env,
     ffi::OsStr,
     fs::{self, File},
@@ -41,7 +41,7 @@ pub struct Args {
     pub harness: Option<String>,
 }
 
-const INDEX_FORMAT: i64 = 4;
+const INDEX_FORMAT: i64 = 5;
 
 pub fn codex_source_dirs() -> Result<Vec<PathBuf>> {
     let fallback = env_path("CODEX_HOME")
@@ -49,7 +49,17 @@ pub fn codex_source_dirs() -> Result<Vec<PathBuf>> {
         .join("sessions");
     resolve_source_dirs(
         crate::compat::var_os("AGENT_WIKI_CODEX_SESSIONS_DIRS").as_deref(),
-        &fallback,
+        &[fallback],
+    )
+}
+
+pub fn antigravity_source_dirs() -> Result<Vec<PathBuf>> {
+    let gemini = home().join(".gemini");
+    resolve_dirs(
+        |err| accessible::<()>(Err(err)),
+        crate::compat::var_os("AGENT_WIKI_ANTIGRAVITY_SESSIONS_DIRS").as_deref(),
+        &["antigravity-cli", "antigravity", "antigravity-ide"]
+            .map(|app| gemini.join(app).join("brain")),
     )
 }
 
@@ -85,23 +95,34 @@ pub fn source_dirs() -> Result<Vec<PathBuf>> {
         .join("projects");
     resolve_source_dirs(
         crate::compat::var_os("AGENT_WIKI_SESSIONS_DIRS").as_deref(),
-        &fallback,
+        &[fallback],
     )
 }
 
-fn resolve_source_dirs(value: Option<&OsStr>, fallback: &Path) -> Result<Vec<PathBuf>> {
+fn resolve_source_dirs(value: Option<&OsStr>, fallback: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    resolve_dirs(|err| existing::<()>(Err(err)), value, fallback)
+}
+
+// `skip` returns Ok(None) for errors that only drop that directory.
+fn resolve_dirs(
+    skip: impl Fn(std::io::Error) -> Result<Option<()>>,
+    value: Option<&OsStr>,
+    fallback: &[PathBuf],
+) -> Result<Vec<PathBuf>> {
     let candidates = match value.filter(|v| !v.is_empty()) {
         Some(value) => env::split_paths(value)
             .filter(|p| !p.as_os_str().is_empty())
             .collect(),
-        None => vec![fallback.to_path_buf()],
+        None => fallback.to_vec(),
     };
     let mut dirs = vec![];
     for dir in candidates {
         let canonical = match fs::canonicalize(&dir) {
             Ok(path) => path,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(err) => return Err(err).with_context(|| format!("canonicalize {}", dir.display())),
+            Err(err) => {
+                skip(err).with_context(|| format!("canonicalize {}", dir.display()))?;
+                continue;
+            }
         };
         if !dirs.contains(&canonical) {
             dirs.push(canonical);
@@ -153,6 +174,151 @@ pub fn transcript_paths(dir: &Path) -> Result<Vec<PathBuf>> {
         }
     }
     paths.sort();
+    Ok(paths)
+}
+
+/// One Antigravity conversation at
+/// `<brain>/<conversation-id>/.system_generated/logs/transcript.jsonl`. The transcript
+/// has no cwd; the app's `cache/conversation_metadata.json` maps the conversation to
+/// its workspace, when that cache exists.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Antigravity {
+    pub conversation: String,
+    pub cwd: String,
+}
+
+impl Antigravity {
+    fn originator(&self) -> &'static str {
+        if orca_workspace(&self.cwd) {
+            ANTIGRAVITY_ORCA
+        } else {
+            ""
+        }
+    }
+}
+
+const ANTIGRAVITY_ORCA: &str = "orca";
+
+// Orca bots run in `~/.orca/bots/<id>` and Orca worktrees live under
+// `~/orca/workspaces/<repo>/<name>`; either marks an Orca-launched conversation.
+fn orca_workspace(cwd: &str) -> bool {
+    let parts: Vec<_> = Path::new(cwd).components().map(|c| c.as_os_str()).collect();
+    parts
+        .windows(2)
+        .any(|pair| pair == [".orca", "bots"] || pair == ["orca", "workspaces"])
+}
+
+/// A local filesystem path from a `file://` URI: an empty or `localhost` authority,
+/// an absolute path, percent-decoded to valid UTF-8. Anything else is not a cwd.
+fn file_uri_path(uri: &str) -> Option<String> {
+    let rest = uri.strip_prefix("file://")?;
+    let slash = rest.find('/')?;
+    let (authority, path) = rest.split_at(slash);
+    if !(authority.is_empty() || authority.eq_ignore_ascii_case("localhost")) {
+        return None;
+    }
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let Some(byte) = path
+                .get(i + 1..i + 3)
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+        {
+            out.push(byte);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// The first usable local workspace among a conversation's `WorkspaceURIs`.
+fn workspace(uris: &Value) -> Option<String> {
+    match uris {
+        Value::String(uri) => file_uri_path(uri),
+        Value::Array(uris) => uris
+            .iter()
+            .filter_map(Value::as_str)
+            .find_map(file_uri_path),
+        _ => None,
+    }
+}
+
+// Best effort: a missing, unreadable or unparsable cache only loses the workspace.
+fn antigravity_workspaces(brain: &Path) -> HashMap<String, String> {
+    let Some(bytes) = brain
+        .parent()
+        .and_then(|app| fs::read(app.join("cache/conversation_metadata.json")).ok())
+    else {
+        return HashMap::new();
+    };
+    let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+        return HashMap::new();
+    };
+    let Some(conversations) = value["conversations"].as_object() else {
+        return HashMap::new();
+    };
+    conversations
+        .iter()
+        .filter_map(|(id, conversation)| {
+            Some((
+                id.clone(),
+                workspace(&conversation["summary"]["WorkspaceURIs"])?,
+            ))
+        })
+        .collect()
+}
+
+// Antigravity sources are skipped, not fatal, when they are missing, not a
+// directory, or not readable (another user's or a half-created conversation):
+// one bad conversation must not break searching every harness.
+fn accessible<T>(result: std::io::Result<T>) -> Result<Option<T>> {
+    use std::io::ErrorKind::{NotADirectory, NotFound, PermissionDenied};
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(err) if matches!(err.kind(), NotFound | PermissionDenied | NotADirectory) => Ok(None),
+        Err(err) => Err(err.into()),
+    }
+}
+
+pub fn antigravity_paths(dir: &Path) -> Result<Vec<(PathBuf, Antigravity)>> {
+    let mut paths = vec![];
+    let Some(entries) = accessible(fs::read_dir(dir))? else {
+        return Ok(paths);
+    };
+    let workspaces = antigravity_workspaces(dir);
+    for entry in entries {
+        let Some(entry) = accessible(entry)? else {
+            continue;
+        };
+        let candidate = entry.path().join(".system_generated/logs/transcript.jsonl");
+        let Some(meta) = accessible(fs::metadata(&candidate))? else {
+            continue;
+        };
+        if !meta.is_file() || accessible(File::open(&candidate))?.is_none() {
+            continue;
+        }
+        let Some(path) = accessible(fs::canonicalize(&candidate))? else {
+            continue;
+        };
+        // The conversation is named by its real directory, so a symlinked alias
+        // of a conversation directory resolves to the same session.
+        let Some(conversation) = path
+            .ancestors()
+            .nth(3)
+            .and_then(Path::file_name)
+            .map(|name| name.to_string_lossy().into_owned())
+        else {
+            continue;
+        };
+        let cwd = workspaces.get(&conversation).cloned().unwrap_or_default();
+        paths.push((path, Antigravity { conversation, cwd }));
+    }
+    paths.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(paths)
 }
 
@@ -261,6 +427,155 @@ fn parse_codex(meta: &transcript::Codex, line: &[u8], offset: u64) -> Option<Mes
     })
 }
 
+// Blocks Antigravity and hooks add around the user's words in a USER_INPUT step.
+const INJECTED: [&str; 3] = [
+    "SYSTEM_MESSAGE",
+    "ADDITIONAL_METADATA",
+    "USER_SETTINGS_CHANGE",
+];
+// The line Antigravity puts before an injected <SYSTEM_MESSAGE> block.
+const SYSTEM_PREAMBLE: &str = "The following is a <SYSTEM_MESSAGE> not actually sent by the user.";
+const REQUEST_OPEN: &str = "<USER_REQUEST>";
+const REQUEST_CLOSE: &str = "</USER_REQUEST>";
+
+/// Consumes one injected block (or preamble line) at the start of `text`. An
+/// unclosed block runs to the end: truncated steps end inside metadata.
+fn injected_block(text: &str) -> Option<&str> {
+    if let Some(rest) = text.strip_prefix(SYSTEM_PREAMBLE) {
+        return Some(rest.find('\n').map_or("", |i| &rest[i + 1..]));
+    }
+    let tag = INJECTED.iter().find(|tag| {
+        text.strip_prefix('<')
+            .and_then(|t| t.strip_prefix(**tag))
+            .is_some_and(|t| t.starts_with('>'))
+    })?;
+    let close = format!("</{tag}>");
+    Some(text.find(&close).map_or("", |i| &text[i + close.len()..]))
+}
+
+/// Skips leading injected blocks; None when something else follows.
+fn skip_injected(mut text: &str) -> &str {
+    loop {
+        text = text.trim_start();
+        match injected_block(text) {
+            Some(rest) => text = rest,
+            None => return text,
+        }
+    }
+}
+
+fn only_injected(text: &str) -> bool {
+    skip_injected(text).is_empty()
+}
+
+/// The user's own words in an Antigravity USER_INPUT step.
+///
+/// Every observed step is `<USER_REQUEST>…</USER_REQUEST>` followed by injected
+/// `<ADDITIONAL_METADATA>`, `<USER_SETTINGS_CHANGE>` or hook `<SYSTEM_MESSAGE>`
+/// blocks. The request ends at the *last* `</USER_REQUEST>` after which only injected
+/// blocks remain, so literal or nested tags the user wrote stay in the text; nothing
+/// inside the request is stripped. Without a closing tag (a truncated step) the whole
+/// remainder is kept. A step without the envelope keeps everything before its
+/// trailing run of injected blocks.
+fn antigravity_prompt(content: &str) -> String {
+    let content = skip_injected(content);
+    let text = if let Some(body) = content.strip_prefix(REQUEST_OPEN) {
+        body.rmatch_indices(REQUEST_CLOSE)
+            .find(|(i, _)| only_injected(&body[i + REQUEST_CLOSE.len()..]))
+            .map_or(body, |(i, _)| &body[..i])
+    } else {
+        // Earliest line start from which only injected blocks follow.
+        let mut end = content.len();
+        let starts = std::iter::once(0).chain(content.match_indices('\n').map(|(i, _)| i + 1));
+        for start in starts {
+            let rest = &content[start..];
+            if !rest.trim().is_empty()
+                && injected_block(rest.trim_start()).is_some()
+                && only_injected(rest)
+            {
+                end = start;
+                break;
+            }
+        }
+        &content[..end]
+    };
+    text.trim().to_owned()
+}
+
+// Only finished prose steps: GENERIC tool output, SYSTEM_MESSAGE steps, planner
+// thinking and tool_calls, and running or errored steps are not indexed.
+fn parse_antigravity(meta: &Antigravity, line: &[u8]) -> Option<Message> {
+    let value: Value = serde_json::from_slice(line).ok()?;
+    if value["status"] != "DONE" || meta.conversation.is_empty() {
+        return None;
+    }
+    let step = value["step_index"].as_u64()?;
+    let content = value["content"].as_str()?;
+    let (role, text) = match value["type"].as_str()? {
+        "USER_INPUT" => ("user", antigravity_prompt(content)),
+        "PLANNER_RESPONSE" => ("assistant", content.to_owned()),
+        _ => return None,
+    };
+    if text.trim().is_empty() {
+        return None;
+    }
+    let ts = DateTime::parse_from_rfc3339(value["created_at"].as_str()?)
+        .ok()?
+        .with_timezone(&Utc)
+        .to_rfc3339_opts(SecondsFormat::Millis, true);
+    Some(Message {
+        session_id: meta.conversation.clone(),
+        harness: "antigravity".into(),
+        originator: meta.originator().into(),
+        source: String::new(),
+        uuid: format!("antigravity:{}:{step}", meta.conversation),
+        ts,
+        role: role.into(),
+        project: project(&meta.cwd),
+        branch: String::new(),
+        text: scan::redact(&text),
+    })
+}
+
+/// Like `transcript::exclusion`: the first real prompt's curator marker, or a
+/// curator workspace, excludes the whole conversation.
+fn antigravity_exclusion(path: &Path, meta: &Antigravity) -> Result<Option<&'static str>> {
+    let cwd_reason = transcript::curator_reason(&meta.cwd, "");
+    for line in BufReader::new(File::open(path)?).split(b'\n') {
+        let Ok(value) = serde_json::from_slice::<Value>(&line?) else {
+            continue;
+        };
+        if value["type"] != "USER_INPUT" {
+            continue;
+        }
+        let prompt = antigravity_prompt(value["content"].as_str().unwrap_or_default());
+        if !prompt.is_empty() {
+            return Ok(transcript::curator_reason("", &prompt).or(cwd_reason));
+        }
+    }
+    Ok(cwd_reason)
+}
+
+fn harness_label<'a>(harness: &'a str, originator: &str) -> &'a str {
+    if harness == "antigravity" && originator == ANTIGRAVITY_ORCA {
+        "antigravity/orca"
+    } else {
+        transcript::harness_label(harness, originator)
+    }
+}
+
+enum Source {
+    // Claude or Codex, told apart by the first line.
+    Transcript,
+    Antigravity(Antigravity),
+}
+
+enum Format<'a> {
+    Claude,
+    Codex(transcript::Codex),
+    Antigravity(&'a Antigravity),
+}
+
 fn initialize(db: &Connection) -> Result<()> {
     db.execute_batch("create table if not exists state(key text primary key, value integer);
         create table if not exists transcripts(path text primary key, offset integer, size integer, mtime_ns integer);
@@ -289,6 +604,16 @@ fn initialize(db: &Connection) -> Result<()> {
                 "alter table messages add column {name} text not null default '{default}';"
             ))?;
         }
+    }
+    // The Antigravity workspace a transcript was indexed with: it comes from a
+    // separate metadata cache that can appear or change without a transcript write.
+    let has_workspace: bool = db.query_row(
+        "select exists(select 1 from pragma_table_info('transcripts') where name = 'workspace')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !has_workspace {
+        db.execute_batch("alter table transcripts add column workspace text not null default '';")?;
     }
     if version.is_none_or(|version| version < INDEX_FORMAT) {
         let tx = db.unchecked_transaction()?;
@@ -319,60 +644,98 @@ fn initialize(db: &Connection) -> Result<()> {
 
 #[cfg(test)]
 fn refresh(db: &mut Connection, dirs: &[PathBuf]) -> Result<()> {
-    refresh_sources(db, dirs, &[])
+    refresh_sources(db, dirs, &[], &[])
 }
 
-fn refresh_sources(db: &mut Connection, dirs: &[PathBuf], codex_dirs: &[PathBuf]) -> Result<()> {
-    let mut paths = vec![];
+fn refresh_sources(
+    db: &mut Connection,
+    dirs: &[PathBuf],
+    codex_dirs: &[PathBuf],
+    antigravity_dirs: &[PathBuf],
+) -> Result<()> {
+    let mut paths = BTreeMap::new();
     for dir in dirs {
-        paths.extend(transcript_paths(dir)?);
+        for path in transcript_paths(dir)? {
+            paths.entry(path).or_insert(Source::Transcript);
+        }
     }
     for dir in codex_dirs {
-        paths.extend(codex_paths(dir)?);
+        for path in codex_paths(dir)? {
+            paths.entry(path).or_insert(Source::Transcript);
+        }
     }
-    paths.sort();
-    paths.dedup();
+    for dir in antigravity_dirs {
+        for (path, meta) in antigravity_paths(dir)? {
+            paths.entry(path).or_insert(Source::Antigravity(meta));
+        }
+    }
     let on_disk: HashSet<_> = paths
-        .iter()
+        .keys()
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
-    let indexed: HashMap<String, (i64, i64, i64)> = db
-        .prepare("select path, offset, size, mtime_ns from transcripts")?
-        .query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?))))?
+    let indexed: HashMap<String, (i64, i64, i64, String)> = db
+        .prepare("select path, offset, size, mtime_ns, workspace from transcripts")?
+        .query_map([], |r| {
+            Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+        })?
         .collect::<rusqlite::Result<_>>()?;
     let tx = db.transaction()?;
     for path in indexed.keys().filter(|p| !on_disk.contains(*p)) {
         tx.execute("delete from messages where path = ?", [path])?;
         tx.execute("delete from transcripts where path = ?", [path])?;
     }
-    for path in paths {
+    for (path, source) in &paths {
         let path_str = path.to_string_lossy();
-        let file = File::open(&path)?;
+        let (file, workspace) = match source {
+            Source::Transcript => (File::open(path)?, ""),
+            Source::Antigravity(meta) => match accessible(File::open(path))? {
+                Some(file) => (file, meta.cwd.as_str()),
+                None => continue,
+            },
+        };
         let (mtime, size) = index::stamp(&file.metadata()?);
         let old = indexed.get(path_str.as_ref());
-        if old.is_some_and(|(_, s, t)| (*s, *t) == (size, mtime)) {
+        let moved = old.is_some_and(|o| o.3 != workspace);
+        if !moved && old.is_some_and(|o| (o.1, o.2) == (size, mtime)) {
             continue;
         }
         let mut offset = old.map_or(0, |o| o.0);
+        if moved {
+            // Late or changed metadata: project, originator and the curator cwd
+            // check all depend on it, so the conversation is indexed again.
+            tx.execute("delete from messages where path = ?", [path_str.as_ref()])?;
+            offset = 0;
+        }
         if size < offset {
             // Truncation may drop a message another file also held until --reindex.
             tx.execute("delete from messages where path = ?", [path_str.as_ref()])?;
             offset = 0;
         }
-        let codex = transcript::Codex::open(&path)?;
-        if transcript::exclusion(&path, codex.as_ref())?.is_some() {
+        let format = match source {
+            Source::Antigravity(meta) => Format::Antigravity(meta),
+            Source::Transcript => {
+                transcript::Codex::open(path)?.map_or(Format::Claude, Format::Codex)
+            }
+        };
+        let excluded = match &format {
+            Format::Antigravity(meta) => antigravity_exclusion(path, meta)?,
+            Format::Codex(meta) => transcript::exclusion(path, Some(meta))?,
+            Format::Claude => transcript::exclusion(path, None)?,
+        };
+        if excluded.is_some() {
             tx.execute("delete from messages where path = ?", [path_str.as_ref()])?;
             tx.execute(
-                "insert or replace into transcripts(path, offset, size, mtime_ns) values (?,?,?,?)",
-                params![path_str.as_ref(), size, size, mtime],
+                "insert or replace into transcripts(path, offset, size, mtime_ns, workspace) values (?,?,?,?,?)",
+                params![path_str.as_ref(), size, size, mtime, workspace],
             )?;
             continue;
         }
         let mut position = offset as u64;
         let offset = complete_lines(file, offset as u64, |line| {
-            let message = match &codex {
-                Some(meta) => parse_codex(meta, line, position),
-                None => parse(line),
+            let message = match &format {
+                Format::Claude => parse(line),
+                Format::Codex(meta) => parse_codex(meta, line, position),
+                Format::Antigravity(meta) => parse_antigravity(meta, line),
             };
             position += line.len() as u64;
             if let Some(m) = message {
@@ -381,7 +744,7 @@ fn refresh_sources(db: &mut Connection, dirs: &[PathBuf], codex_dirs: &[PathBuf]
             }
             Ok(())
         })?;
-        tx.execute("insert into transcripts(path, offset, size, mtime_ns) values (?,?,?,?) on conflict(path) do update set offset=excluded.offset, size=excluded.size, mtime_ns=excluded.mtime_ns", params![path_str.as_ref(), i64::try_from(offset)?, size, mtime])?;
+        tx.execute("insert into transcripts(path, offset, size, mtime_ns, workspace) values (?,?,?,?,?) on conflict(path) do update set offset=excluded.offset, size=excluded.size, mtime_ns=excluded.mtime_ns, workspace=excluded.workspace", params![path_str.as_ref(), i64::try_from(offset)?, size, mtime, workspace])?;
     }
     tx.commit()?;
     Ok(())
@@ -468,9 +831,11 @@ pub fn run(root: &Path, args: &Args) -> Result<()> {
         args.exclude_session.clone(),
         env::var("CLAUDE_SESSION_ID").ok(),
         env::var("CODEX_THREAD_ID").ok(),
+        env::var("ANTIGRAVITY_CONVERSATION_ID").ok(),
     ]
     .into_iter()
     .flatten()
+    .filter(|id| !id.is_empty())
     {
         where_sql += " and m.session_id != ?";
         values.push(id.into());
@@ -481,7 +846,12 @@ pub fn run(root: &Path, args: &Args) -> Result<()> {
     let mut db = Connection::open(root.join("sessions.sqlite"))?;
     db.busy_timeout(StdDuration::from_secs(30))?;
     initialize(&db)?;
-    refresh_sources(&mut db, &source_dirs()?, &codex_source_dirs()?)?;
+    refresh_sources(
+        &mut db,
+        &source_dirs()?,
+        &codex_source_dirs()?,
+        &antigravity_source_dirs()?,
+    )?;
     let mut stmt = db.prepare(&format!("select m.id, m.session_id, m.role, m.ts, snippet(messages_fts, 0, '[', ']', '…', 40)
         from messages_fts join messages m on m.id = messages_fts.rowid where messages_fts match ?{where_sql} order by bm25(messages_fts), m.ts, m.id"))?;
     let hits = stmt.query_map(params_from_iter(values), |r| {
@@ -524,7 +894,7 @@ pub fn run(root: &Path, args: &Args) -> Result<()> {
             [&id],
             |r| r.get(0),
         )?;
-        let label = transcript::harness_label(&harness, &originator);
+        let label = harness_label(&harness, &originator);
         println!(
             "session {}  ({label}, {}, {}..{}, {})",
             clean(&id, usize::MAX),
@@ -623,17 +993,23 @@ mod tests {
             Path::new(""),
         ])?;
         assert_eq!(
-            resolve_source_dirs(Some(&list), &missing)?,
+            resolve_source_dirs(Some(&list), std::slice::from_ref(&missing))?,
             vec![fs::canonicalize(&first)?, fs::canonicalize(&second)?]
         );
         for value in [None, Some(OsStr::new(""))] {
             assert_eq!(
-                resolve_source_dirs(value, &alias)?,
+                resolve_source_dirs(value, std::slice::from_ref(&alias))?,
                 vec![fs::canonicalize(&first)?]
             );
-            assert!(resolve_source_dirs(value, &missing)?.is_empty());
+            assert!(resolve_source_dirs(value, std::slice::from_ref(&missing))?.is_empty());
+            assert_eq!(
+                resolve_source_dirs(value, &[missing.clone(), second.clone(), alias.clone()])?,
+                vec![fs::canonicalize(&second)?, fs::canonicalize(&first)?]
+            );
         }
-        assert!(resolve_source_dirs(Some(OsStr::new("::")), &first)?.is_empty());
+        assert!(
+            resolve_source_dirs(Some(OsStr::new("::")), std::slice::from_ref(&first))?.is_empty()
+        );
         Ok(())
     }
 
@@ -657,7 +1033,7 @@ mod tests {
         symlink(first.join("gone"), second.join("dangling-project"))?;
         symlink(project.join("gone.jsonl"), project.join("dangling.jsonl"))?;
         let list = env::join_paths([&first, &second])?;
-        let dirs = resolve_source_dirs(Some(&list), &first)?;
+        let dirs = resolve_source_dirs(Some(&list), std::slice::from_ref(&first))?;
         assert_eq!(
             transcript_paths(&second)?,
             vec![fs::canonicalize(&transcript)?; 2]
@@ -755,7 +1131,7 @@ mod tests {
         let mut db = Connection::open_in_memory()?;
         initialize(&db)?;
         for _ in 0..2 {
-            refresh_sources(&mut db, &[], std::slice::from_ref(&tmp.0))?;
+            refresh_sources(&mut db, &[], std::slice::from_ref(&tmp.0), &[])?;
         }
         assert_eq!(
             db.query_row("select count(*) from messages", [], |r| r.get::<_, i64>(0))?,
@@ -773,13 +1149,13 @@ mod tests {
         let mut file = fs::OpenOptions::new().append(true).open(&path)?;
         let next = serde_json::json!({"type":"response_item", "timestamp":"2026-11-20T12:00:00Z", "payload":{"type":"message", "role":"assistant", "content":[{"type":"output_text","text":"incrementaluniqueword"}]}});
         write!(file, "{next}")?;
-        refresh_sources(&mut db, &[], std::slice::from_ref(&tmp.0))?;
+        refresh_sources(&mut db, &[], std::slice::from_ref(&tmp.0), &[])?;
         assert_eq!(
             db.query_row("select count(*) from messages", [], |r| r.get::<_, i64>(0))?,
             3
         );
         writeln!(file)?;
-        refresh_sources(&mut db, &[], std::slice::from_ref(&tmp.0))?;
+        refresh_sources(&mut db, &[], std::slice::from_ref(&tmp.0), &[])?;
         assert_eq!(
             db.query_row("select count(*) from messages", [], |r| r.get::<_, i64>(0))?,
             4
@@ -812,13 +1188,13 @@ mod tests {
             // Format 2 marked these files fully consumed without indexing them.
             let (mtime, size) = index::stamp(&skipped_path.metadata()?);
             db.execute(
-                "insert into transcripts values (?,?,?,?)",
+                "insert into transcripts(path, offset, size, mtime_ns) values (?,?,?,?)",
                 params![skipped_path.to_str(), size, size, mtime],
             )?;
         }
         db.execute_batch("update state set value=2 where key='index_format'; alter table messages drop column originator; alter table messages drop column source;")?;
         initialize(&db)?;
-        refresh_sources(&mut db, &[], std::slice::from_ref(&tmp.0))?;
+        refresh_sources(&mut db, &[], std::slice::from_ref(&tmp.0), &[])?;
         assert_eq!(
             db.query_row("select count(*) from messages", [], |r| r.get::<_, i64>(0))?,
             10
@@ -883,7 +1259,7 @@ mod tests {
             initialize(&db)?;
             db.execute_batch("insert into messages(uuid, text) values ('cli', 'uniqueword'), ('sdk-cli', 'uniqueword');")?;
             db.execute(
-                "insert into transcripts values (?, ?, ?, ?)",
+                "insert into transcripts(path, offset, size, mtime_ns) values (?, ?, ?, ?)",
                 params![path.to_str(), size, size, mtime],
             )?;
             if let Some(version) = version {
@@ -996,6 +1372,720 @@ mod tests {
         );
         Ok(())
     }
+    fn antigravity_step(step: u64, kind: &str, status: &str, extra: Value) -> String {
+        let mut value = serde_json::json!({
+            "step_index": step, "source": "MODEL", "type": kind, "status": status,
+            "created_at": format!("2026-11-26T11:{:02}:00Z", step % 60),
+        });
+        for (key, field) in extra.as_object().unwrap() {
+            value[key] = field.clone();
+        }
+        format!("{value}\n")
+    }
+
+    fn antigravity_fixture() -> String {
+        let prompt = "<USER_REQUEST>\nfix the zephyrprompt lattice\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: metadatanoise.\n</ADDITIONAL_METADATA>\n<USER_SETTINGS_CHANGE>\nsettingsnoise\n</USER_SETTINGS_CHANGE>\nThe following is a <SYSTEM_MESSAGE> not actually sent by the user. preamblenoise\n\n<SYSTEM_MESSAGE>\nhooknoise reminder\n</SYSTEM_MESSAGE>";
+        [
+            antigravity_step(0, "USER_INPUT", "DONE", serde_json::json!({"content": prompt})),
+            antigravity_step(1, "PLANNER_RESPONSE", "DONE", serde_json::json!({
+                "content": "zephyranswer prose with token sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789",
+                "thinking": "thinkingonly", "tool_calls": [{"name": "run_command", "args": {"CommandLine": "toolcallonly"}}]
+            })),
+            antigravity_step(2, "GENERIC", "DONE", serde_json::json!({"content": "genericonly output"})),
+            antigravity_step(3, "SYSTEM_MESSAGE", "DONE", serde_json::json!({"content": "systemrowonly"})),
+            antigravity_step(4, "PLANNER_RESPONSE", "ERROR", serde_json::json!({"content": "erroredonly"})),
+            antigravity_step(5, "PLANNER_RESPONSE", "RUNNING", serde_json::json!({"content": "runningonly"})),
+            antigravity_step(6, "PLANNER_RESPONSE", "DONE", serde_json::json!({"content": "", "tool_calls": []})),
+            "{\"step_index\": 7, \"type\": \"USER_INPUT\", \"content\": \"malformedonly\n".into(),
+        ]
+        .concat()
+    }
+
+    fn brain(
+        root: &Path,
+        app: &str,
+        conversation: &str,
+        cwd: Option<&str>,
+        text: &str,
+    ) -> Result<PathBuf> {
+        let brain = root.join(app).join("brain");
+        let logs = brain.join(conversation).join(".system_generated/logs");
+        fs::create_dir_all(&logs)?;
+        fs::write(logs.join("transcript.jsonl"), text)?;
+        if let Some(cwd) = cwd {
+            let cache = root.join(app).join("cache");
+            fs::create_dir_all(&cache)?;
+            let path = cache.join("conversation_metadata.json");
+            let mut value: Value = fs::read(&path)
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+                .unwrap_or_else(|| serde_json::json!({"conversations": {}}));
+            value["conversations"][conversation] = serde_json::json!({
+                "summary": {"ID": conversation, "WorkspaceURIs": [format!("file://{cwd}")]}
+            });
+            fs::write(path, value.to_string())?;
+        }
+        Ok(brain)
+    }
+
+    fn count(db: &Connection, sql: &str) -> Result<i64> {
+        Ok(db.query_row(sql, [], |r| r.get(0))?)
+    }
+
+    #[test]
+    fn antigravity_prompt_keeps_user_text_without_injections() {
+        let preamble = format!("{SYSTEM_PREAMBLE} It is provided by the system.");
+        let tail = format!(
+            "\r\n<ADDITIONAL_METADATA>\r\nmeta\r\n</ADDITIONAL_METADATA>\r\n<USER_SETTINGS_CHANGE>\nsettings\n</USER_SETTINGS_CHANGE>\n{preamble}\n\n<SYSTEM_MESSAGE>\nhook\n</SYSTEM_MESSAGE>\n"
+        );
+        for (body, expected) in [
+            // Literal and nested envelope tags the user wrote stay in the text.
+            (
+                "beforeword <USER_REQUEST>literalword</USER_REQUEST> afterword",
+                "beforeword <USER_REQUEST>literalword</USER_REQUEST> afterword",
+            ),
+            ("a </USER_REQUEST> b", "a </USER_REQUEST> b"),
+            // Injection-looking tags and quoted preambles inside the request too.
+            (
+                "Explain this XML: <SYSTEM_MESSAGE>payloadword</SYSTEM_MESSAGE> tailword",
+                "Explain this XML: <SYSTEM_MESSAGE>payloadword</SYSTEM_MESSAGE> tailword",
+            ),
+            (
+                "코드 예시:\r\n<ADDITIONAL_METADATA>\r\n메타 ✓\r\n</ADDITIONAL_METADATA>\r\n",
+                "코드 예시:\r\n<ADDITIONAL_METADATA>\r\n메타 ✓\r\n</ADDITIONAL_METADATA>",
+            ),
+            (
+                "quote:\n\"The following is a <SYSTEM_MESSAGE> not actually sent by the user.\"\n<USER_SETTINGS_CHANGE>x</USER_SETTINGS_CHANGE>\nend",
+                "quote:\n\"The following is a <SYSTEM_MESSAGE> not actually sent by the user.\"\n<USER_SETTINGS_CHANGE>x</USER_SETTINGS_CHANGE>\nend",
+            ),
+            // A request ending in a literal injected block keeps it.
+            (
+                "check\n<SYSTEM_MESSAGE>x</SYSTEM_MESSAGE>",
+                "check\n<SYSTEM_MESSAGE>x</SYSTEM_MESSAGE>",
+            ),
+        ] {
+            let content = format!("<USER_REQUEST>\r\n{body}\r\n</USER_REQUEST>{tail}");
+            assert_eq!(antigravity_prompt(&content), expected, "{content:?}");
+            // A leading injected block before the envelope is skipped too.
+            let leading = format!("<ADDITIONAL_METADATA>m</ADDITIONAL_METADATA>\n{content}");
+            assert_eq!(antigravity_prompt(&leading), expected);
+        }
+        // Several top-level requests are not guessed apart: nothing is dropped.
+        assert_eq!(
+            antigravity_prompt(
+                "<USER_REQUEST>one</USER_REQUEST>\n<USER_REQUEST>two</USER_REQUEST>"
+            ),
+            "one</USER_REQUEST>\n<USER_REQUEST>two"
+        );
+        // A truncated step keeps everything after the opening tag.
+        assert_eq!(
+            antigravity_prompt("<USER_REQUEST>\ntruncated <SYSTEM_MESSAGE>x</SYSTEM_MESSAGE> 끝"),
+            "truncated <SYSTEM_MESSAGE>x</SYSTEM_MESSAGE> 끝"
+        );
+        // So does a step truncated inside its trailing metadata.
+        assert_eq!(
+            antigravity_prompt(
+                "<USER_REQUEST>done</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current"
+            ),
+            "done"
+        );
+        // Without the envelope, only the trailing run of injected blocks goes.
+        assert_eq!(
+            antigravity_prompt(&format!(
+                "plain <SYSTEM_MESSAGE>kept</SYSTEM_MESSAGE> words{tail}"
+            )),
+            "plain <SYSTEM_MESSAGE>kept</SYSTEM_MESSAGE> words"
+        );
+        assert_eq!(
+            antigravity_prompt("see <SYSTEM_MESSAGE> tag"),
+            "see <SYSTEM_MESSAGE> tag"
+        );
+        assert_eq!(antigravity_prompt(&tail), "");
+        assert_eq!(
+            antigravity_prompt("<ADDITIONAL_METADATA>x</ADDITIONAL_METADATA>"),
+            ""
+        );
+    }
+
+    #[test]
+    fn antigravity_steps_index_only_finished_prose() {
+        let meta = Antigravity {
+            conversation: "conv".into(),
+            cwd: "/repos/demo".into(),
+        };
+        let messages: Vec<_> = antigravity_fixture()
+            .lines()
+            .filter_map(|line| parse_antigravity(&meta, line.as_bytes()))
+            .collect();
+        assert_eq!(
+            messages
+                .iter()
+                .map(|m| (m.role.as_str(), m.uuid.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("user", "antigravity:conv:0"),
+                ("assistant", "antigravity:conv:1")
+            ]
+        );
+        assert_eq!(messages[0].text, "fix the zephyrprompt lattice");
+        assert!(messages[1].text.contains("[REDACTED]"));
+        assert!(!messages[1].text.contains("sk-ant-api03"));
+        for m in &messages {
+            assert_eq!(
+                (m.harness.as_str(), m.originator.as_str()),
+                ("antigravity", "")
+            );
+            assert_eq!((m.project.as_str(), m.branch.as_str()), ("demo", ""));
+            assert_eq!(m.session_id, "conv");
+        }
+        assert_eq!(messages[0].ts, "2026-11-26T11:00:00.000Z");
+        assert_eq!(messages[1].ts, "2026-11-26T11:01:00.000Z");
+        let unknown = Antigravity {
+            conversation: String::new(),
+            cwd: String::new(),
+        };
+        assert!(
+            antigravity_fixture()
+                .lines()
+                .all(|line| parse_antigravity(&unknown, line.as_bytes()).is_none())
+        );
+    }
+
+    #[test]
+    fn antigravity_orca_detection_and_labels() {
+        for (cwd, orca) in [
+            ("/home/u/.orca/bots/bot-2", true),
+            ("/home/u/orca/workspaces/nixos-config/item", true),
+            ("/home/u/nixos-config", false),
+            ("/home/u/orca", false),
+            ("", false),
+        ] {
+            let meta = Antigravity {
+                conversation: "c".into(),
+                cwd: cwd.into(),
+            };
+            assert_eq!(meta.originator() == ANTIGRAVITY_ORCA, orca, "{cwd}");
+            let label = harness_label("antigravity", meta.originator());
+            assert_eq!(
+                label,
+                if orca {
+                    "antigravity/orca"
+                } else {
+                    "antigravity"
+                }
+            );
+        }
+        assert_eq!(harness_label("codex", "orca_desktop"), "codex/orca");
+        assert_eq!(harness_label("codex", ANTIGRAVITY_ORCA), "codex");
+        assert_eq!(harness_label("claude", ""), "claude");
+        assert_eq!(
+            file_uri_path("file:///a%20b/%E2%9C%93").as_deref(),
+            Some("/a b/✓")
+        );
+        assert_eq!(
+            file_uri_path("file:///bad%zz%").as_deref(),
+            Some("/bad%zz%")
+        );
+        assert_eq!(file_uri_path("https://x"), None);
+        assert_eq!(
+            file_uri_path("file://localhost/srv/repo").as_deref(),
+            Some("/srv/repo")
+        );
+        assert_eq!(
+            file_uri_path("file://LOCALHOST/srv/repo").as_deref(),
+            Some("/srv/repo")
+        );
+        assert_eq!(file_uri_path("file://remotehost/srv/repo"), None);
+        assert_eq!(file_uri_path("file://localhost"), None);
+        assert_eq!(file_uri_path("file:///bad%FFutf8"), None);
+        assert_eq!(file_uri_path("file:///half%E2%9C"), None);
+        assert_eq!(
+            workspace(&serde_json::json!([
+                1,
+                "https://x",
+                "file://remotehost/a",
+                "file:///bad%FF",
+                "file:///first",
+                "file:///second"
+            ]))
+            .as_deref(),
+            Some("/first")
+        );
+        assert_eq!(
+            workspace(&serde_json::json!("file:///only")).as_deref(),
+            Some("/only")
+        );
+        assert_eq!(workspace(&serde_json::json!(["file://remotehost/a"])), None);
+        assert_eq!(workspace(&Value::Null), None);
+    }
+
+    #[test]
+    fn antigravity_discovery_skips_partial_conversations_and_dedups() -> Result<()> {
+        use std::os::unix::fs::symlink;
+        let tmp = TestDir::new()?;
+        let brain = brain(
+            &tmp.0,
+            "antigravity-cli",
+            "conv-a",
+            Some("/home/u/.orca/bots/bot"),
+            &antigravity_fixture(),
+        )?;
+        fs::create_dir_all(brain.join("no-logs/.system_generated"))?;
+        fs::create_dir_all(brain.join("dir-transcript/.system_generated/logs/transcript.jsonl"))?;
+        fs::write(brain.join("stray-file"), "x")?;
+        symlink(brain.join("gone"), brain.join("dangling"))?;
+        let paths = antigravity_paths(&brain)?;
+        assert_eq!(paths.len(), 1);
+        assert_eq!(
+            paths[0].1,
+            Antigravity {
+                conversation: "conv-a".into(),
+                cwd: "/home/u/.orca/bots/bot".into()
+            }
+        );
+        assert!(antigravity_paths(&tmp.0.join("missing"))?.is_empty());
+        // The same brain listed twice through a symlink is read once.
+        symlink(&brain, tmp.0.join("alias"))?;
+        let mut db = Connection::open_in_memory()?;
+        initialize(&db)?;
+        refresh_sources(&mut db, &[], &[], &[brain.clone(), tmp.0.join("alias")])?;
+        assert_eq!(count(&db, "select count(*) from transcripts")?, 1);
+        assert_eq!(
+            count(
+                &db,
+                "select count(*) from messages where harness='antigravity' and originator='orca' and project='bot'"
+            )?,
+            2
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn antigravity_incremental_index_and_curator_exclusion() -> Result<()> {
+        use std::io::Write;
+        let tmp = TestDir::new()?;
+        let brain = brain(
+            &tmp.0,
+            "antigravity-cli",
+            "conv-a",
+            Some("/repos/demo"),
+            &antigravity_fixture(),
+        )?;
+        let path = brain.join("conv-a/.system_generated/logs/transcript.jsonl");
+        let mut db = Connection::open_in_memory()?;
+        initialize(&db)?;
+        let dirs = [brain.clone()];
+        for _ in 0..2 {
+            refresh_sources(&mut db, &[], &[], &dirs)?;
+        }
+        assert_eq!(count(&db, "select count(*) from messages")?, 2);
+        for word in ["zephyrprompt", "zephyranswer"] {
+            assert_eq!(
+                count(
+                    &db,
+                    &format!("select count(*) from messages_fts where messages_fts match '{word}'")
+                )?,
+                1
+            );
+        }
+        for word in [
+            "thinkingonly",
+            "toolcallonly",
+            "genericonly",
+            "systemrowonly",
+            "erroredonly",
+            "runningonly",
+            "malformedonly",
+            "hooknoise",
+            "preamblenoise",
+            "metadatanoise",
+            "settingsnoise",
+            "abcdefghijklmnopqrstuvwxyz0123456789",
+        ] {
+            assert_eq!(
+                count(
+                    &db,
+                    &format!("select count(*) from messages_fts where messages_fts match '{word}'")
+                )?,
+                0,
+                "{word}"
+            );
+        }
+        // A partial line is retried once it is complete.
+        let mut file = fs::OpenOptions::new().append(true).open(&path)?;
+        let next = antigravity_step(
+            8,
+            "PLANNER_RESPONSE",
+            "DONE",
+            serde_json::json!({"content": "incrementalantigravity"}),
+        );
+        write!(file, "{}", next.trim_end())?;
+        refresh_sources(&mut db, &[], &[], &dirs)?;
+        assert_eq!(count(&db, "select count(*) from messages")?, 2);
+        writeln!(file)?;
+        refresh_sources(&mut db, &[], &[], &dirs)?;
+        assert_eq!(
+            count(
+                &db,
+                "select count(*) from messages_fts where messages_fts match 'incrementalantigravity'"
+            )?,
+            1
+        );
+        // Curator runs: by first-prompt marker inside USER_REQUEST, or by workspace.
+        let marker = format!(
+            "<USER_REQUEST>\n{}\ncuratorprompt\n</USER_REQUEST>",
+            transcript::CURATOR_MARKER
+        );
+        let curator = [
+            antigravity_step(
+                0,
+                "USER_INPUT",
+                "DONE",
+                serde_json::json!({"content": marker}),
+            ),
+            antigravity_step(
+                1,
+                "PLANNER_RESPONSE",
+                "DONE",
+                serde_json::json!({"content": "curatoranswer"}),
+            ),
+        ]
+        .concat();
+        brain_at(&brain, "conv-curator", &curator)?;
+        let cache =
+            crate::env_path("XDG_CACHE_HOME").unwrap_or_else(|| crate::home().join(".cache"));
+        let curator_cwd = cache.join("wiki-curator/worktree");
+        let other = super::tests::brain(
+            &tmp.0,
+            "antigravity-cli",
+            "conv-cwd",
+            curator_cwd.to_str(),
+            &antigravity_fixture().replace("zephyr", "curatorcwd"),
+        )?;
+        assert_eq!(other, brain);
+        // A later quotation of the marker does not exclude a normal conversation.
+        let quoted = [
+            antigravity_step(
+                0,
+                "USER_INPUT",
+                "DONE",
+                serde_json::json!({"content": "<USER_REQUEST>normal quotedmarker</USER_REQUEST>"}),
+            ),
+            antigravity_step(
+                1,
+                "USER_INPUT",
+                "DONE",
+                serde_json::json!({"content": marker.replace("curatorprompt", "quotedtail")}),
+            ),
+        ]
+        .concat();
+        brain_at(&brain, "conv-quoted", &quoted)?;
+        refresh_sources(&mut db, &[], &[], &dirs)?;
+        for word in [
+            "curatorprompt",
+            "curatoranswer",
+            "curatorcwdprompt",
+            "curatorcwdanswer",
+        ] {
+            assert_eq!(
+                count(
+                    &db,
+                    &format!("select count(*) from messages_fts where messages_fts match '{word}'")
+                )?,
+                0,
+                "{word}"
+            );
+        }
+        assert_eq!(
+            count(
+                &db,
+                "select count(*) from messages where session_id='conv-quoted'"
+            )?,
+            2
+        );
+        // Removed conversations leave the index.
+        fs::remove_dir_all(brain.join("conv-a"))?;
+        refresh_sources(&mut db, &[], &[], &dirs)?;
+        assert_eq!(
+            count(
+                &db,
+                "select count(*) from messages where session_id='conv-a'"
+            )?,
+            0
+        );
+        Ok(())
+    }
+
+    fn write_metadata(brain: &Path, conversation: &str, uris: Value) -> Result<()> {
+        let cache = brain.parent().unwrap().join("cache");
+        fs::create_dir_all(&cache)?;
+        fs::write(
+            cache.join("conversation_metadata.json"),
+            serde_json::json!({"conversations": {conversation: {"summary": {"WorkspaceURIs": uris}}}})
+                .to_string(),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn antigravity_late_metadata_updates_rows_and_excludes_curator_runs() -> Result<()> {
+        let tmp = TestDir::new()?;
+        let brain = brain(
+            &tmp.0,
+            "antigravity-cli",
+            "late",
+            None,
+            &antigravity_fixture(),
+        )?;
+        let path = brain.join("late/.system_generated/logs/transcript.jsonl");
+        let stamp = index::stamp(&path.metadata()?);
+        let dirs = [brain.clone()];
+        let mut db = Connection::open_in_memory()?;
+        initialize(&db)?;
+        let rows = |db: &Connection| -> Result<Vec<(String, String, i64)>> {
+            Ok(db
+                .prepare("select project, originator, count(*) from messages where session_id='late' group by 1, 2")?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect::<rusqlite::Result<_>>()?)
+        };
+        refresh_sources(&mut db, &[], &[], &dirs)?;
+        assert_eq!(rows(&db)?, [(String::new(), String::new(), 2)]);
+        // Metadata appears later; the transcript itself is unchanged.
+        write_metadata(
+            &brain,
+            "late",
+            serde_json::json!(["file:///home/u/.orca/bots/bot-7"]),
+        )?;
+        refresh_sources(&mut db, &[], &[], &dirs)?;
+        assert_eq!(index::stamp(&path.metadata()?), stamp);
+        assert_eq!(rows(&db)?, [("bot-7".into(), ANTIGRAVITY_ORCA.into(), 2)]);
+        // It changes to a plain workspace.
+        write_metadata(
+            &brain,
+            "late",
+            serde_json::json!(["file://localhost/repos/plain"]),
+        )?;
+        refresh_sources(&mut db, &[], &[], &dirs)?;
+        assert_eq!(rows(&db)?, [("plain".into(), String::new(), 2)]);
+        // Then it reveals a curator worktree: indexed rows disappear at once.
+        let cache =
+            crate::env_path("XDG_CACHE_HOME").unwrap_or_else(|| crate::home().join(".cache"));
+        let curator = cache.join("wiki-curator/worktree");
+        write_metadata(
+            &brain,
+            "late",
+            serde_json::json!([format!("file://{}", curator.display())]),
+        )?;
+        refresh_sources(&mut db, &[], &[], &dirs)?;
+        assert!(rows(&db)?.is_empty());
+        assert_eq!(
+            count(
+                &db,
+                "select count(*) from messages_fts where messages_fts match 'zephyrprompt'"
+            )?,
+            0
+        );
+        refresh_sources(&mut db, &[], &[], &dirs)?;
+        assert!(rows(&db)?.is_empty());
+        // A corrected cache brings the conversation back without --reindex.
+        write_metadata(&brain, "late", serde_json::json!(["file:///repos/back"]))?;
+        refresh_sources(&mut db, &[], &[], &dirs)?;
+        assert_eq!(rows(&db)?, [("back".into(), String::new(), 2)]);
+        // A removed cache clears the workspace again.
+        fs::remove_file(
+            tmp.0
+                .join("antigravity-cli/cache/conversation_metadata.json"),
+        )?;
+        refresh_sources(&mut db, &[], &[], &dirs)?;
+        assert_eq!(rows(&db)?, [(String::new(), String::new(), 2)]);
+        Ok(())
+    }
+
+    #[test]
+    fn antigravity_running_steps_duplicates_and_late_curator_marker() -> Result<()> {
+        use std::io::Write;
+        let tmp = TestDir::new()?;
+        let first = antigravity_step(
+            0,
+            "USER_INPUT",
+            "DONE",
+            serde_json::json!({"content": "<USER_REQUEST>steady prompt</USER_REQUEST>"}),
+        );
+        let brain = brain(&tmp.0, "antigravity-cli", "steps", None, &first)?;
+        let path = brain.join("steps/.system_generated/logs/transcript.jsonl");
+        let dirs = [brain.clone()];
+        let mut db = Connection::open_in_memory()?;
+        initialize(&db)?;
+        let append = |text: String| -> Result<()> {
+            fs::OpenOptions::new()
+                .append(true)
+                .open(&path)?
+                .write_all(text.as_bytes())?;
+            Ok(())
+        };
+        append(antigravity_step(
+            1,
+            "PLANNER_RESPONSE",
+            "RUNNING",
+            serde_json::json!({"content": "draftword"}),
+        ))?;
+        refresh_sources(&mut db, &[], &[], &dirs)?;
+        assert_eq!(
+            count(
+                &db,
+                "select count(*) from messages where session_id='steps'"
+            )?,
+            1
+        );
+        append(antigravity_step(
+            1,
+            "PLANNER_RESPONSE",
+            "DONE",
+            serde_json::json!({"content": "finalword"}),
+        ))?;
+        // A repeated completed step keeps the first completed copy.
+        append(antigravity_step(
+            1,
+            "PLANNER_RESPONSE",
+            "DONE",
+            serde_json::json!({"content": "duplicateword"}),
+        ))?;
+        refresh_sources(&mut db, &[], &[], &dirs)?;
+        assert_eq!(
+            count(
+                &db,
+                "select count(*) from messages where session_id='steps'"
+            )?,
+            2
+        );
+        for (word, n) in [("draftword", 0), ("finalword", 1), ("duplicateword", 0)] {
+            assert_eq!(
+                count(
+                    &db,
+                    &format!("select count(*) from messages_fts where messages_fts match '{word}'")
+                )?,
+                n,
+                "{word}"
+            );
+        }
+        // A curator conversation whose rows arrive after it was first excluded.
+        let marker = format!(
+            "<USER_REQUEST>\n{}\ncuratorword\n</USER_REQUEST>",
+            transcript::CURATOR_MARKER
+        );
+        brain_at(
+            &brain,
+            "curator",
+            &antigravity_step(
+                0,
+                "USER_INPUT",
+                "DONE",
+                serde_json::json!({"content": marker}),
+            ),
+        )?;
+        refresh_sources(&mut db, &[], &[], &dirs)?;
+        fs::OpenOptions::new()
+            .append(true)
+            .open(brain.join("curator/.system_generated/logs/transcript.jsonl"))?
+            .write_all(
+                antigravity_step(
+                    1,
+                    "PLANNER_RESPONSE",
+                    "DONE",
+                    serde_json::json!({"content": "curatorlateword"}),
+                )
+                .as_bytes(),
+            )?;
+        refresh_sources(&mut db, &[], &[], &dirs)?;
+        assert_eq!(
+            count(
+                &db,
+                "select count(*) from messages where session_id='curator'"
+            )?,
+            0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn antigravity_inaccessible_sources_are_skipped() -> Result<()> {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let tmp = TestDir::new()?;
+        let text = antigravity_fixture();
+        let readable = brain(&tmp.0, "readable", "ok", None, &text)?;
+        let locked_root = brain(&tmp.0, "locked-root", "hidden-root", None, &text)?;
+        let blocked = brain(&tmp.0, "blocked", "ok-too", None, &text)?;
+        for conversation in ["conv-dir", "logs-dir", "file"] {
+            brain_at(&blocked, conversation, &text)?;
+        }
+        // A symlinked alias of a conversation directory is the same conversation.
+        symlink(blocked.join("ok-too"), blocked.join("alias"))?;
+        let locked = [
+            locked_root.clone(),
+            blocked.join("conv-dir"),
+            blocked.join("logs-dir/.system_generated/logs"),
+            blocked.join("file/.system_generated/logs/transcript.jsonl"),
+        ];
+        for path in &locked {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o000))?;
+        }
+        let restore = || {
+            for path in &locked {
+                let mode = if path.is_file() { 0o644 } else { 0o755 };
+                let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
+            }
+        };
+        // root ignores permission bits; there is nothing to exercise then.
+        if File::open(&locked[3]).is_ok() {
+            restore();
+            return Ok(());
+        }
+        let result = (|| -> Result<()> {
+            let list = env::join_paths([
+                &readable,
+                &locked_root,
+                &blocked,
+                &locked_root.join("below"),
+            ])?;
+            let dirs = resolve_dirs(|err| accessible::<()>(Err(err)), Some(&list), &[])?;
+            assert_eq!(dirs.len(), 3);
+            let found: Vec<_> = dirs
+                .iter()
+                .map(|dir| antigravity_paths(dir))
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .flatten()
+                .map(|(_, meta)| meta.conversation)
+                .collect();
+            // The alias is listed under the real name; refresh keeps one copy.
+            assert_eq!(found, ["ok", "ok-too", "ok-too"]);
+            let mut db = Connection::open_in_memory()?;
+            initialize(&db)?;
+            refresh_sources(&mut db, &[], &[], &dirs)?;
+            assert_eq!(
+                count(&db, "select count(distinct session_id) from messages")?,
+                2
+            );
+            assert_eq!(
+                count(
+                    &db,
+                    "select count(*) from messages where session_id = 'alias'"
+                )?,
+                0
+            );
+            Ok(())
+        })();
+        restore();
+        result
+    }
+
+    fn brain_at(brain: &Path, conversation: &str, text: &str) -> Result<()> {
+        let logs = brain.join(conversation).join(".system_generated/logs");
+        fs::create_dir_all(&logs)?;
+        fs::write(logs.join("transcript.jsonl"), text)?;
+        Ok(())
+    }
+
     #[test]
     fn absolute_and_relative_dates() -> Result<()> {
         let now = "2026-09-16T12:00:00Z".parse::<DateTime<Utc>>()?;
