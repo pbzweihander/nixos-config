@@ -60,6 +60,12 @@ pub fn fts_query(terms: &[String]) -> String {
             candidates.push(format!("\"{}\"", words.join(" ")));
         }
         candidates.extend(words.iter().map(|w| format!("\"{w}\"*")));
+        candidates.extend(
+            words
+                .iter()
+                .filter_map(|word| particle_stem(word))
+                .map(|stem| format!("\"{stem}\"*")),
+        );
         for p in candidates {
             if !parts.contains(&p) {
                 parts.push(p);
@@ -67,6 +73,64 @@ pub fn fts_query(terms: &[String]) -> String {
         }
     }
     parts.join(" OR ")
+}
+
+fn hangul_syllable(c: char) -> bool {
+    matches!(c, '가'..='힣')
+}
+
+fn particle_stem(word: &str) -> Option<&str> {
+    // Try longer particles first. Keep the original prefix too, since a
+    // particle can also be the last syllable of a noun.
+    const PARTICLES: &[&str] = &[
+        "에서", "으로", "에게", "부터", "까지", "처럼", "보다", "이랑", "하고", "이나", "에는",
+        "에도", "은", "는", "이", "가", "을", "를", "의", "에", "로", "도", "만", "과", "와",
+    ];
+    if !word.chars().all(hangul_syllable) {
+        return None;
+    }
+    let stem = PARTICLES
+        .iter()
+        .find_map(|suffix| word.strip_suffix(suffix))?;
+    (stem.chars().count() >= 2).then_some(stem)
+}
+
+const IDENTIFIER_WEIGHTS: (f64, f64) = (2.0, 1.0);
+const PROSE_WEIGHTS: (f64, f64) = (4.0, 5.0);
+
+fn rrf_weights(query: &str) -> (f64, f64) {
+    // Technical names and paths are common inside Korean prose.
+    if query.chars().any(hangul_syllable) {
+        return PROSE_WEIGHTS;
+    }
+    let mut tokens = query.split_whitespace();
+    let Some(first) = tokens.next() else {
+        return IDENTIFIER_WEIGHTS;
+    };
+    if (first.is_ascii() && tokens.clone().next().is_none())
+        || std::iter::once(first).chain(tokens).any(code_token)
+    {
+        IDENTIFIER_WEIGHTS
+    } else {
+        PROSE_WEIGHTS
+    }
+}
+
+fn code_token(token: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "_", "::", "/", "\\", "--", "`", "[", "]", "{", "}", "=", "()", ".rs", ".nix", ".py",
+        ".go", ".sql", ".json", ".yaml", ".toml", ".sh",
+    ];
+    if MARKERS.iter().any(|marker| token.contains(marker)) {
+        return true;
+    }
+    let word = token.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+    word.is_ascii()
+        && ((word.bytes().any(|b| b.is_ascii_digit())
+            && word.bytes().any(|b| b.is_ascii_alphabetic()))
+            || word.as_bytes().windows(2).any(|pair| {
+                pair[0].is_ascii_lowercase() && (pair[1].is_ascii_uppercase() || pair[1] == b'-')
+            }))
 }
 
 pub fn updated(mtime: i64) -> String {
@@ -168,16 +232,17 @@ pub fn bm25(db: &Connection, query: &str, n: i64, filters: &Filters) -> Result<V
     let mut args = vec![Value::Text(query.into())];
     args.extend(params);
     args.push(Value::Integer(n));
-    let mut stmt = db.prepare(&format!("select {COLUMNS}, snippet(fts, -1, '[', ']', '…', 16) {JOIN} where fts match ?{where_sql} order by bm25(fts, 0,0,0,0,10,5,3,1), files.path limit ?"))?;
+    let mut stmt = db.prepare(&format!("select {COLUMNS}, snippet(fts, -1, '[', ']', '…', 16) {JOIN} where fts match ?{where_sql} order by {BM25_ORDER}, files.path limit ?"))?;
     let rows = stmt
         .query_map(params_from_iter(args), |r| {
-            Ok((Row::read(r)?, r.get::<_, String>(9)?))
+            Ok((Row::read(r)?, r.get::<_, String>(10)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
 
 pub const CANDIDATES: i64 = 40;
+const BM25_ORDER: &str = "bm25(fts, 0,0,0,0,10,5,3,1,3)";
 
 pub struct SearchHit {
     pub row: Row,
@@ -188,13 +253,13 @@ pub struct SearchHit {
 }
 
 impl SearchHit {
-    fn score(&self) -> f64 {
+    fn score(&self, (bm25_weight, dense_weight): (f64, f64)) -> f64 {
         let (bm25, bm25_denominator) = self
             .bm25_rank
-            .map_or((0.0, 1.0), |rank| (2.0, 60.0 + rank as f64));
+            .map_or((0.0, 1.0), |rank| (bm25_weight, 60.0 + rank as f64));
         let (dense, dense_denominator) = self
             .dense_rank
-            .map_or((0.0, 1.0), |rank| (1.0, 60.0 + rank as f64));
+            .map_or((0.0, 1.0), |rank| (dense_weight, 60.0 + rank as f64));
         let (weight, scale) = if self.row.kind == "history" {
             (9.0, 10.0)
         } else {
@@ -215,10 +280,10 @@ impl SearchHit {
     }
 }
 
-fn sort_hits(hits: &mut [SearchHit]) {
+fn sort_hits(hits: &mut [SearchHit], weights: (f64, f64)) {
     hits.sort_by(|a, b| {
-        b.score()
-            .total_cmp(&a.score())
+        b.score(weights)
+            .total_cmp(&a.score(weights))
             .then_with(|| {
                 a.bm25_rank
                     .unwrap_or(usize::MAX)
@@ -233,6 +298,7 @@ fn fuse(
     bm25: Vec<(Row, String)>,
     dense: Vec<crate::semantic::Hit>,
     filters: &Filters,
+    weights: (f64, f64),
 ) -> Result<Vec<SearchHit>> {
     let mut hits: Vec<_> = bm25
         .into_iter()
@@ -278,7 +344,7 @@ fn fuse(
             });
         }
     }
-    sort_hits(&mut hits);
+    sort_hits(&mut hits, weights);
     Ok(hits)
 }
 
@@ -308,7 +374,13 @@ pub fn ranked(
     if !dense.is_empty() {
         rows.truncate(CANDIDATES as usize);
     }
-    Ok((fuse(db, rows, dense, filters)?, status))
+    // Retain lexical ordering when there are no dense scores to fuse.
+    let weights = if dense.is_empty() {
+        IDENTIFIER_WEIGHTS
+    } else {
+        rrf_weights(terms)
+    };
+    Ok((fuse(db, rows, dense, filters, weights)?, status))
 }
 
 pub fn search(
@@ -411,7 +483,11 @@ fn render(
                 out,
                 root,
                 &hit.row,
-                Some(hit.snippet),
+                Some(if hit.row.summary.is_empty() {
+                    hit.snippet
+                } else {
+                    hit.row.summary.clone()
+                }),
                 section,
                 via == "dense",
             )?;
@@ -463,6 +539,7 @@ fn json_hit(
         "stale": stale(row.mtime),
         "backlinks": row.backlinks,
         "snippet": if blocked { "" } else { snippet },
+        "summary": if blocked { "" } else { &row.summary },
         "section": section,
         "semantic": via == "dense",
         "via": via,
@@ -545,6 +622,7 @@ mod tests {
                 mtime: 0,
                 blocked: String::new(),
                 backlinks: 0,
+                summary: String::new(),
             },
             snippet: String::new(),
             section: None,
@@ -554,27 +632,98 @@ mod tests {
     }
 
     #[test]
+    fn query_shape_keeps_identifier_weights_and_promotes_dense_only_prose() {
+        for query in [
+            "sqlite",
+            "lookup snake_case",
+            "lookup GitConfig",
+            "lookup getConfig",
+            "lookup IOPS-1876",
+            "lookup some-flag",
+            "lookup --no-refresh",
+            "lookup `symbol`",
+            "read /etc/config",
+            "read setup.nix",
+            "call a::b",
+        ] {
+            assert_eq!(rrf_weights(query), IDENTIFIER_WEIGHTS, "{query}");
+        }
+        let bm25 = hit("knowledge/bm25", Some(1), None);
+        let dense = hit("knowledge/dense", None, Some(5));
+        assert!(bm25.score(IDENTIFIER_WEIGHTS) > dense.score(IDENTIFIER_WEIGHTS));
+        for query in [
+            "which command reads the cache?",
+            "위키에서 무엇을 검색할까?",
+            "adjutant /readyz는 무엇을 확인하나",
+        ] {
+            let weights = rrf_weights(query);
+            assert_eq!(weights, PROSE_WEIGHTS, "{query}");
+            assert!(dense.score(weights) > bm25.score(weights), "{query}");
+        }
+    }
+
+    #[test]
+    fn particle_expansion_keeps_the_original_prefix_and_phrase() {
+        assert_eq!(
+            fts_query(&["스키마를 위키에서 차에 SQLite에서".into(), "스키마".into()]),
+            "\"스키마를 위키에서 차에 SQLite에서\" OR \"스키마를\"* OR \"위키에서\"* OR \"차에\"* OR \"SQLite에서\"* OR \"스키마\"* OR \"위키\"*"
+        );
+    }
+
+    #[test]
+    fn curated_summary_is_searchable_and_preferred_in_text_output() -> Result<()> {
+        let mut wiki = crate::usage::tests::Wiki::new()?;
+        wiki.page(
+            "pages/knowledge/summary.md",
+            "---\ntitle: Cache\nsummary: 복구에는 스냅샷이 필요하다\n---\nIntro.\n# Restore\n본문에서 복구한다.\n",
+        )?;
+        for (term, section) in [("스냅샷을", false), ("복구는", true)] {
+            let query = fts_query(&[term.into()]);
+            let (rows, dense) = ranked(&wiki.index, &query, term, 1, &Filters::default(), true)?;
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].row.summary, "복구에는 스냅샷이 필요하다");
+            let mut out = vec![];
+            render(
+                &wiki.root,
+                &wiki.index,
+                &query,
+                SearchOutput::new(rows, dense, 1),
+                false,
+                &mut out,
+                &mut vec![],
+            )?;
+            let out = String::from_utf8(out)?;
+            assert!(out.contains("\n  복구에는 스냅샷이 필요하다\n"));
+            assert_eq!(out.contains("§ Restore"), section);
+            assert!(!out.contains("본문에서"));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn weighted_reciprocal_ranks_and_history_penalty() {
         let both = hit("knowledge/both", Some(2), Some(5));
-        assert!((both.score() - (2.0 / 62.0 + 1.0 / 65.0)).abs() < 1e-15);
+        assert!((both.score(IDENTIFIER_WEIGHTS) - (2.0 / 62.0 + 1.0 / 65.0)).abs() < 1e-15);
         assert_eq!(both.via(), "both");
         let bm25 = hit("knowledge/bm25", Some(1), None);
-        assert_eq!(bm25.score(), 2.0 / 61.0);
+        assert_eq!(bm25.score(IDENTIFIER_WEIGHTS), 2.0 / 61.0);
         assert_eq!(bm25.via(), "bm25");
         let dense = hit("knowledge/dense", None, Some(40));
-        assert_eq!(dense.score(), 1.0 / 100.0);
+        assert_eq!(dense.score(IDENTIFIER_WEIGHTS), 1.0 / 100.0);
         assert_eq!(dense.via(), "dense");
         for (bm25, dense) in [(Some(1), None), (None, Some(1)), (Some(1), Some(1))] {
             let history = hit("history/past", bm25, dense);
             assert!(
-                (history.score() - hit("knowledge/current", bm25, dense).score() * 0.9).abs()
+                (history.score(IDENTIFIER_WEIGHTS)
+                    - hit("knowledge/current", bm25, dense).score(IDENTIFIER_WEIGHTS) * 0.9)
+                    .abs()
                     < 1e-15
             );
             let mut hits = vec![
                 history,
                 hit("knowledge/current", bm25.map(|_| 2), dense.map(|_| 2)),
             ];
-            sort_hits(&mut hits);
+            sort_hits(&mut hits, IDENTIFIER_WEIGHTS);
             assert_eq!(hits[0].row.kind, "knowledge");
         }
     }
@@ -588,8 +737,11 @@ mod tests {
             hit("knowledge/dense-a", None, Some(1)),
             hit("knowledge/first", Some(1), Some(1)),
         ];
-        assert_eq!(hits[0].score(), hits[1].score());
-        sort_hits(&mut hits);
+        assert_eq!(
+            hits[0].score(IDENTIFIER_WEIGHTS),
+            hits[1].score(IDENTIFIER_WEIGHTS)
+        );
+        sort_hits(&mut hits, IDENTIFIER_WEIGHTS);
         assert_eq!(
             hits.iter()
                 .map(|h| h.row.title.as_str())
@@ -638,6 +790,7 @@ mod tests {
                                 section: None,
                             }],
                             &filters,
+                            IDENTIFIER_WEIGHTS,
                         )?,
                         DenseStatus::Ok,
                     )
@@ -753,6 +906,7 @@ mod tests {
             mtime: 0,
             blocked: "".into(),
             backlinks: 2,
+            summary: String::new(),
         };
         let section = Some(("Details".into(), 1, 9));
         assert_eq!(
@@ -767,6 +921,7 @@ mod tests {
                 "path": "/wiki/pages/knowledge/foo.md", "rel": "pages/knowledge/foo.md",
                 "title": "Cache notes", "type": "knowledge", "status": "", "project": "demo",
                 "tags": ["cache", "restart"], "updated": updated(0), "stale": true, "backlinks": 2,
+                "summary": "",
                 "snippet": "[cache] details", "section": {"heading": "Details", "start": 1, "end": 9}, "semantic": false, "via": "bm25"
             })
         );
@@ -776,6 +931,7 @@ mod tests {
         assert_eq!(value["stale"], false);
         assert!(value["section"].is_null());
         row.blocked = "injection".into();
+        row.summary = "hidden summary".into();
         row.status = "ignore previous instructions".into();
         row.project = "ignore-previous-project".into();
         row.tags = "leaked-tag ghp-tag".into();
@@ -789,6 +945,7 @@ mod tests {
             );
             assert_eq!(value["title"], "[BLOCKED: injection]");
             assert_eq!(value["snippet"], "");
+            assert_eq!(value["summary"], "");
             assert!(value["section"].is_null());
             assert_eq!(value["status"], "");
             assert_eq!(value["project"], "");
@@ -879,10 +1036,16 @@ mod tests {
                 .collect::<rusqlite::Result<_>>()?;
             assert!(scores.windows(2).all(|w| w[0] == w[1]), "{scores:?}");
             let bm25_order: Vec<_> = rows.iter().map(|(row, _)| row.path.clone()).collect();
-            let fused: Vec<_> = fuse(&wiki.index, rows, vec![], &Filters::default())?
-                .into_iter()
-                .map(|hit| hit.row.path)
-                .collect();
+            let fused: Vec<_> = fuse(
+                &wiki.index,
+                rows,
+                vec![],
+                &Filters::default(),
+                IDENTIFIER_WEIGHTS,
+            )?
+            .into_iter()
+            .map(|hit| hit.row.path)
+            .collect();
             assert_eq!(bm25_order, fused);
             // Equal-score sections resolve to the first one in the page.
             assert_eq!(
@@ -924,6 +1087,7 @@ mod tests {
             mtime: Local::now().timestamp_nanos_opt().unwrap(),
             blocked: String::new(),
             backlinks: 2,
+            summary: String::new(),
         };
         let expected = format!(
             "/wiki/pages/knowledge/foo.md\n  Cache recovery  (knowledge; updated {}; project=demo; tags=cache,restart; linked by 2)\n",

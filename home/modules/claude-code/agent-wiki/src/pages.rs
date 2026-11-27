@@ -682,6 +682,15 @@ fn prose_findings(body: &str) -> Vec<scan::Finding> {
 /// Longest one-line summary, in characters, that [`summary`] returns.
 pub const SUMMARY_CHARS: usize = 200;
 
+/// The safe, one-line frontmatter summary, with no fallback to body text.
+pub fn curated_summary(page: &Page) -> String {
+    if page.summary_blocked || page.blocked.is_some() {
+        return String::new();
+    }
+    // parse() already scans the complete decoded value and its one-line form.
+    truncate(&one_line(&page.summary), SUMMARY_CHARS)
+}
+
 /// One line describing the page: its `summary:` frontmatter value, otherwise the
 /// first prose paragraph or list item of the body, skipping headings, rules and
 /// code blocks. Whitespace runs collapse to one space, and a longer text is cut to
@@ -692,11 +701,10 @@ pub fn summary(page: &Page) -> String {
     if page.summary_blocked || page.blocked.is_some() {
         return String::new();
     }
-    let text = if page.summary.is_empty() {
-        first_paragraph(&page.body)
-    } else {
-        page.summary.clone()
-    };
+    if !page.summary.is_empty() {
+        return curated_summary(page);
+    }
+    let text = first_paragraph(&page.body);
     if !text_findings(&text).is_empty() {
         return String::new();
     }

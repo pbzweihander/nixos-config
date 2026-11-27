@@ -10,12 +10,12 @@ use std::{
 
 // Raise it whenever a page would be indexed differently, `files.blocked` included:
 // an unchanged page is not read again, so only a rebuild applies a new rule to it.
-// 7: any decoded frontmatter or joined paragraph finding blocks the whole page.
-const SCHEMA_VERSION: i64 = 7;
+// 8: index the validated frontmatter summary.
+const SCHEMA_VERSION: i64 = 8;
 /// A page not touched for this long is shown with `stale?`, as a reminder to check it
 /// against the code before relying on it.
 pub const STALE_DAYS: i64 = 30;
-pub const COLUMNS: &str = "fts.path, fts.type, fts.status, fts.title, fts.project, fts.tags, files.mtime_ns, files.blocked, (select count(*) from links where links.to_path = files.path) as backlinks";
+pub const COLUMNS: &str = "fts.path, fts.type, fts.status, fts.title, fts.project, fts.tags, files.mtime_ns, files.blocked, (select count(*) from links where links.to_path = files.path) as backlinks, coalesce(fts.summary, '')";
 pub const JOIN: &str = "from fts join files on files.id = fts.rowid";
 
 pub fn remove_index(root: &Path, name: &str) -> Result<()> {
@@ -81,7 +81,7 @@ fn initialize(db: &Connection) -> Result<()> {
             create index links_to_path on links(to_path);
             create virtual table fts using fts5(
                 path unindexed, type unindexed, created unindexed, status unindexed,
-                title, tags, project, body, tokenize = 'porter unicode61 remove_diacritics 2');
+                title, tags, project, body, summary, tokenize = 'porter unicode61 remove_diacritics 2');
             -- One row per markdown heading, so a hit can name the section and its lines
             -- instead of sending the reader to a page of several thousand characters.
             create table sections(id integer primary key, file_id integer not null,
@@ -221,8 +221,13 @@ pub fn refresh(root: &Path, db: &mut Connection) -> Result<()> {
             )?;
             tx.last_insert_rowid()
         };
-        tx.prepare_cached("insert into fts(rowid,path,type,created,status,title,tags,project,body) values (?,?,?,?,?,?,?,?,?)")?
-            .execute(params![id, rel, page.kind, page.created, page.status, page.title, page.tags, page.project, page.body])?;
+        let summary = if blocked.is_empty() {
+            pages::curated_summary(&page)
+        } else {
+            String::new()
+        };
+        tx.prepare_cached("insert into fts(rowid,path,type,created,status,title,tags,project,body,summary) values (?,?,?,?,?,?,?,?,?,?)")?
+            .execute(params![id, rel, page.kind, page.created, page.status, page.title, page.tags, page.project, page.body, summary])?;
         for target in page.links {
             tx.prepare_cached("insert into links(from_id, to_path) values (?, ?)")?
                 .execute(params![id, target])?;
@@ -255,6 +260,7 @@ pub struct Row {
     pub mtime: i64,
     pub blocked: String,
     pub backlinks: i64,
+    pub summary: String,
 }
 impl Row {
     pub fn read(r: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
@@ -268,6 +274,7 @@ impl Row {
             mtime: r.get(6)?,
             blocked: r.get(7)?,
             backlinks: r.get(8)?,
+            summary: r.get(9)?,
         })
     }
     pub fn blocked_line(&self, path: &str) -> String {
@@ -500,24 +507,39 @@ mod tests {
     }
 
     #[test]
-    fn an_index_of_the_previous_schema_is_rebuilt_with_the_new_blocks() -> Result<()> {
-        assert_eq!(SCHEMA_VERSION, 7);
+    fn a_legacy_index_is_rebuilt_with_current_blocks_and_summaries() -> Result<()> {
         let mut wiki = Wiki::new()?;
         let rel = "pages/knowledge/escaped.md";
         wiki.page(
             rel,
             &format!("---\ntitle: \"\\x41KIA{KEY}\"\ncreated: 2026-11-27\n---\n본문\n"),
         )?;
+        wiki.page(
+            "pages/knowledge/clean.md",
+            "---\ntitle: T\ncreated: 2026-11-27\nsummary: 큐레이션\n---\n본문\n",
+        )?;
         assert_eq!(blocked(&wiki, rel)?, "secret");
-        // As schema 5 indexed it: unblocked, and the file has not changed since.
-        wiki.index
-            .execute_batch("update files set blocked = ''; pragma pages_index.user_version = 5;")?;
+        // Simulate a stale index that missed the block and has no summary
+        // column. The markdown files have not changed since the last refresh.
+        wiki.index.execute_batch(
+            "update files set blocked = '';
+             drop table fts;
+             create virtual table pages_index.fts using fts5(path, type, created, status, title, tags, project, body);
+             pragma pages_index.user_version = 7;",
+        )?;
         refresh(&wiki.root, &mut wiki.index)?;
         assert_eq!(blocked(&wiki, rel)?, "");
         // Opening the index again notices the version and reads every page anew.
         initialize(&wiki.index)?;
         refresh(&wiki.root, &mut wiki.index)?;
         assert_eq!(blocked(&wiki, rel)?, "secret");
+        assert_eq!(
+            count(
+                &wiki,
+                "select count(*) from fts where fts match 'summary:큐레이션'"
+            )?,
+            1
+        );
         Ok(())
     }
 

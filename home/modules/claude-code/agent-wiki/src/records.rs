@@ -875,10 +875,11 @@ pub fn search(args: &sessions::Args) -> Result<()> {
             values.push(value.clone().into());
         }
     }
+    let now = Utc::now();
     for (op, value) in [(">=", &args.after), ("<", &args.before)] {
         if let Some(value) = value {
             clauses += &format!(" and r.ended {op} ?");
-            values.push(sessions::date(value, Utc::now())?.into());
+            values.push(sessions::date(value, now)?.into());
         }
     }
     for id in [
@@ -892,12 +893,15 @@ pub fn search(args: &sessions::Args) -> Result<()> {
         clauses += " and r.session_id != ?";
         values.push(id.into());
     }
+    values.push(sessions::ambient_project(&args.project).into());
+    values.push(now.timestamp().into());
     values.push(
         i64::try_from(args.n)
             .context("result limit too large")?
             .into(),
     );
-    let mut stmt = db.prepare(&format!("select r.body from records_fts join records r on r.id=records_fts.rowid where records_fts match ?{clauses} order by bm25(records_fts), r.ended desc limit ?"))?;
+    let order = sessions::relevance_order("records_fts", "r.project", "r.ended");
+    let mut stmt = db.prepare(&format!("select r.body from records_fts join records r on r.id=records_fts.rowid where records_fts match ?{clauses} order by {order}, r.ended desc, r.id limit ?"))?;
     let rows = stmt.query_map(params_from_iter(values), |r| r.get::<_, String>(0))?;
     let mut count = 0;
     for body in rows {

@@ -894,6 +894,32 @@ fn group_hits(
     Ok(groups)
 }
 
+pub(crate) fn ambient_project(explicit: &Option<String>) -> Option<String> {
+    if explicit.is_some() {
+        return None;
+    }
+    let cwd = env::current_dir().ok()?;
+    let cwd_text = cwd.to_str()?;
+    // Orca names the project in the workspace path, as transcript ingestion
+    // does. Elsewhere, also recognize a cwd nested inside a repository.
+    let name = if cwd_text.contains("/orca/workspaces/") {
+        project(cwd_text)
+    } else {
+        crate::context::current_project(&cwd).unwrap_or_else(|| project(cwd_text))
+    };
+    (!name.is_empty()).then_some(name)
+}
+
+/// Ascending FTS5 scores are negative. Limit the combined boost to 1.4375×
+/// so project and recency only reorder hits with comparable lexical scores.
+/// The 15% recency bonus halves over 14 days and ignores invalid timestamps.
+pub(crate) fn relevance_order(fts: &str, project: &str, timestamp: &str) -> String {
+    format!(
+        "bm25({fts}) * (case when {project} = ? then 1.25 else 1.0 end)
+         * (1.0 + coalesce(0.15 * 1209600.0 / (1209600.0 + max(0, ? - unixepoch({timestamp}))), 0.0))"
+    )
+}
+
 pub fn run(root: &Path, args: &Args) -> Result<()> {
     if args.records {
         return records::search(args);
@@ -946,8 +972,11 @@ pub fn run(root: &Path, args: &Args) -> Result<()> {
         &codex_source_dirs()?,
         &antigravity_source_dirs()?,
     )?;
+    values.push(ambient_project(&args.project).into());
+    values.push(now.timestamp().into());
+    let order = relevance_order("messages_fts", "m.project", "m.ts");
     let mut stmt = db.prepare(&format!("select m.id, m.session_id, m.role, m.ts, snippet(messages_fts, 0, '[', ']', '…', 40)
-        from messages_fts join messages m on m.id = messages_fts.rowid where messages_fts match ?{where_sql} order by bm25(messages_fts), m.ts, m.id"))?;
+        from messages_fts join messages m on m.id = messages_fts.rowid where messages_fts match ?{where_sql} order by {order}, m.ts, m.id"))?;
     let hits = stmt.query_map(params_from_iter(values), |r| {
         Ok(Hit {
             id: r.get(0)?,

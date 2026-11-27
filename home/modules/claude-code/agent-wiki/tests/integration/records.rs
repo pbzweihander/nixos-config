@@ -16,6 +16,67 @@ impl Drop for Temp {
 }
 
 #[test]
+fn session_search_expands_particles_and_boosts_project_and_recency() {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let tmp =
+        Temp(std::env::temp_dir().join(format!("wiki-ranking-{}-{nonce}", std::process::id())));
+    let sources = tmp.0.join("claude/project");
+    let ambient = tmp.0.join("orca/workspaces/demo/child");
+    fs::create_dir_all(&sources).unwrap();
+    fs::create_dir_all(&ambient).unwrap();
+    let run = |args: &[&str]| {
+        let output = crate::hermetic(&mut Command::new(env!("CARGO_BIN_EXE_agent-wiki")))
+            .args(args)
+            .current_dir(&ambient)
+            .env("AGENT_WIKI_DIR", tmp.0.join("wiki"))
+            .env("AGENT_WIKI_STATE_DIR", tmp.0.join("state"))
+            .env("AGENT_WIKI_SESSIONS_DIRS", tmp.0.join("claude"))
+            .env("AGENT_WIKI_CODEX_SESSIONS_DIRS", ":")
+            .env("AGENT_WIKI_ANTIGRAVITY_SESSIONS_DIRS", ":")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let recent = chrono::Utc::now().to_rfc3339();
+    for (id, project, time) in [
+        ("old", "demo", "2000-01-01T00:00:00Z"),
+        ("recent", "demo", recent.as_str()),
+        ("foreign", "else", recent.as_str()),
+    ] {
+        let transcript = sources.join(format!("{id}.jsonl"));
+        let message = serde_json::json!({
+            "type":"user", "sessionId":id, "uuid":id, "cwd":format!("/orca/workspaces/{project}/child"),
+            "timestamp":time, "message":{"content":"스키마가 바뀌었다"}
+        });
+        fs::write(&transcript, format!("{message}\n")).unwrap();
+        run(&[
+            "record",
+            "--wait",
+            "--transcript-path",
+            transcript.to_str().unwrap(),
+        ]);
+    }
+    for (record_mode, header) in [(false, "session"), (true, "record")] {
+        let mut args = vec!["sessions", "스키마를", "-n", "1"];
+        if record_mode {
+            args.push("--records");
+        }
+        let output = run(&args);
+        assert!(output.starts_with(&format!("{header} recent ")), "{output}");
+        args.extend(["--project", "else"]);
+        let output = run(&args);
+        assert!(
+            output.starts_with(&format!("{header} foreign ")),
+            "{output}"
+        );
+    }
+}
+
+#[test]
 fn detached_hook_closes_pipes_and_never_opens_the_wiki() {
     for legacy in [false, true] {
         detached_hook(legacy);

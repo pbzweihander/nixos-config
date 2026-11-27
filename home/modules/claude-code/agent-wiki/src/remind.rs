@@ -76,11 +76,32 @@ fn update(db: &Connection, hook: Hook, interval: u64, nudge: Nudge) -> Result<Op
     Ok(message)
 }
 
+struct Suggestion {
+    path: String,
+    title: String,
+    summary: String,
+}
+
+impl Suggestion {
+    fn display(&self, root: &Path) -> String {
+        let mut entry = format!(
+            "{} ({})",
+            root.join(&self.path).display(),
+            self.title.chars().take(120).collect::<String>()
+        );
+        if !self.summary.is_empty() {
+            entry.push_str(" — ");
+            entry.push_str(&self.summary);
+        }
+        entry
+    }
+}
+
 fn select(
     db: &Connection,
     hits: Vec<crate::semantic::Hit>,
     seen: &HashSet<String>,
-) -> Result<Vec<(String, String)>> {
+) -> Result<Vec<Suggestion>> {
     let mut selected = vec![];
     let mut paths = HashSet::new();
     for hit in hits {
@@ -90,11 +111,15 @@ fn select(
         if seen.contains(&path) || !paths.insert(path.clone()) {
             continue;
         }
-        let title: Option<String> = db.query_row(
-            "select fts.title from fts join files on files.id=fts.rowid where fts.path=? and fts.type!='history' and files.blocked=''",
-            [&path], |r| r.get(0)).optional()?;
-        if let Some(title) = title {
-            selected.push((path, title));
+        let metadata: Option<(String, String)> = db.query_row(
+            "select fts.title, coalesce(fts.summary, '') from fts join files on files.id=fts.rowid where fts.path=? and fts.type!='history' and files.blocked=''",
+            [&path], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+        if let Some((title, summary)) = metadata {
+            selected.push(Suggestion {
+                path,
+                title,
+                summary,
+            });
             if selected.len() == 3 {
                 break;
             }
@@ -128,7 +153,7 @@ pub(crate) fn messages(root: &Path, db: &Connection, args: &Args, hook: Hook) ->
     } else {
         select(db, crate::semantic::related(prompt), &seen)?
     };
-    let paths: Vec<_> = selected.iter().map(|(path, _)| path.clone()).collect();
+    let paths: Vec<_> = selected.iter().map(|hit| hit.path.clone()).collect();
     crate::recall::mark_seen(db, session, &paths)?;
     // Unlike the semantic lookup, bulletins are checked for every prompt, including
     // `<`-wrapped ones such as Orca's `<USER_REQUEST>`: each change is announced once.
@@ -144,19 +169,16 @@ pub(crate) fn messages(root: &Path, db: &Connection, args: &Args, hook: Hook) ->
     messages.extend(crate::bot_guard::prompt(root, &hook));
     if !selected.is_empty() {
         let root = root.canonicalize()?;
-        let pages = selected
+        let mut pages = selected
             .iter()
-            .map(|(path, title)| {
-                format!(
-                    "{} ({})",
-                    root.join(path).display(),
-                    title.chars().take(120).collect::<String>()
-                )
-            })
+            .map(|hit| hit.display(&root))
             .collect::<Vec<_>>()
             .join("; ");
+        if !pages.ends_with(['.', '!', '?', '…']) {
+            pages.push('.');
+        }
         messages.push(format!(
-            "agent-wiki: pages that may already cover this: {pages}. Read one if it bears on the request; otherwise ignore this note and do not reply to it."
+            "agent-wiki: pages that may already cover this: {pages} Read one if it bears on the request; otherwise ignore this note and do not reply to it."
         ));
         crate::usage::log(&root, session, "remind", &paths);
     }
@@ -188,7 +210,11 @@ mod tests {
         ] {
             wiki.page(
                 &format!("pages/{name}.md"),
-                "---\ntitle: Test\ncreated: 2020-01-01\n---\nbody",
+                if name == "knowledge/a" || name == "knowledge/blocked" {
+                    "---\ntitle: Test\ncreated: 2020-01-01\nsummary: 안내 문장\n---\nbody"
+                } else {
+                    "---\ntitle: Test\ncreated: 2020-01-01\n---\nbody"
+                },
             )?;
         }
         wiki.index.execute(
@@ -216,13 +242,19 @@ mod tests {
             &HashSet::from(["pages/knowledge/seen.md".into()]),
         )?;
         assert_eq!(
-            selected.iter().map(|p| p.0.as_str()).collect::<Vec<_>>(),
+            selected.iter().map(|p| p.path.as_str()).collect::<Vec<_>>(),
             [
                 "pages/knowledge/a.md",
                 "pages/knowledge/b.md",
                 "pages/knowledge/c.md"
             ]
         );
+        assert!(
+            selected[0]
+                .display(&wiki.root)
+                .ends_with(" (Test) — 안내 문장")
+        );
+        assert!(selected[1].display(&wiki.root).ends_with(" (Test)"));
         Ok(())
     }
     #[test]
