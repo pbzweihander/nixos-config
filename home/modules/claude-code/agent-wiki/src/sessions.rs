@@ -894,7 +894,7 @@ fn group_hits(
     Ok(groups)
 }
 
-pub(crate) fn ambient_project(explicit: &Option<String>) -> Option<String> {
+fn ambient_project(explicit: &Option<String>) -> Option<String> {
     if explicit.is_some() {
         return None;
     }
@@ -912,12 +912,25 @@ pub(crate) fn ambient_project(explicit: &Option<String>) -> Option<String> {
 
 /// Ascending FTS5 scores are negative. Limit the combined boost to 1.4375×
 /// so project and recency only reorder hits with comparable lexical scores.
-/// The 15% recency bonus halves over 14 days and ignores invalid timestamps.
+/// The 15% recency bonus is halved at 14 days. Invalid and future timestamps
+/// have a neutral recency multiplier.
 pub(crate) fn relevance_order(fts: &str, project: &str, timestamp: &str) -> String {
     format!(
         "bm25({fts}) * (case when {project} = ? then 1.25 else 1.0 end)
-         * (1.0 + coalesce(0.15 * 1209600.0 / (1209600.0 + max(0, ? - unixepoch({timestamp}))), 0.0))"
+         * (case when {timestamp} glob '????-??-??T??:??:??*'
+                      and unixepoch({timestamp}, 'subsec') <= ?
+                 then 1.0 + 0.15 * 1209600.0 / (1209600.0 + (? - unixepoch({timestamp}, 'subsec')))
+                 else 1.0 end)"
     )
+}
+
+pub(crate) fn relevance_params(project: &Option<String>, now: DateTime<Utc>) -> [SqlValue; 3] {
+    let timestamp = now.timestamp_millis() as f64 / 1000.0;
+    [
+        ambient_project(project).into(),
+        timestamp.into(),
+        timestamp.into(),
+    ]
 }
 
 pub fn run(root: &Path, args: &Args) -> Result<()> {
@@ -972,8 +985,7 @@ pub fn run(root: &Path, args: &Args) -> Result<()> {
         &codex_source_dirs()?,
         &antigravity_source_dirs()?,
     )?;
-    values.push(ambient_project(&args.project).into());
-    values.push(now.timestamp().into());
+    values.extend(relevance_params(&args.project, now));
     let order = relevance_order("messages_fts", "m.project", "m.ts");
     let mut stmt = db.prepare(&format!("select m.id, m.session_id, m.role, m.ts, snippet(messages_fts, 0, '[', ']', '…', 40)
         from messages_fts join messages m on m.id = messages_fts.rowid where messages_fts match ?{where_sql} order by {order}, m.ts, m.id"))?;
@@ -1114,6 +1126,70 @@ pub(crate) fn private_db(path: &Path) -> Result<Connection> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn twice_the_lexical_score_beats_the_maximum_relevance_boost() -> anyhow::Result<()> {
+        let db = rusqlite::Connection::open_in_memory()?;
+        db.execute_batch(
+            "create virtual table hits using fts5(text, project unindexed, ts unindexed);",
+        )?;
+        db.execute(
+            "insert into hits values (?, 'foreign', null), (?, 'demo', '2026-11-27T00:00:00Z')",
+            [
+                "match ".repeat(20),
+                format!("match {}", "other ".repeat(19)),
+            ],
+        )?;
+        let now = 1795737600.0;
+        let order = super::relevance_order("hits", "project", "ts");
+        let rows = db
+            .prepare(&format!(
+                "select project, bm25(hits), {order} as score from hits where hits match ? order by score"
+            ))?
+            .query_map(rusqlite::params!["demo", now, now, "match"], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?, r.get::<_, f64>(2)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let [(first, strong, _), (_, weak, boosted)] = rows.as_slice() else {
+            anyhow::bail!("expected two hits: {rows:?}");
+        };
+        assert!((boosted / weak - 1.4375).abs() < 1e-12);
+        assert!(strong / weak > 2.0);
+        assert_eq!(first, "foreign");
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_missing_and_future_timestamps_leave_recency_neutral() -> anyhow::Result<()> {
+        let db = rusqlite::Connection::open_in_memory()?;
+        db.execute_batch(
+            "create virtual table hits using fts5(text, project unindexed, ts unindexed);",
+        )?;
+        let now = 1795737600.0;
+        for (timestamp, boost) in [
+            (None, 1.0),
+            (Some(""), 1.0),
+            (Some("garbage"), 1.0),
+            (Some("now"), 1.0),
+            (Some("subsec"), 1.0),
+            (Some("2459999.0"), 1.0),
+            (Some("2026-11-27T00:00:00.001Z"), 1.0),
+            (Some("2999-01-01T00:00:00Z"), 1.0),
+            (Some("2026-11-27T00:00:00Z"), 1.15),
+            (Some("2026-11-13T00:00:00Z"), 1.075),
+        ] {
+            db.execute("delete from hits", [])?;
+            db.execute("insert into hits values ('match', 'demo', ?)", [timestamp])?;
+            let order = super::relevance_order("hits", "project", "ts");
+            let ratio: f64 = db.query_row(
+                &format!("select ({order}) / bm25(hits) from hits where hits match ?"),
+                rusqlite::params![None::<String>, now, now, "match"],
+                |r| r.get(0),
+            )?;
+            assert!((ratio - boost).abs() < 1e-12, "{timestamp:?}: {ratio}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn private_databases_reject_symlinks_without_chmod_targets() -> anyhow::Result<()> {
         use std::os::unix::fs::{PermissionsExt, symlink};

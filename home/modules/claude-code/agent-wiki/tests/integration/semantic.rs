@@ -1219,6 +1219,29 @@ fn reminder_sends_raw_korean_and_keeps_nudge() {
 }
 
 #[test]
+fn reminder_with_curated_summary_reuses_the_final_period() {
+    let wiki = Wiki::new();
+    let path = wiki.0.join("wiki/pages/knowledge/foo.md");
+    fs::write(
+        &path,
+        "---\ntitle: Cache recovery\ncreated: 2026-09-20\nsummary: 캐시를 다시 만든다.\n---\n본문\n",
+    )
+    .unwrap();
+    let (output, _) = wiki.respond(
+        &["remind"],
+        &json!({"session_id": "summary", "prompt": "캐시 복구"}).to_string(),
+        json!({"ok":true,"results":[{"path":"knowledge/foo","score":1.0}]}),
+    );
+    assert_eq!(
+        output,
+        format!(
+            "agent-wiki: pages that may already cover this: {} (Cache recovery) — 캐시를 다시 만든다. Read one if it bears on the request; otherwise ignore this note and do not reply to it.\n",
+            path.display()
+        ),
+    );
+}
+
+#[test]
 fn orca_bot_sessions_keep_suggestions_but_skip_the_interval_nudge() {
     let wiki = Wiki::new();
     let bot = wiki.0.join(".orca/bots/bot-1");

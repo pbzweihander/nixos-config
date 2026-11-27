@@ -80,8 +80,8 @@ fn hangul_syllable(c: char) -> bool {
 }
 
 fn particle_stem(word: &str) -> Option<&str> {
-    // Try longer particles first. Keep the original prefix too, since a
-    // particle can also be the last syllable of a noun.
+    // Try longer particles first. The original prefix also stays in the
+    // query, so matches for the original surface form score on both terms.
     const PARTICLES: &[&str] = &[
         "에서", "으로", "에게", "부터", "까지", "처럼", "보다", "이랑", "하고", "이나", "에는",
         "에도", "은", "는", "이", "가", "을", "를", "의", "에", "로", "도", "만", "과", "와",
@@ -164,11 +164,24 @@ fn stale(mtime: i64) -> bool {
     days >= crate::index::STALE_DAYS
 }
 
+fn matched_body_snippet(db: &Connection, path: &str, query: &str) -> Result<Option<String>> {
+    // The column filter guarantees a body match, even if the best-scoring
+    // snippet came from the title or summary or the body has literal brackets.
+    Ok(db
+        .query_row(
+            "select snippet(fts, 7, '[', ']', '…', 16) from fts
+             where fts match ? and rowid = (select id from files where path = ?)",
+            rusqlite::params![format!("body : ({query})"), path],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
 fn show(
     out: &mut impl Write,
     root: &Path,
     row: &Row,
-    snippet: Option<String>,
+    excerpts: &[&str],
     section: Option<(String, i64, i64)>,
     meaning: bool,
 ) -> std::io::Result<()> {
@@ -206,11 +219,11 @@ fn show(
         meta.push(format!("linked by {}", row.backlinks));
     }
     writeln!(out, "{path}\n  {}  ({})", row.title, meta.join("; "))?;
-    if let Some(s) = snippet.filter(|s| !s.is_empty()) {
+    for excerpt in excerpts.iter().filter(|s| !s.is_empty()) {
         writeln!(
             out,
             "  {}",
-            s.split_whitespace().collect::<Vec<_>>().join(" ")
+            excerpt.split_whitespace().collect::<Vec<_>>().join(" ")
         )?;
     }
     if let Some((heading, start, end)) = section {
@@ -479,15 +492,18 @@ fn render(
         if let Some(root) = &json_root {
             hits.push(json_hit(root, &hit.row, &hit.snippet, section, via));
         } else {
+            let snippet = if hit.row.summary.is_empty() {
+                hit.snippet
+            } else if hit.row.blocked.is_empty() && hit.bm25_rank.is_some() {
+                matched_body_snippet(db, &hit.row.path, query)?.unwrap_or_default()
+            } else {
+                String::new()
+            };
             show(
                 out,
                 root,
                 &hit.row,
-                Some(if hit.row.summary.is_empty() {
-                    hit.snippet
-                } else {
-                    hit.row.summary.clone()
-                }),
+                &[&hit.row.summary, &snippet],
                 section,
                 via == "dense",
             )?;
@@ -559,7 +575,7 @@ pub fn list(root: &Path, db: &Connection, n: i64, filters: &Filters) -> Result<(
         println!("no pages");
     }
     for row in rows {
-        show(&mut std::io::stdout().lock(), root, &row, None, None, false)?;
+        show(&mut std::io::stdout().lock(), root, &row, &[], None, false)?;
     }
     Ok(())
 }
@@ -675,9 +691,14 @@ mod tests {
         let mut wiki = crate::usage::tests::Wiki::new()?;
         wiki.page(
             "pages/knowledge/summary.md",
-            "---\ntitle: Cache\nsummary: 복구에는 스냅샷이 필요하다\n---\nIntro.\n# Restore\n본문에서 복구한다.\n",
+            "---\ntitle: Cache\nsummary: 복구에는 스냅샷이 필요하다\n---\nIntro.\n# Restore\n[메모] 본문에서 복구한다. Error E123.\n",
         )?;
-        for (term, section) in [("스냅샷을", false), ("복구는", true)] {
+        for (term, body_match) in [
+            ("스냅샷을", None),
+            ("Cache", None),
+            ("복구는", Some("[복구한다]")),
+            ("Error E123", Some("[Error E123]")),
+        ] {
             let query = fts_query(&[term.into()]);
             let (rows, dense) = ranked(&wiki.index, &query, term, 1, &Filters::default(), true)?;
             assert_eq!(rows.len(), 1);
@@ -693,9 +714,19 @@ mod tests {
                 &mut vec![],
             )?;
             let out = String::from_utf8(out)?;
-            assert!(out.contains("\n  복구에는 스냅샷이 필요하다\n"));
-            assert_eq!(out.contains("§ Restore"), section);
-            assert!(!out.contains("본문에서"));
+            let after_summary = out
+                .split_once("\n  복구에는 스냅샷이 필요하다\n")
+                .unwrap()
+                .1;
+            if let Some(body_match) = body_match {
+                assert!(
+                    after_summary.lines().next().unwrap().contains(body_match),
+                    "{out}"
+                );
+                assert!(after_summary.contains("\n  § Restore"));
+            } else {
+                assert!(after_summary.is_empty(), "{out}");
+            }
         }
         Ok(())
     }
@@ -1103,7 +1134,7 @@ mod tests {
                 &mut out,
                 Path::new("/wiki"),
                 &row,
-                None,
+                &[],
                 section.clone(),
                 false,
             )
@@ -1133,7 +1164,7 @@ mod tests {
             &mut out,
             Path::new("/wiki"),
             &blocked,
-            None,
+            &[],
             Some(("hidden".into(), 1, 3)),
             false,
         )

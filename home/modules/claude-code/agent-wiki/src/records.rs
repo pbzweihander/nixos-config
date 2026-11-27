@@ -893,8 +893,7 @@ pub fn search(args: &sessions::Args) -> Result<()> {
         clauses += " and r.session_id != ?";
         values.push(id.into());
     }
-    values.push(sessions::ambient_project(&args.project).into());
-    values.push(now.timestamp().into());
+    values.extend(sessions::relevance_params(&args.project, now));
     values.push(
         i64::try_from(args.n)
             .context("result limit too large")?

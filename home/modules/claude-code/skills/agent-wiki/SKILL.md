@@ -126,10 +126,13 @@ agent-wiki tags                                                                 
 
 - Terms are stemmed (Porter) and prefix-matched, and the terms are OR-ed: `configure`
   also finds `configuration` and `configured`. Pass several keywords and synonyms
-  rather than one exact phrase. BM25 weights title > tags > project > body.
-- Search fuses the top 40 BM25 and top 40 dense results from local `wiki-embed`:
-  `2/(60 + BM25 rank) + 1/(60 + dense rank)`, with missing ranks contributing zero
-  and history scores multiplied by 0.9. Dense retrieval uses each page's best
+  rather than one exact phrase. BM25 weights title 10, tags 5, project and summary
+  3 each, and body 1.
+- Search fuses the top 40 BM25 and top 40 dense results from local `wiki-embed`.
+  Each list contributes its weight divided by `60 + rank`. The BM25-to-dense ratio
+  is 2:1 for identifier-shaped queries and 1:1.25 for prose, including Korean
+  queries with technical identifiers. Missing ranks contribute zero, and history
+  scores are multiplied by 0.9. Dense retrieval uses each page's best
   chunk, without reranking or a threshold. Filters apply to both lists; dense-only
   hits are marked `(meaning)`. `--no-semantic`, a disabled or unavailable socket,
   timeout, or error uses BM25 alone, still down-weighting history; unavailable
@@ -142,14 +145,17 @@ agent-wiki tags                                                                 
   `agent-wiki search '<error line>'`, even when no recall note appeared.
 - Quote a multi-word argument to also match it as an exact phrase; pages containing
   the phrase rank higher: `agent-wiki search "readonly database" nix sandbox`.
-- Search with Korean keywords, the bare noun or stem without a particle (`재시작`,
-  not `재시작하면`): prefix matching then finds the inflected forms. Add exact error
+- Search with bare Korean nouns or stems such as `재시작` to find inflected forms
+  through prefix matching. For a wholly Hangul word with a common trailing particle,
+  search also tries the stem if it has at least two syllables. Add exact error
   messages and identifiers as they are; they make the best terms. An English word
   for something the pages name in Korean (`restart` for `재시작`) finds nothing by
   keyword, and only search by meaning, where `wiki-embed` runs, bridges it.
 - Each hit prints the page's absolute path, title, type, status, update date,
-  project, tags, and a snippet with matches in `[brackets]`. Read the page with the
-  Read tool before relying on it.
+  project, and tags. A curated `summary:` appears below the metadata, followed by
+  a body snippet with matches in `[brackets]` when the body matches. Without a
+  curated summary, a lexical hit shows the best available snippet. Read the page
+  with the Read tool before relying on it.
 - A page with headings also prints the matching section as
   `§ Heading > Subheading (lines 120-166)`. On a long page, read that range with the
   Read tool's offset and limit rather than the whole file.
@@ -180,9 +186,10 @@ adding `dense_error` with the reason only when unavailable, with no stderr note.
 limiting the printed hits.
 Hits have absolute `path`, relative `rel`,
 `title`, `type`, `status`, `project`, `tags` (array), `updated` (YYYY-MM-DD), `stale`,
-`backlinks`, `snippet`, `section`, `semantic` (true for dense-only hits), and `via`
-(`bm25`, `dense`, or `both`). Blocked titles become `[BLOCKED: <category>]`, with
-empty snippets and null sections.
+`backlinks`, `summary`, `snippet`, `section`, `semantic` (true for dense-only hits),
+and `via` (`bm25`, `dense`, or `both`). `summary` is an empty string when no
+curated summary is available. Blocked titles become `[BLOCKED: <category>]`, with
+empty summaries and snippets and null sections.
 
 `injections` reads that session's logged pages from `usage.sqlite`, once per path,
 newest first. JSON is `{ "pages": [{ "path", "rel", "title", "sources", "at" }] }`;
@@ -235,8 +242,19 @@ agent-wiki sessions "commit hash or file name" --records --after 30d
 agent-wiki sessions "journal recovery" --harness codex
 ```
 
-The same prefix OR and phrase search applies. Results are grouped by session, with
-up to three hits per session. `--context K` includes K messages before and after
+Both transcript and record searches use the same prefix OR, exact phrase, and Hangul
+particle fallback as page search. They multiply BM25 relevance by 1.25 for matches
+in the current project when `--project` is omitted. Recency adds a boost of up to
+15% based on message time or record end time. The bonus is half its maximum after
+14 days, and missing, invalid, and future timestamps contribute no bonus. The
+combined multiplier is capped at 1.4375×. An explicit `--project` is a hard filter.
+Older Orca-worktree records can retain the worktree name as their stored project.
+These records miss the ambient repository boost and a filter for the repository
+name until re-recorded with the current CLI, for example by backfilling available
+transcripts. Filtering by the stored worktree name can still find them.
+
+Transcript results are grouped by session, with up to three hits per session.
+`--context K` includes K messages before and after
 each hit. `--after` and `--before` accept `YYYY-MM-DD`, `7d`, `24h`, or `2w`;
 `--after` is inclusive and `--before` is exclusive, with dates at midnight UTC.
 `--exclude-session ID` and the `CLAUDE_SESSION_ID`, `CODEX_THREAD_ID` and
@@ -344,6 +362,7 @@ warning reports it. Shorten the project page or lower the overview budget to fit
    tags: [nix, codex, sandbox]
    project: nixos-config
    created: 2026-09-15
+   summary: 빌드 요청은 로컬 Nix 데몬 소켓을 통해 전달된다.
    queries:
      - codex 샌드박스 안에서 nix 빌드가 왜 실패해요?
      - "cannot connect to socket at '/nix/var/nix/daemon-socket/socket': Operation not permitted"
@@ -365,6 +384,10 @@ warning reports it. Shorten the project page or lower the overview budget to fit
      from their file name.
    - `status`: `open` or `done`, follow-ups only.
    - `created`: today's date. The update date comes from the file mtime.
+   - `summary` (optional): the main conclusion in one line of up to 200 characters.
+     The scanner checks the decoded value and its single-line form before
+     truncation. It is indexed with BM25 weight 3 and shown in `search`, `remind`
+     suggestions, and bulletin notices.
    - `queries` (optional): searches in a future session's words: a question, or an
      exact error message or symptom line as a session would paste it, not a list of
      keywords. Questions are in Korean; pasted errors stay as they are.
@@ -501,8 +524,8 @@ It sends the raw prompt, including Korean prose, to the local `wiki-embed` daemo
 and asks for up to ten pages passing the daemon's relevance threshold. It drops
 history, blocked pages, and pages already suggested by remind or recall or referenced
 in transcript tool inputs, then keeps the first three. The note uses absolute paths
-and titles (up to 120 characters):
-`agent-wiki: pages that may already cover this: /abs/a.md (Title A); /abs/b.md (Title B). Read one if it bears on the request; otherwise ignore this note and do not reply to it.`
+and titles (up to 120 characters), with an optional ` — summary` after each title.
+`agent-wiki: pages that may already cover this: /abs/a.md (Title A); /abs/b.md (Title B) — 복구 명령은 데몬을 다시 시작한다. Read one if it bears on the request; otherwise ignore this note and do not reply to it.`
 Suggested pages are marked seen for recall and remind and logged as injections. Hook and slash-command wrappers (prompts starting with `<` after
 whitespace) are skipped. No relevant pages, an unavailable daemon, or a failed or
 slow reply produces no suggestion. The whole request has a 300 ms deadline,
