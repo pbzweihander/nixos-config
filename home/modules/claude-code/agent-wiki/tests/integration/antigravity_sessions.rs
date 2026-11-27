@@ -111,7 +111,7 @@ impl Env {
     fn run(&self, args: &[&str], envs: &[(&str, &str)]) -> String {
         let home = &self.tmp.0;
         let mut command = Command::new(env!("CARGO_BIN_EXE_agent-wiki"));
-        command
+        crate::hermetic(&mut command)
             .arg("sessions")
             .args(args)
             .env("HOME", home)
@@ -440,7 +440,7 @@ fn cross_harness_usage_scans_and_orders_subsecond_reads() {
     fs::create_dir_all(home.join("codex")).unwrap();
     fs::write(home.join("codex/rollout-usage.jsonl"), format!("{}\n{}\n", json!({"type":"session_meta","payload":{"id":"cx","cwd":"/repo"}}), json!({"type":"response_item","timestamp":"2026-11-27T00:00:00.100Z","payload":{"type":"function_call","name":"exec_command","call_id":"r","arguments":json!({"cmd":format!("cat {}", page.display())}).to_string()}}))).unwrap();
     let stats = || {
-        let out = Command::new(env!("CARGO_BIN_EXE_agent-wiki"))
+        let out = crate::hermetic(&mut Command::new(env!("CARGO_BIN_EXE_agent-wiki")))
             .args(["stats", "--json"])
             .env("HOME", home)
             .env("AGENT_WIKI_DIR", home.join("wiki"))

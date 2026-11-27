@@ -22,8 +22,9 @@ pub struct Args {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Nudge {
     Emit,
-    /// Orca bot homes delegate technical work and do not sync every few turns;
-    /// the counter still advances and resets so state stays consistent.
+    /// Orca bot homes delegate technical work and do not sync every few turns.
+    /// Their prompts leave `remind_state` untouched (no row, no increment, no
+    /// reset); transcript cursors and event-reminder bookkeeping still advance.
     Suppress,
 }
 
@@ -56,16 +57,20 @@ fn update(db: &Connection, hook: Hook, interval: u64, nudge: Nudge) -> Result<Op
         )?
         .0,
     )?;
-    prompts = prompts.saturating_add(1);
-    let message = if prompts as u64 >= interval {
-        let count = std::mem::take(&mut prompts);
-        (nudge == Nudge::Emit).then(|| format!(
-            "agent-wiki: {count} prompts since this session last ran `agent-wiki sync`. If this session has produced something another session would need (a root cause and its fix, a tool or environment quirk, a decision and its reason, out-of-scope work for later), record it in the wiki now (load the agent-wiki skill); otherwise continue and do not reply to this note."
-        ))
-    } else {
-        None
+    let message = match nudge {
+        Nudge::Suppress => None,
+        Nudge::Emit => {
+            prompts = prompts.saturating_add(1);
+            let message = (prompts as u64 >= interval).then(|| format!(
+                "agent-wiki: {prompts} prompts since this session last ran `agent-wiki sync`. If this session has produced something another session would need (a root cause and its fix, a tool or environment quirk, a decision and its reason, out-of-scope work for later), record it in the wiki now (load the agent-wiki skill); otherwise continue and do not reply to this note."
+            ));
+            if message.is_some() {
+                prompts = 0;
+            }
+            db.execute("insert into remind_state(session_id, prompts, offset) values (?,?,?) on conflict(session_id) do update set prompts=excluded.prompts, offset=excluded.offset", params![id, prompts, offset])?;
+            message
+        }
     };
-    db.execute("insert into remind_state(session_id, prompts, offset) values (?,?,?) on conflict(session_id) do update set prompts=excluded.prompts, offset=excluded.offset", params![id, prompts, offset])?;
     crate::remind_event::after_prompt(db, &id, synced, message.is_some())?;
     tx.commit()?;
     Ok(message)
@@ -248,22 +253,36 @@ mod tests {
             )?
             .is_none()
         );
+        let hook = |id: &str| Hook {
+            session_id: Some(id.into()),
+            ..Hook::default()
+        };
+        let prompts = |id: &str| -> Result<Option<i64>> {
+            Ok(db
+                .query_row(
+                    "select prompts from remind_state where session_id=?",
+                    [id],
+                    |r| r.get(0),
+                )
+                .optional()?)
+        };
+        // A bot session never creates, increments or resets its counter.
         for _ in 1..=31 {
-            let bot = Hook {
-                session_id: Some("bot".into()),
-                ..Hook::default()
-            };
-            assert!(update(&db, bot, 15, Nudge::Suppress)?.is_none());
+            assert!(update(&db, hook("bot"), 15, Nudge::Suppress)?.is_none());
         }
-        // The counter reset at prompts 15 and 30, as it does for an emitted note.
-        assert_eq!(
-            db.query_row(
-                "select prompts from remind_state where session_id='bot'",
-                [],
-                |r| r.get::<_, i64>(0)
-            )?,
-            1
-        );
+        assert_eq!(prompts("bot")?, None);
+        for _ in 1..=3 {
+            update(&db, hook("moved"), 15, Nudge::Emit)?;
+        }
+        for _ in 1..=20 {
+            assert!(update(&db, hook("moved"), 15, Nudge::Suppress)?.is_none());
+        }
+        assert_eq!(prompts("moved")?, Some(3));
+        // Back in an ordinary context, the count resumes where it stopped.
+        for i in 4..=15 {
+            let message = update(&db, hook("moved"), 15, Nudge::Emit)?;
+            assert_eq!(message.is_some(), i == 15, "prompt {i}");
+        }
         Ok(())
     }
 }

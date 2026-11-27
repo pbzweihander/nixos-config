@@ -43,7 +43,7 @@ impl Fixture {
 
     fn output(&self, args: &[&str], input: Option<String>, bot_home: Option<&str>) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_agent-wiki"));
-        command
+        crate::hermetic(&mut command)
             .args(args)
             .current_dir(self.0.join("project"))
             .env("AGENT_WIKI_DIR", self.0.join("wiki"))
@@ -966,7 +966,7 @@ fn an_unsafe_wiki_root_is_cleaned_in_context_and_bulletin_output() {
         fs::write(root.join("pages/knowledge/notice.md"), NOTICE).unwrap();
         let run = |args: &[&str], input: Option<Value>| {
             let mut command = Command::new(env!("CARGO_BIN_EXE_agent-wiki"));
-            command
+            crate::hermetic(&mut command)
                 .args(args)
                 .current_dir(fixture.0.join("project"))
                 .env("AGENT_WIKI_DIR", &root)

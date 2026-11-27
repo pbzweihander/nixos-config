@@ -121,7 +121,7 @@ impl Fixture {
     }
 
     fn run(&self, args: &[&str], input: Option<Value>, env: &[(&str, &str)]) -> String {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_agent-wiki"))
+        let mut child = crate::hermetic(&mut Command::new(env!("CARGO_BIN_EXE_agent-wiki")))
             .args(args)
             .current_dir(self.repo())
             .env("HOME", &self.root)
@@ -990,6 +990,20 @@ fn bot_sessions_skip_only_the_interval_sync_nudge() {
         assert!(second.contains(ANCHOR), "{second}");
         assert!(all.contains(CLEANUP), "{all}");
     }
+    // Bot prompts left no periodic counter: back in an ordinary cwd, the same
+    // session counts from one and is nudged on its second prompt.
+    let state = Connection::open(f.root.join("wiki-state/state.sqlite")).unwrap();
+    let counters: i64 = state
+        .query_row(
+            "select count(*) from remind_state where session_id in ('bot-cwd','bot-env')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(counters, 0);
+    assert!(!remind("bot-cwd", &f.repo(), &[]).contains(NUDGE));
+    let ordinary = remind("bot-cwd", &f.repo(), &[]);
+    assert!(ordinary.contains(&format!("2 {NUDGE}")), "{ordinary}");
     // Antigravity PreInvocation shares the same rule.
     let agy = |conversation: &str, workspace: &Path, step: u64| {
         f.run(

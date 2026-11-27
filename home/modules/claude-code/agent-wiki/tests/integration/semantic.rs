@@ -2143,3 +2143,68 @@ fn no_refresh_without_an_index_creates_nothing() {
     assert!(run_output(missing, "").status.success());
     assert_eq!(tree(&wiki.0), before);
 }
+
+#[test]
+fn no_refresh_on_wal_indexes_reads_committed_frames_without_new_files() {
+    use std::os::unix::fs::PermissionsExt;
+    let wiki = Wiki::new();
+    let state = wiki.0.join("wiki-state");
+    let index = state.join("index.sqlite");
+    let names = |dir: &std::path::Path| -> Vec<String> {
+        let mut names: Vec<_> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    let lookups = |expect: &str| {
+        let search = run(
+            wiki.command(&[
+                "search",
+                "--no-refresh",
+                "--no-semantic",
+                "cache",
+                "zirconium",
+            ]),
+            "",
+        );
+        assert!(search.contains(expect), "{search}");
+        let list = run(wiki.command(&["list", "--no-refresh"]), "");
+        assert!(list.contains(expect), "{list}");
+    };
+    // 1. A clean WAL-mode index: the header says WAL, but no sidecars exist.
+    rusqlite::Connection::open(&index)
+        .unwrap()
+        .pragma_update(None, "journal_mode", "wal")
+        .unwrap();
+    assert!(!names(&state).iter().any(|n| n.starts_with("index.sqlite-")));
+    for mode in [0o700, 0o500] {
+        fs::set_permissions(&state, fs::Permissions::from_mode(mode)).unwrap();
+        let before = (tree(&wiki.0), tree(&state));
+        lookups("foo cache notes");
+        assert_eq!((tree(&wiki.0), tree(&state)), before);
+    }
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+    // 2. Committed pages that live only in the -wal: an open reader keeps the
+    // refresh below from checkpointing on close.
+    let holder = rusqlite::Connection::open(&index).unwrap();
+    holder
+        .query_row("select count(*) from files", [], |r| r.get::<_, i64>(0))
+        .unwrap();
+    fs::write(
+        wiki.0.join("wiki/pages/knowledge/fresh.md"),
+        "---\ntitle: fresh zirconium notes\ncreated: 2026-11-27\n---\nzirconium\n",
+    )
+    .unwrap();
+    run(wiki.command(&["list"]), "");
+    assert!(fs::metadata(state.join("index.sqlite-wal")).unwrap().len() > 0);
+    for mode in [0o700, 0o500] {
+        fs::set_permissions(&state, fs::Permissions::from_mode(mode)).unwrap();
+        let before = (tree(&wiki.0), tree(&state));
+        lookups("fresh zirconium notes");
+        assert_eq!((tree(&wiki.0), tree(&state)), before);
+    }
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+    drop(holder);
+}

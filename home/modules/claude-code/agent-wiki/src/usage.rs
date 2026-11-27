@@ -1203,6 +1203,8 @@ pub(crate) mod tests {
     pub struct Wiki {
         pub root: PathBuf,
         pub index: Connection,
+        /// Fixture-owned state directory, the only state path `Drop` removes.
+        state: PathBuf,
     }
     impl Wiki {
         pub fn new() -> Result<Self> {
@@ -1213,8 +1215,9 @@ pub(crate) mod tests {
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));
             crate::ensure_layout(&root)?;
+            let state = crate::storage::fixture_dir(&root);
             let index = index::open(&root)?;
-            Ok(Self { root, index })
+            Ok(Self { root, index, state })
         }
         pub fn page(&mut self, rel: &str, text: &str) -> Result<()> {
             fs::write(self.root.join(rel), text)?;
@@ -1223,7 +1226,7 @@ pub(crate) mod tests {
     }
     impl Drop for Wiki {
         fn drop(&mut self) {
-            let _ = fs::remove_dir_all(crate::storage::dir(&self.root));
+            let _ = fs::remove_dir_all(&self.state);
             let _ = fs::remove_dir_all(&self.root);
         }
     }

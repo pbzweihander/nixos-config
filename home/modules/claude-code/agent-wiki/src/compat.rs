@@ -6,6 +6,12 @@ use std::{
 };
 
 pub fn var_os(primary: &str) -> Option<OsString> {
+    if cfg!(test) {
+        // Unit tests run in-process with the developer's environment. An exported
+        // AGENT_WIKI_STATE_DIR, AGENT_WIKI_DIR or socket must never point a fixture
+        // at real state or a live daemon, so they see defaults and no semantic search.
+        return (primary == "AGENT_WIKI_SOCKET").then(OsString::new);
+    }
     env::var_os(primary).or_else(|| env::var_os(primary.replacen("AGENT_WIKI_", "CLAUDE_WIKI_", 1)))
 }
 

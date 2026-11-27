@@ -21,6 +21,7 @@ mod scan;
 mod search;
 mod semantic;
 mod sessions;
+mod snapshot;
 mod state;
 mod storage;
 mod sync;

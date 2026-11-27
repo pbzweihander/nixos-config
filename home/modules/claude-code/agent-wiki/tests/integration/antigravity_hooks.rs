@@ -87,7 +87,7 @@ impl Fixture {
 
     fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_agent-wiki"));
-        command
+        crate::hermetic(&mut command)
             .args(args)
             .current_dir(&self.0)
             .env("AGENT_WIKI_DIR", self.0.join("wiki"))

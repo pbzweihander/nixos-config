@@ -222,13 +222,17 @@ pub fn prepare(root: &Path) -> Result<PathBuf> {
         crate::sessions::repair_private_file(&temporary, true)?;
         snapshot.execute("vacuum into ?", [temporary.to_string_lossy().as_ref()])?;
         sync_file(&temporary)?;
-        if conflict {
-            // Never let a stale sidecar pair with the new archive, and keep
-            // older binaries' timestamped archives from accumulating.
-            prune_archives(&dir, name)?;
-        }
         let imported = match &target {
             Some(target) => {
+                if conflict {
+                    // The current archive stays in place until the rename
+                    // replaces it; only its own journal or WAL is settled.
+                    settle(target);
+                }
+                #[cfg(test)]
+                if tests::FAIL_BEFORE_PUBLISH.get() {
+                    bail!("injected failure before publishing {name}");
+                }
                 fs::rename(&temporary, target)?;
                 sync_file(&dir)?;
                 target.clone()
@@ -239,6 +243,11 @@ pub fn prepare(root: &Path) -> Result<PathBuf> {
             // Recheck every legacy index, even if an earlier migration marker
             // exists. Existing state rows win over the legacy copy's rows.
             crate::state::import_index(&dir, &imported)?;
+        }
+        if conflict {
+            // After publication: any leftover sidecar is stale, and older
+            // binaries' timestamped archives must not accumulate.
+            prune_archives(&dir, name, target.is_some())?;
         }
         match &target {
             None => {
@@ -302,10 +311,24 @@ fn archives(dir: &Path, name: &str) -> Result<Vec<PathBuf>> {
         .collect())
 }
 
-/// Removes every conflict archive of `name`. Called under `migration.lock`.
-/// An index archive from an older binary is merged first, in case its hook
-/// rows were never imported; one that cannot be read is kept and reported.
-fn prune_archives(dir: &Path, name: &str) -> Result<()> {
+/// Lets SQLite finish a journal or WAL left beside an archive, so the archive is
+/// consistent on its own and no sidecar outlives it to pair with a replacement.
+fn settle(archive: &Path) {
+    if !fs::symlink_metadata(archive).is_ok_and(|meta| meta.is_file()) {
+        return;
+    }
+    if let Ok(db) = crate::sessions::private_db(archive) {
+        let _ = db.query_row("pragma schema_version", [], |r| r.get::<_, i64>(0));
+    }
+}
+
+/// Removes the conflict archives of `name` under `migration.lock`, keeping the
+/// just-published `<name>.legacy` itself when `keep_current`; its sidecars are
+/// stale by then. An index archive from an older binary is merged first, in
+/// case its hook rows were never imported; one that cannot be read is kept
+/// and reported.
+fn prune_archives(dir: &Path, name: &str, keep_current: bool) -> Result<()> {
+    let current = dir.join(format!("{name}.legacy"));
     let sidecar = |path: &Path| {
         let file = path.to_string_lossy();
         ["-wal", "-shm", "-journal"]
@@ -315,6 +338,7 @@ fn prune_archives(dir: &Path, name: &str) -> Result<()> {
     // Databases before sidecars, so a kept archive also keeps its journal.
     let (sidecars, databases): (Vec<_>, Vec<_>) = archives(dir, name)?
         .into_iter()
+        .filter(|path| !keep_current || *path != current)
         .partition(|path| sidecar(path));
     let mut kept: Vec<PathBuf> = vec![];
     for path in databases.into_iter().chain(sidecars) {
@@ -324,9 +348,11 @@ fn prune_archives(dir: &Path, name: &str) -> Result<()> {
         }
         if sidecar(&path)
             && kept.iter().any(|database| {
-                path.as_os_str()
-                    .as_encoded_bytes()
-                    .starts_with(database.as_os_str().as_encoded_bytes())
+                ["-wal", "-shm", "-journal"].iter().any(|suffix| {
+                    let mut own = database.as_os_str().to_os_string();
+                    own.push(suffix);
+                    own == path.as_os_str()
+                })
             })
         {
             continue;
@@ -366,6 +392,23 @@ fn remove_database(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The state directory a unit-test fixture owns: the `<root>-state` sibling of
+/// its temporary root. Fixtures delete only this path, and it must be what
+/// [`dir`] resolves, so no setting can redirect a fixture to other state.
+#[cfg(test)]
+pub fn fixture_dir(root: &Path) -> PathBuf {
+    assert!(root.starts_with(std::env::temp_dir()), "{}", root.display());
+    let root = canonical(root);
+    let mut name = root
+        .file_name()
+        .expect("fixture root has a name")
+        .to_os_string();
+    name.push("-state");
+    let owned = root.with_file_name(name);
+    assert_eq!(dir(&root), owned, "fixture state must be its own");
+    owned
+}
+
 pub fn open(root: &Path, name: &str) -> Result<Connection> {
     let db = crate::sessions::private_db(&prepare(root)?.join(name))?;
     db.busy_timeout(Duration::from_millis(50))?;
@@ -373,8 +416,52 @@ pub fn open(root: &Path, name: &str) -> Result<Connection> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    thread_local! {
+        /// Makes `prepare` fail right before it publishes a conflict archive.
+        pub(crate) static FAIL_BEFORE_PUBLISH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    #[test]
+    fn failure_before_publication_keeps_the_previous_archive() -> Result<()> {
+        let wiki = crate::usage::tests::Wiki::new()?;
+        let state = dir(&wiki.root);
+        open(&wiki.root, "usage.sqlite")?.execute_batch("create table probe(value text)")?;
+        let previous = Connection::open(state.join("usage.sqlite.legacy"))?;
+        previous.execute_batch(
+            "create table probe(value text); insert into probe values ('previous')",
+        )?;
+        drop(previous);
+        fs::write(state.join("usage.sqlite.legacy-7"), "older binary archive")?;
+        let archived = |file: &str| -> Result<String> {
+            Ok(Connection::open(state.join(file))?.query_row(
+                "select value from probe",
+                [],
+                |r| r.get(0),
+            )?)
+        };
+        let legacy = Connection::open(wiki.root.join("usage.sqlite"))?;
+        legacy
+            .execute_batch("create table probe(value text); insert into probe values ('latest')")?;
+        drop(legacy);
+        FAIL_BEFORE_PUBLISH.set(true);
+        let failed = prepare(&wiki.root);
+        FAIL_BEFORE_PUBLISH.set(false);
+        assert!(failed.is_err());
+        // Nothing was unlinked: the previous archive, older archives and the
+        // legacy source all survive; the synced snapshot waits in staging.
+        assert_eq!(archived("usage.sqlite.legacy")?, "previous");
+        assert!(state.join("usage.sqlite.legacy-7").exists());
+        assert!(wiki.root.join("usage.sqlite").exists());
+        assert_eq!(staging_files(&state, &["usage.sqlite"])?.len(), 1);
+        prepare(&wiki.root)?;
+        assert_eq!(archived("usage.sqlite.legacy")?, "latest");
+        assert!(!state.join("usage.sqlite.legacy-7").exists());
+        assert!(staging_files(&state, &["usage.sqlite"])?.is_empty());
+        assert!(!wiki.root.join("usage.sqlite").exists());
+        Ok(())
+    }
     #[test]
     fn runtime_is_private_and_outside_markdown_root() -> Result<()> {
         let wiki = crate::usage::tests::Wiki::new()?;

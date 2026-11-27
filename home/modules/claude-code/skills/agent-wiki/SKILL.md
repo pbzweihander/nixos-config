@@ -54,7 +54,8 @@ SQLite files migrate at startup through atomic snapshots. When both copies exist
 the state directory stays authoritative; missing legacy hook rows are imported and
 a conflicting legacy `index.sqlite` is removed after that import. Any other
 conflicting legacy database is kept as one private `<name>.legacy` archive, which
-the next conflict replaces; older `*.legacy-<timestamp>` archives are pruned then. `sync --rebuild` preserves hook state and history.
+the next conflict atomically replaces; older `*.legacy-<timestamp>` archives are
+pruned after that replacement. `sync --rebuild` preserves hook state and history.
 
 The markdown pages are the source of truth. Every `agent-wiki` command first
 re-indexes pages whose mtime or size changed, so pages edited with Edit or Write are
@@ -119,7 +120,9 @@ agent-wiki tags                                                                 
 - `--no-refresh` reads the existing index as is: no lock, no migration, no
   reindexing, and no files created. Use it for read-only lookups, for example from a
   reviewer that must not touch the wiki; pages edited since the last refresh are
-  missing or stale. Without an index it prints a note on stderr and no hits.
+  missing or stale. A WAL-mode index is read into memory with its committed
+  `-wal` frames, so no `-wal`/`-shm` file appears even in a read-only directory.
+  Without an index it prints a note on stderr and no hits.
 
 - Terms are stemmed (Porter) and prefix-matched, and the terms are OR-ed: `configure`
   also finds `configuration` and `configured`. Pass several keywords and synonyms
@@ -541,7 +544,8 @@ record knowledge another session would need. It is a hook note, not a user messa
 record useful durable knowledge if there is any; otherwise continue without replying
 to the note. `--interval N` or `AGENT_WIKI_REMIND_INTERVAL` changes the interval.
 Orca bot homes (`$ORCA_BOT_HOME` or a cwd under `~/.orca/bots/`) do not get this
-nudge; their page suggestions, bulletins, and witch notes are unchanged.
+nudge, and their prompts do not count toward it; their page suggestions,
+bulletins, and witch notes are unchanged.
 Counts are separate per session; a sync tool call resets the count. The hook reads
 only new complete transcript lines after its first call.
 
