@@ -236,7 +236,7 @@ impl Wiki {
 
     fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_agent-wiki"));
-        command
+        crate::hermetic(&mut command)
             .args(args)
             .env("CLAUDE_WIKI_DIR", self.0.join("wiki"))
             .env("CLAUDE_WIKI_SESSIONS_DIRS", self.0.join("transcripts"))
@@ -249,7 +249,6 @@ impl Wiki {
                 self.0.join("antigravity-transcripts"),
             )
             .env("CLAUDE_WIKI_SKILL_DIRS", self.0.join("skills"))
-            .env_remove("AGENT_WIKI_SOCKET")
             .env("CLAUDE_WIKI_SOCKET", self.0.join("embed.sock"))
             .env("CLAUDE_WIKI_SEMANTIC_TIMEOUT_MS", "1000")
             .env("CLAUDE_WIKI_REMIND_INTERVAL", "15")
@@ -274,6 +273,12 @@ impl Wiki {
     }
 
     fn respond_bytes(&self, args: &[&str], input: &str, reply: Vec<u8>) -> (Output, Value) {
+        self.respond_command(self.command(args), input, reply)
+    }
+
+    fn respond_command(&self, command: Command, input: &str, reply: Vec<u8>) -> (Output, Value) {
+        // Each exchange binds afresh; a socket file left by an earlier one is stale.
+        let _ = fs::remove_file(self.0.join("embed.sock"));
         let listener = self.listener();
         let server = thread::spawn(move || {
             let (mut stream, _) = accept(&listener);
@@ -286,7 +291,7 @@ impl Wiki {
             let _ = stream.write_all(&reply);
             serde_json::from_str(&request).unwrap()
         });
-        let output = run_output(self.command(args), input);
+        let output = run_output(command, input);
         (output, server.join().unwrap())
     }
 }
@@ -1214,6 +1219,50 @@ fn reminder_sends_raw_korean_and_keeps_nudge() {
 }
 
 #[test]
+fn orca_bot_sessions_keep_suggestions_but_skip_the_interval_nudge() {
+    let wiki = Wiki::new();
+    let bot = wiki.0.join(".orca/bots/bot-1");
+    fs::create_dir_all(&bot).unwrap();
+    let reply =
+        json!({"ok": true, "tier": "cpu", "results": [{"path": "knowledge/foo", "score": 1.0}]});
+    let suggestion = format!(
+        "agent-wiki: pages that may already cover this: {}",
+        wiki.0.join("wiki/pages/knowledge/foo.md").display()
+    );
+    for (session, by_env) in [("bot-env", true), ("bot-cwd", false)] {
+        let mut command = wiki.command(&["remind", "--interval", "1"]);
+        command.env("HOME", &wiki.0);
+        let mut hook = json!({"session_id": session, "prompt": "cache"});
+        if by_env {
+            command.env("ORCA_BOT_HOME", &bot);
+        } else {
+            command.env_remove("ORCA_BOT_HOME");
+            hook["cwd"] = json!(bot);
+        }
+        let (output, _) = wiki.respond_command(
+            command,
+            &hook.to_string(),
+            format!("{reply}\n").into_bytes(),
+        );
+        assert!(output.status.success(), "{output:?}");
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains(&suggestion), "{text}");
+        assert!(!text.contains("prompts since"), "{text}");
+    }
+    // The same prompt outside a bot home still gets the nudge.
+    let mut command = wiki.command(&["remind", "--interval", "1"]);
+    command.env("HOME", &wiki.0).env_remove("ORCA_BOT_HOME");
+    let (output, _) = wiki.respond_command(
+        command,
+        &json!({"session_id": "plain", "prompt": "cache", "cwd": wiki.0}).to_string(),
+        format!("{reply}\n").into_bytes(),
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains(&suggestion), "{text}");
+    assert!(text.contains("agent-wiki: 1 prompts since"), "{text}");
+}
+
+#[test]
 fn wrapper_and_empty_socket_skip_daemon_without_disabling_nudge() {
     let wiki = Wiki::new();
     let listener = wiki.listener();
@@ -1994,4 +2043,103 @@ fn plain_check_uses_one_head_listing_and_no_per_page_git_show() {
     let args = calls[0]["argv"].as_array().unwrap();
     assert!(args.iter().any(|arg| arg == "ls-tree"));
     assert!(!args.iter().any(|arg| arg == "show"));
+}
+
+/// Every path under `dir` with its modification time, to prove a command wrote nothing.
+fn tree(dir: &std::path::Path) -> Vec<(PathBuf, Option<std::time::SystemTime>)> {
+    let mut entries = vec![];
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(path) = pending.pop() {
+        let Ok(meta) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.is_dir() {
+            pending.extend(fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
+        }
+        entries.push((path, meta.modified().ok()));
+    }
+    entries.sort();
+    entries
+}
+
+#[test]
+fn no_refresh_reads_the_existing_index_without_writing() {
+    let wiki = Wiki::new();
+    let state = wiki.0.join("wiki-state");
+    assert!(state.join("index.sqlite").is_file());
+    // A lock file is never needed: remove it so a recreated one would show.
+    fs::remove_file(state.join("wiki.lock")).unwrap();
+    fs::write(
+        wiki.0.join("wiki/pages/knowledge/fresh.md"),
+        "---\ntitle: fresh zirconium notes\ncreated: 2026-11-27\n---\nzirconium\n",
+    )
+    .unwrap();
+    let before = tree(&wiki.0);
+    let search = run(
+        wiki.command(&["search", "--no-refresh", "--no-semantic", "cache"]),
+        "",
+    );
+    assert!(search.contains("foo cache notes"), "{search}");
+    let fresh = run(
+        wiki.command(&["search", "--no-refresh", "--no-semantic", "zirconium"]),
+        "",
+    );
+    assert!(fresh.starts_with("no pages match"), "{fresh}");
+    let json: Value = serde_json::from_str(&run(
+        wiki.command(&["search", "--no-refresh", "--no-semantic", "--json", "cache"]),
+        "",
+    ))
+    .unwrap();
+    assert_eq!(json["hits"].as_array().unwrap().len(), 2, "{json}");
+    let list = run(wiki.command(&["list", "--no-refresh"]), "");
+    assert!(list.contains("bar cache notes"), "{list}");
+    assert!(!list.contains("zirconium"), "{list}");
+    assert_eq!(tree(&wiki.0), before);
+    for name in ["wiki.lock", "migration.lock"] {
+        assert!(!state.join(name).exists());
+    }
+    assert!(!wiki.0.join("wiki/.lock").exists());
+    // An ordinary command still refreshes and finds the new page.
+    let refreshed = run(wiki.command(&["search", "--no-semantic", "zirconium"]), "");
+    assert!(refreshed.contains("fresh zirconium notes"), "{refreshed}");
+}
+
+#[test]
+fn no_refresh_without_an_index_creates_nothing() {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "cw-no-refresh-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(dir.join("wiki/pages/knowledge")).unwrap();
+    fs::write(
+        dir.join("wiki/pages/knowledge/page.md"),
+        "---\ntitle: unindexed\ncreated: 2026-11-27\n---\nbody\n",
+    )
+    .unwrap();
+    let wiki = Wiki(dir);
+    let before = tree(&wiki.0);
+    for (args, stdout) in [
+        (vec!["search", "--no-refresh", "unindexed"], ""),
+        (vec!["list", "--no-refresh"], ""),
+        (
+            vec!["search", "--no-refresh", "--json", "unindexed"],
+            "{\"dense\":\"disabled\",\"hits\":[],\"lexical\":false}\n",
+        ),
+    ] {
+        let output = run_output(wiki.command(&args), "");
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), stdout);
+        assert!(
+            String::from_utf8(output.stderr)
+                .unwrap()
+                .contains("no index yet"),
+        );
+    }
+    // A root that does not exist at all stays absent too.
+    let mut missing = wiki.command(&["list", "--no-refresh"]);
+    missing.env("CLAUDE_WIKI_DIR", wiki.0.join("absent"));
+    assert!(run_output(missing, "").status.success());
+    assert_eq!(tree(&wiki.0), before);
 }

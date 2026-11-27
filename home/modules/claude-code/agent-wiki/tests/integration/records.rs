@@ -44,7 +44,7 @@ fn detached_hook(legacy: bool) {
     let wiki = tmp.0.join("wiki");
     fs::write(&wiki, "untouched").unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_agent-wiki"));
-    command
+    crate::hermetic(&mut command)
         .arg("record")
         .env("XDG_STATE_HOME", tmp.0.join("state"))
         .env("CLAUDE_WIKI_DIR", &wiki)
@@ -145,7 +145,7 @@ fn backfill_includes_orca_and_exec_and_reports_exclusion_reasons() {
     fs::write(claude_dir.join("scripted.jsonl"), "{\"type\":\"user\",\"sessionId\":\"scripted\",\"entrypoint\":\"sdk-cli\",\"message\":{\"content\":\"scripted\"}}\n").unwrap();
     let command = |args: &[&str]| {
         let mut command = Command::new(env!("CARGO_BIN_EXE_agent-wiki"));
-        command
+        crate::hermetic(&mut command)
             .args(args)
             .env("XDG_STATE_HOME", tmp.0.join("state"))
             .env("AGENT_WIKI_STATE_DIR", tmp.0.join("state/agent-wiki"))
@@ -198,7 +198,7 @@ fn curator_exclusion_applies_to_both_formats_and_rebuilds_old_indexes() {
     fs::create_dir_all(&codex_dir).unwrap();
     fs::create_dir_all(&claude_dir).unwrap();
     let command = |args: &[&str]| {
-        let result = Command::new(env!("CARGO_BIN_EXE_agent-wiki"))
+        let result = crate::hermetic(&mut Command::new(env!("CARGO_BIN_EXE_agent-wiki")))
             .args(args)
             .env("HOME", &tmp.0)
             .env("XDG_CACHE_HOME", tmp.0.join("cache"))
@@ -330,13 +330,7 @@ fn decoded_prompts_utc_boundaries_and_denied_writes() {
     fs::create_dir(&tmp.0).unwrap();
     let transcript = tmp.0.join("antigravity.jsonl");
     let run = |args: &[&str]| {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_agent-wiki"));
-        for (key, _) in std::env::vars()
-            .filter(|(k, _)| k.starts_with("AGENT_WIKI_") || k.starts_with("CLAUDE_WIKI_"))
-        {
-            cmd.env_remove(key);
-        }
-        let out = cmd
+        let out = crate::hermetic(&mut Command::new(env!("CARGO_BIN_EXE_agent-wiki")))
             .args(args)
             .env("HOME", &tmp.0)
             .env("XDG_STATE_HOME", tmp.0.join("state"))

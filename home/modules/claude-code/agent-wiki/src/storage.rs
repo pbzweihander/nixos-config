@@ -197,13 +197,14 @@ pub fn prepare(root: &Path) -> Result<PathBuf> {
         let authoritative = dir.join(name);
         let conflict = fs::symlink_metadata(&authoritative).is_ok();
         crate::sessions::repair_private_file(&authoritative, false)?;
-        let target = if conflict {
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_nanos();
-            dir.join(format!("{name}.legacy-{timestamp}"))
-        } else {
-            authoritative
+        let index = name == "index.sqlite";
+        // A conflicting legacy index holds only derived pages plus hook rows,
+        // which are merged below, so it is not archived at all. Other
+        // databases keep exactly one archive, replaced by the newest conflict.
+        let target = match (conflict, index) {
+            (false, _) => Some(authoritative),
+            (true, true) => None,
+            (true, false) => Some(dir.join(format!("{name}.legacy"))),
         };
         let temporary = dir.join(format!(".{name}.migrating-{}", std::process::id()));
         let db = crate::sessions::private_db(&source)?;
@@ -221,18 +222,40 @@ pub fn prepare(root: &Path) -> Result<PathBuf> {
         crate::sessions::repair_private_file(&temporary, true)?;
         snapshot.execute("vacuum into ?", [temporary.to_string_lossy().as_ref()])?;
         sync_file(&temporary)?;
-        fs::rename(&temporary, &target)?;
-        sync_file(&dir)?;
-        if name == "index.sqlite" {
-            // Recheck every legacy index, even if an earlier migration marker
-            // exists. Existing state rows win; the archive retains all originals.
-            crate::state::import_index(&dir, &target)?;
-        }
         if conflict {
-            eprintln!(
+            // Never let a stale sidecar pair with the new archive, and keep
+            // older binaries' timestamped archives from accumulating.
+            prune_archives(&dir, name)?;
+        }
+        let imported = match &target {
+            Some(target) => {
+                fs::rename(&temporary, target)?;
+                sync_file(&dir)?;
+                target.clone()
+            }
+            None => temporary.clone(),
+        };
+        if index {
+            // Recheck every legacy index, even if an earlier migration marker
+            // exists. Existing state rows win over the legacy copy's rows.
+            crate::state::import_index(&dir, &imported)?;
+        }
+        match &target {
+            None => {
+                remove_database(&temporary)?;
+                sync_file(&dir)?;
+                eprintln!(
+                    "agent-wiki: kept state {name}; merged legacy hook rows and removed the legacy copy"
+                );
+            }
+            Some(target) if conflict => eprintln!(
                 "agent-wiki: kept state {name}; archived legacy database as {}",
-                target.file_name().unwrap().to_string_lossy()
-            );
+                target
+                    .file_name()
+                    .expect("archive path has a file name")
+                    .to_string_lossy()
+            ),
+            Some(_) => (),
         }
         drop(snapshot);
         for suffix in ["-wal", "-shm", "-journal", ""] {
@@ -259,6 +282,88 @@ pub fn prepare(root: &Path) -> Result<PathBuf> {
         sync_file(root)?;
     }
     Ok(dir)
+}
+
+/// Conflict archives of `name`: the current `<name>.legacy`, its sidecars, and
+/// older binaries' `<name>.legacy-<timestamp>` copies with their sidecars.
+fn archives(dir: &Path, name: &str) -> Result<Vec<PathBuf>> {
+    let current = format!("{name}.legacy");
+    let older = format!("{name}.legacy-");
+    Ok(fs::read_dir(dir)?
+        .collect::<io::Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|file| file == current || file.starts_with(&older))
+        })
+        .map(|entry| entry.path())
+        .collect())
+}
+
+/// Removes every conflict archive of `name`. Called under `migration.lock`.
+/// An index archive from an older binary is merged first, in case its hook
+/// rows were never imported; one that cannot be read is kept and reported.
+fn prune_archives(dir: &Path, name: &str) -> Result<()> {
+    let sidecar = |path: &Path| {
+        let file = path.to_string_lossy();
+        ["-wal", "-shm", "-journal"]
+            .iter()
+            .any(|suffix| file.ends_with(suffix))
+    };
+    // Databases before sidecars, so a kept archive also keeps its journal.
+    let (sidecars, databases): (Vec<_>, Vec<_>) = archives(dir, name)?
+        .into_iter()
+        .partition(|path| sidecar(path));
+    let mut kept: Vec<PathBuf> = vec![];
+    for path in databases.into_iter().chain(sidecars) {
+        let meta = fs::symlink_metadata(&path)?;
+        if meta.is_dir() {
+            continue;
+        }
+        if sidecar(&path)
+            && kept.iter().any(|database| {
+                path.as_os_str()
+                    .as_encoded_bytes()
+                    .starts_with(database.as_os_str().as_encoded_bytes())
+            })
+        {
+            continue;
+        }
+        if name == "index.sqlite"
+            && meta.is_file()
+            && !sidecar(&path)
+            && let Err(e) = crate::state::import_index(dir, &path)
+        {
+            eprintln!(
+                "agent-wiki: kept unreadable legacy archive {}: {e:#}",
+                path.display()
+            );
+            kept.push(path);
+            continue;
+        }
+        match fs::remove_file(&path) {
+            Ok(()) => (),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => (),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
+
+/// Removes a private database file and its SQLite sidecars.
+fn remove_database(path: &Path) -> Result<()> {
+    for suffix in ["-wal", "-shm", "-journal", ""] {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(suffix);
+        match fs::remove_file(Path::new(&name)) {
+            Ok(()) => (),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => (),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
 }
 
 pub fn open(root: &Path, name: &str) -> Result<Connection> {
@@ -374,15 +479,7 @@ mod tests {
             fs::read_to_string(dir(&root).join("usage.sqlite"))?,
             "destination"
         );
-        let archive = fs::read_dir(dir(&root))?
-            .filter_map(|e| e.ok())
-            .find(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with("usage.sqlite.legacy-")
-            })
-            .unwrap();
-        let archived = crate::sessions::private_db(&archive.path())?;
+        let archived = crate::sessions::private_db(&dir(&root).join("usage.sqlite.legacy"))?;
         archived.execute("insert into data values (1)", [])?;
         Ok(())
     }
@@ -420,16 +517,83 @@ mod tests {
             assert!(!wiki.root.join("index.sqlite").exists());
             assert!(!wiki.root.join(".lock").exists());
         }
-        assert_eq!(
-            fs::read_dir(dir(&wiki.root))?
-                .filter_map(|e| e.ok())
-                .filter(|e| e
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("index.sqlite.legacy-"))
-                .count(),
-            2
-        );
+        assert!(archives(&dir(&wiki.root), "index.sqlite")?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn alternating_old_writers_leave_bounded_archives_and_keep_hook_rows() -> Result<()> {
+        let wiki = crate::usage::tests::Wiki::new()?;
+        let state = dir(&wiki.root);
+        wiki.index
+            .execute("insert into remind_state values ('kept',9,0)", [])?;
+        for name in ["usage.sqlite", "sessions.sqlite"] {
+            open(&wiki.root, name)?.execute_batch("create table probe(value text)")?;
+        }
+        // Archives left by the previous binary: an index archive whose hook rows
+        // must still be merged, and timestamped database copies with a sidecar.
+        let old = Connection::open(state.join("index.sqlite.legacy-1"))?;
+        old.execute_batch("create table remind_state(session_id text primary key,prompts integer not null,offset integer not null); insert into remind_state values ('archived',4,0)")?;
+        drop(old);
+        for name in ["usage.sqlite", "sessions.sqlite"] {
+            for file in [format!("{name}.legacy-1"), format!("{name}.legacy-2")] {
+                Connection::open(state.join(file))?
+                    .execute_batch("create table probe(value text)")?;
+            }
+            fs::write(state.join(format!("{name}.legacy-wal")), "stale sidecar")?;
+        }
+        for round in 0..5 {
+            let old = Connection::open(wiki.root.join("index.sqlite"))?;
+            old.execute_batch("create table remind_state(session_id text primary key,prompts integer not null,offset integer not null); insert into remind_state values ('kept',1,0)")?;
+            old.execute(
+                "insert into remind_state values (?,3,0)",
+                [format!("round-{round}")],
+            )?;
+            drop(old);
+            for name in ["usage.sqlite", "sessions.sqlite"] {
+                let old = Connection::open(wiki.root.join(name))?;
+                old.execute_batch("create table probe(value text)")?;
+                old.execute("insert into probe values (?)", [format!("round-{round}")])?;
+            }
+            fs::write(wiki.root.join(".lock"), "")?;
+            let new = crate::index::open(&wiki.root)?;
+            for name in ["usage.sqlite", "sessions.sqlite", "index.sqlite", ".lock"] {
+                assert!(!wiki.root.join(name).exists());
+            }
+            assert!(archives(&state, "index.sqlite")?.is_empty());
+            for name in ["usage.sqlite", "sessions.sqlite"] {
+                assert_eq!(
+                    archives(&state, name)?,
+                    [state.join(format!("{name}.legacy"))]
+                );
+                let archive = Connection::open(state.join(format!("{name}.legacy")))?;
+                assert_eq!(
+                    archive.query_row("select group_concat(value) from probe", [], |r| r
+                        .get::<_, String>(0))?,
+                    format!("round-{round}")
+                );
+                let active = open(&wiki.root, name)?;
+                assert_eq!(
+                    active.query_row("select count(*) from probe", [], |r| r.get::<_, i64>(0))?,
+                    0
+                );
+            }
+            for (session, prompts) in [("kept", 9), ("archived", 4)]
+                .into_iter()
+                .map(|(s, p)| (s.to_owned(), p))
+                .chain((0..=round).map(|r| (format!("round-{r}"), 3)))
+            {
+                assert_eq!(
+                    new.query_row(
+                        "select prompts from remind_state where session_id=?",
+                        [&session],
+                        |r| r.get::<_, i64>(0)
+                    )?,
+                    prompts,
+                    "{session}"
+                );
+            }
+        }
         Ok(())
     }
 

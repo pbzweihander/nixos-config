@@ -52,7 +52,9 @@ overrides the state directory; custom wiki roots default to a sibling `<root>-st
 directory, isolating test fixtures even with an inherited `XDG_STATE_HOME`. Legacy
 SQLite files migrate at startup through atomic snapshots. When both copies exist,
 the state directory stays authoritative; missing legacy hook rows are imported and
-conflicting legacy databases are preserved as private `*.legacy-<timestamp>` archives. `sync --rebuild` preserves hook state and history.
+a conflicting legacy `index.sqlite` is removed after that import. Any other
+conflicting legacy database is kept as one private `<name>.legacy` archive, which
+the next conflict replaces; older `*.legacy-<timestamp>` archives are pruned then. `sync --rebuild` preserves hook state and history.
 
 The markdown pages are the source of truth. Every `agent-wiki` command first
 re-indexes pages whose mtime or size changed, so pages edited with Edit or Write are
@@ -109,10 +111,15 @@ what the repository or its docs already make obvious.
 ## Search
 
 ```bash
-agent-wiki search <terms...> [-n 10] [--type TYPE] [--status open|done] [--project NAME] [--tag TAG] [--no-semantic] [--json]
-agent-wiki list [-n 20] [--type ...] [--status ...] [--project ...] [--tag ...]   # recently updated
+agent-wiki search <terms...> [-n 10] [--type TYPE] [--status open|done] [--project NAME] [--tag TAG] [--no-semantic] [--json] [--no-refresh]
+agent-wiki list [-n 20] [--type ...] [--status ...] [--project ...] [--tag ...] [--no-refresh]   # recently updated
 agent-wiki tags                                                                  # tags and projects in use
 ```
+
+- `--no-refresh` reads the existing index as is: no lock, no migration, no
+  reindexing, and no files created. Use it for read-only lookups, for example from a
+  reviewer that must not touch the wiki; pages edited since the last refresh are
+  missing or stale. Without an index it prints a note on stderr and no hits.
 
 - Terms are stemmed (Porter) and prefix-matched, and the terms are OR-ed: `configure`
   also finds `configuration` and `configured`. Pass several keywords and synonyms
@@ -533,6 +540,8 @@ Every 15 prompts without a
 record knowledge another session would need. It is a hook note, not a user message:
 record useful durable knowledge if there is any; otherwise continue without replying
 to the note. `--interval N` or `AGENT_WIKI_REMIND_INTERVAL` changes the interval.
+Orca bot homes (`$ORCA_BOT_HOME` or a cwd under `~/.orca/bots/`) do not get this
+nudge; their page suggestions, bulletins, and witch notes are unchanged.
 Counts are separate per session; a sync tool call resets the count. The hook reads
 only new complete transcript lines after its first call.
 

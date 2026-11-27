@@ -949,3 +949,66 @@ fn tokens_glued_to_a_letter_are_never_reported_but_word_sk_is() {
         assert!(!text.contains(leaked), "{leaked} in {text}");
     }
 }
+
+#[test]
+fn bot_sessions_skip_only_the_interval_sync_nudge() {
+    const NUDGE: &str = "prompts since this session last ran `agent-wiki sync`";
+    let f = Fixture::new();
+    f.merged("done");
+    fs::create_dir_all(f.root.join("wiki/pages/knowledge")).unwrap();
+    fs::write(
+        f.root.join("wiki/pages/knowledge/notice.md"),
+        "---\ntitle: Notice for every session\ntags: [bulletin]\ncreated: 2026-11-27\n---\nRead this notice.\n",
+    )
+    .unwrap();
+    let remind = |session: &str, cwd: &Path, env: &[(&str, &str)]| {
+        let payload = json!({"session_id": session, "cwd": cwd, "hook_event_name": "UserPromptSubmit", "prompt": "질문"});
+        f.run(&["remind", "--interval", "2"], Some(payload), env)
+    };
+    let ordinary = remind("plain", &f.repo(), &[]);
+    assert!(ordinary.contains("Notice for every session"), "{ordinary}");
+    assert!(!ordinary.contains(NUDGE), "{ordinary}");
+    let ordinary = remind("plain", &f.repo(), &[]);
+    assert!(ordinary.contains(&format!("2 {NUDGE}")), "{ordinary}");
+    let home = f.bot();
+    for (session, cwd, env) in [
+        // Distinct bots: bulletins and the cleanup throttle are per bot.
+        ("bot-cwd", f.root.join(".orca/bots/bot-1"), vec![]),
+        (
+            "bot-env",
+            f.repo(),
+            vec![("ORCA_BOT_HOME", home.to_str().unwrap())],
+        ),
+    ] {
+        let first = remind(session, &cwd, &env);
+        let second = remind(session, &cwd, &env);
+        let third = remind(session, &cwd, &env);
+        let all = format!("{first}\n{second}\n{third}");
+        assert!(!all.contains(NUDGE), "{all}");
+        assert!(first.contains("Notice for every session"), "{first}");
+        assert!(first.contains(ANCHOR), "{first}");
+        assert!(second.contains(ANCHOR), "{second}");
+        assert!(all.contains(CLEANUP), "{all}");
+    }
+    // Antigravity PreInvocation shares the same rule.
+    let agy = |conversation: &str, workspace: &Path, step: u64| {
+        f.run(
+            &["remind", "--harness", "antigravity", "--interval", "1"],
+            Some(json!({
+                "conversationId": conversation, "workspacePaths": [workspace],
+                "hookEventName": "PreInvocation", "invocationNum": 1,
+                "initialNumSteps": step, "lastUserInput": "질문",
+            })),
+            &[],
+        )
+    };
+    let plain = agy("agy-plain", &f.repo(), 10);
+    assert!(plain.contains(&format!("1 {NUDGE}")), "{plain}");
+    let bot = format!(
+        "{}\n{}",
+        agy("agy-bot", &f.bot(), 10),
+        agy("agy-bot", &f.bot(), 20)
+    );
+    assert!(!bot.contains(NUDGE), "{bot}");
+    assert!(bot.contains(ANCHOR), "{bot}");
+}

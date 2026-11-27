@@ -67,6 +67,9 @@ enum Commands {
         no_semantic: bool,
         #[arg(long)]
         json: bool,
+        /// Read the existing index as is: no lock, migration or reindexing
+        #[arg(long)]
+        no_refresh: bool,
     },
     /// Semantic suggestions from stdin, plus the current project's overview
     Related(related::Args),
@@ -80,6 +83,9 @@ enum Commands {
         n: i64,
         #[command(flatten)]
         filters: search::Filters,
+        /// Read the existing index as is: no lock, migration or reindexing
+        #[arg(long)]
+        no_refresh: bool,
     },
     /// Tags and projects in use, with page counts
     Tags,
@@ -229,6 +235,19 @@ fn run(command: &Commands) -> Result<i32> {
         return Ok(0);
     }
     let root = wiki_root();
+    if matches!(
+        command,
+        Commands::Search {
+            no_refresh: true,
+            ..
+        } | Commands::List {
+            no_refresh: true,
+            ..
+        }
+    ) {
+        run_read_only(&root, command)?;
+        return Ok(0);
+    }
     if let Commands::Sessions(args) = command {
         ensure_layout(&root)?;
         let mut lock = storage::lock(&root, "sessions.lock")?;
@@ -311,6 +330,37 @@ fn with_hook_lock<T>(
     }
 }
 
+/// `--no-refresh`: query whatever index already exists without creating,
+/// locking, migrating or reindexing anything, so a reader can never block or
+/// change a concurrent writer. Pages changed since the last refresh are stale.
+fn run_read_only(root: &Path, command: &Commands) -> Result<()> {
+    let Some(db) = index::open_read_only(root)? else {
+        eprintln!(
+            "agent-wiki: no index yet under {}; run the command without --no-refresh to build it",
+            root.display()
+        );
+        if let Commands::Search { json: true, .. } = command {
+            println!(
+                "{}",
+                serde_json::json!({"hits": [], "dense": "disabled", "lexical": false})
+            );
+        }
+        return Ok(());
+    };
+    match command {
+        Commands::Search {
+            terms,
+            n,
+            filters,
+            no_semantic,
+            json,
+            ..
+        } => search::search(root, &db, terms, *n, filters, *no_semantic, *json),
+        Commands::List { n, filters, .. } => search::list(root, &db, *n, filters),
+        _ => unreachable!("only search and list have --no-refresh"),
+    }
+}
+
 fn run_locked(root: &Path, command: &Commands) -> Result<i32> {
     ensure_layout(root)?;
     if matches!(command, Commands::Sync { rebuild: true, .. }) {
@@ -326,11 +376,12 @@ fn run_locked(root: &Path, command: &Commands) -> Result<i32> {
             filters,
             no_semantic,
             json,
+            ..
         } => search::search(root, &db, terms, *n, filters, *no_semantic, *json)?,
         Commands::Related(args) => related::run(root, &db, args)?,
         Commands::Injections(args) => injections::run(root, &db, args)?,
         Commands::SkillPages(args) => recall::run_skill_pages(root, &db, args)?,
-        Commands::List { n, filters } => search::list(root, &db, *n, filters)?,
+        Commands::List { n, filters, .. } => search::list(root, &db, *n, filters)?,
         Commands::Stats(args) => usage::run(root, &db, args)?,
         Commands::Lint(args) => lint::run(root, &db, args)?,
         Commands::Tags => search::tags(&db)?,

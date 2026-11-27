@@ -41,6 +41,41 @@ pub fn open(root: &Path) -> Result<Connection> {
     Ok(db)
 }
 
+/// Opens the current page index read-only, falling back to the pre-migration
+/// copy in the wiki root. Never creates, migrates, locks or refreshes anything;
+/// `None` when no index has been built yet.
+pub fn open_read_only(root: &Path) -> Result<Option<Connection>> {
+    use rusqlite::OpenFlags;
+    let candidates = [
+        crate::storage::dir(root).join("index.sqlite"),
+        root.join("index.sqlite"),
+    ];
+    let Some(path) = candidates
+        .into_iter()
+        .find(|path| fs::symlink_metadata(path).is_ok())
+    else {
+        return Ok(None);
+    };
+    if !fs::symlink_metadata(&path)?.is_file() {
+        anyhow::bail!("refusing non-regular database file: {}", path.display());
+    }
+    let db = Connection::open_with_flags(
+        &path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )?;
+    // A reader holds no lock between statements; wait out a writer's commit.
+    db.busy_timeout(std::time::Duration::from_millis(1000))?;
+    let version: i64 = db.query_row("pragma user_version", [], |r| r.get(0))?;
+    if version != SCHEMA_VERSION {
+        anyhow::bail!(
+            "index schema {version} is not {SCHEMA_VERSION}; run the command without --no-refresh to rebuild it"
+        );
+    }
+    Ok(Some(db))
+}
+
 fn initialize(db: &Connection) -> Result<()> {
     let attached = db
         .prepare("pragma database_list")?

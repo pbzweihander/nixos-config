@@ -43,6 +43,11 @@ fn bot_key(cwd: Option<&str>) -> Option<String> {
     crate::bulletin::consumer_key(None, Some(&path), "")
 }
 
+/// An Orca bot home session, by `$ORCA_BOT_HOME` or a cwd under `~/.orca/bots/`.
+pub(crate) fn is_bot(cwd: Option<&str>) -> bool {
+    bot_key(cwd).is_some()
+}
+
 fn anchor(prompt: &str) -> bool {
     let mut envelope = false;
     for line in prompt.lines() {

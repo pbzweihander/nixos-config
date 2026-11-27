@@ -18,7 +18,16 @@ pub struct Args {
     pub failures: u32,
 }
 
-fn update(db: &Connection, hook: Hook, interval: u64) -> Result<Option<String>> {
+/// Whether a session gets the periodic `agent-wiki sync` note.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Nudge {
+    Emit,
+    /// Orca bot homes delegate technical work and do not sync every few turns;
+    /// the counter still advances and resets so state stays consistent.
+    Suppress,
+}
+
+fn update(db: &Connection, hook: Hook, interval: u64, nudge: Nudge) -> Result<Option<String>> {
     let tx = crate::state::transaction(db)?;
     let db = &tx;
     let id = hook.session_id.unwrap_or_default();
@@ -49,11 +58,10 @@ fn update(db: &Connection, hook: Hook, interval: u64) -> Result<Option<String>> 
     )?;
     prompts = prompts.saturating_add(1);
     let message = if prompts as u64 >= interval {
-        let message = format!(
-            "agent-wiki: {prompts} prompts since this session last ran `agent-wiki sync`. If this session has produced something another session would need (a root cause and its fix, a tool or environment quirk, a decision and its reason, out-of-scope work for later), record it in the wiki now (load the agent-wiki skill); otherwise continue and do not reply to this note."
-        );
-        prompts = 0;
-        Some(message)
+        let count = std::mem::take(&mut prompts);
+        (nudge == Nudge::Emit).then(|| format!(
+            "agent-wiki: {count} prompts since this session last ran `agent-wiki sync`. If this session has produced something another session would need (a root cause and its fix, a tool or environment quirk, a decision and its reason, out-of-scope work for later), record it in the wiki now (load the agent-wiki skill); otherwise continue and do not reply to this note."
+        ))
     } else {
         None
     };
@@ -147,7 +155,12 @@ pub(crate) fn messages(root: &Path, db: &Connection, args: &Args, hook: Hook) ->
         ));
         crate::usage::log(&root, session, "remind", &paths);
     }
-    if let Some(message) = update(db, hook, args.interval)? {
+    let nudge = if crate::bot_guard::is_bot(hook.cwd.as_deref()) {
+        Nudge::Suppress
+    } else {
+        Nudge::Emit
+    };
+    if let Some(message) = update(db, hook, args.interval, nudge)? {
         messages.push(message);
     }
     Ok(messages.join("\n"))
@@ -218,7 +231,10 @@ mod tests {
         let db = Connection::open_in_memory()?;
         db.execute_batch("create table remind_state(session_id text primary key, prompts integer, offset integer)")?;
         for i in 1..=16 {
-            assert_eq!(update(&db, Hook::default(), 15)?.is_some(), i == 15);
+            assert_eq!(
+                update(&db, Hook::default(), 15, Nudge::Emit)?.is_some(),
+                i == 15
+            );
         }
         assert!(
             update(
@@ -227,9 +243,26 @@ mod tests {
                     session_id: Some("other".into()),
                     ..Hook::default()
                 },
-                15
+                15,
+                Nudge::Emit
             )?
             .is_none()
+        );
+        for _ in 1..=31 {
+            let bot = Hook {
+                session_id: Some("bot".into()),
+                ..Hook::default()
+            };
+            assert!(update(&db, bot, 15, Nudge::Suppress)?.is_none());
+        }
+        // The counter reset at prompts 15 and 30, as it does for an emitted note.
+        assert_eq!(
+            db.query_row(
+                "select prompts from remind_state where session_id='bot'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?,
+            1
         );
         Ok(())
     }

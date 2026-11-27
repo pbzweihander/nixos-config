@@ -639,8 +639,18 @@ check "explicit source override" "no sessions match" env \
   test "$(sqlite3 "$migration_state/state.sqlite" "select prompts from remind_state where session_id='old-writer'")" = 11
   test ! -e "$migration_share/index.sqlite"
   test ! -e "$migration_share/.lock"
-  set -- "$migration_state"/index.sqlite.legacy-*
-  test -f "$1"
+  # The merged legacy index is removed instead of archived, every round.
+  for round in 1 2 3; do
+    sqlite3 "$migration_share/index.sqlite" "create table remind_state(session_id text primary key,prompts integer not null,offset integer not null); insert into remind_state values ('round-$round',$round,0);"
+    sqlite3 "$migration_share/usage.sqlite" "create table migration_probe(value text); insert into migration_probe values ('round-$round');"
+    "$wiki" list > /dev/null 2>&1
+    test "$(sqlite3 "$migration_state/state.sqlite" "select prompts from remind_state where session_id='round-$round'")" = "$round"
+    test "$(sqlite3 "$migration_state/usage.sqlite.legacy" 'select value from migration_probe')" = "round-$round"
+  done
+  test -z "$(find "$migration_state" -maxdepth 1 -name 'index.sqlite.legacy*' -print -quit)"
+  test "$(find "$migration_state" -maxdepth 1 -name 'usage.sqlite.legacy*' | wc -l)" -eq 1
+  "$wiki" list --no-refresh > "$HOME/migration-readonly.out"
+  grep -q migration.md "$HOME/migration-readonly.out"
   (cd "$migration_share" && "$wiki" --dir . list > /dev/null)
   ln -s "$migration_share" "$HOME/default-alias"
   AGENT_WIKI_DIR="$HOME/default-alias" "$wiki" list > /dev/null
