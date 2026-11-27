@@ -15,7 +15,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-const ANCHOR: &str = "agent-wiki witch-anchor: 최종 응답(핸드오프 카드 포함)은 지아에게 직접 표시됩니다. 일반 작업·핸드오프 보고는 에이전트 원문이나 영문 상태 로그를 붙여넣지 말고 이 위치의 한국어 페르소나로 핵심만 2~4줄로 간결하게 요약하세요(상세 리포트는 ~/.local/state/agent-wiki/artifacts/ 파일로 전달). 단, 지아가 원문 인용·비교·검증을 명시적으로 요청한 경우에는 분량 제한 없이 요청된 원문을 출처와 함께 그대로 제시하세요.";
+const ANCHOR: &str = "agent-wiki witch-anchor: 최종 응답(핸드오프 카드 포함)은 지아에게 직접 표시됩니다. 에이전트 원문이나 영문 상태 로그를 그대로 붙여넣지 말고 이 위치의 한국어 페르소나로 보고하되, 고정 줄수 제한 없이 작업 복잡도와 판단에 필요한 정보에 맞춰 분량을 조절하세요. 결론을 먼저 제시하고 핵심 근거·발생 조건·영향·실행 상태·미확인 범위·다음 행동을 본문에 바로 담아 본문만 읽고도 의사결정할 수 있게 작성하세요(긴 로그와 전체 재현 자료는 ~/.local/state/agent-wiki/artifacts/ 파일로 두고 링크가 본문 설명을 대신하지 않게 할 것; 짧은 질의나 단순 완료 보고에는 빈 체크리스트를 붙이지 말 것). 단, 지아가 원문 인용·비교·검증을 명시적으로 요청한 경우에는 분량 제한 없이 요청된 원문을 출처와 함께 그대로 제시하세요.";
 const PREFIX: &str = "agent-wiki witch-cleanup: 정리 대상 임시 워크트리가 남아 있습니다: ";
 const SUFFIX: &str =
     " 작업이 끝났다면 orca worktree rm --worktree path:<path> --delete-branch 로 정리하세요.";
@@ -627,13 +627,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn anchor_keeps_summary_rule_and_explicit_quotation_exception_on_one_line() {
+    fn anchor_sizes_reports_by_decision_needs_and_keeps_quotation_exception_on_one_line() {
         assert!(ANCHOR.starts_with("agent-wiki witch-anchor: "));
         assert!(!ANCHOR.contains('\n'));
-        assert!(ANCHOR.contains("일반 작업·핸드오프 보고는"));
-        assert!(ANCHOR.contains("핵심만 2~4줄로 간결하게 요약하세요"));
-        assert!(ANCHOR.contains("원문 인용·비교·검증을 명시적으로 요청한 경우"));
-        assert!(ANCHOR.contains("요청된 원문을 출처와 함께 그대로 제시하세요."));
+        for fixed in ["2~4줄", "1~4줄", "2–4 concise", "2-4 concise"] {
+            assert!(!ANCHOR.contains(fixed), "{fixed}");
+        }
+        for required in [
+            "고정 줄수 제한 없이 작업 복잡도와 판단에 필요한 정보에 맞춰 분량을 조절하세요",
+            "본문만 읽고도 의사결정할 수 있게",
+            "링크가 본문 설명을 대신하지 않게",
+            "짧은 질의나 단순 완료 보고에는 빈 체크리스트를 붙이지 말 것",
+            "원문 인용·비교·검증을 명시적으로 요청한 경우",
+            "요청된 원문을 출처와 함께 그대로 제시하세요.",
+        ] {
+            assert!(ANCHOR.contains(required), "{required}");
+        }
     }
 
     #[test]
