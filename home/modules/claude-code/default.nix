@@ -36,7 +36,7 @@ let
         } \
         --run ${lib.escapeShellArg ''
           if [ -z "''${AGENT_WIKI_CODEX_SESSIONS_DIRS+x}''${CLAUDE_WIKI_CODEX_SESSIONS_DIRS+x}" ]; then
-            export AGENT_WIKI_CODEX_SESSIONS_DIRS="''${CODEX_HOME:+$CODEX_HOME/sessions:}${homeDir}/.codex/sessions:${homeDir}/.pcodex/sessions"
+            export AGENT_WIKI_CODEX_SESSIONS_DIRS="''${CODEX_HOME:+$CODEX_HOME/sessions:}${homeDir}/.codex/sessions"
           fi
           if [ -z "''${AGENT_WIKI_SESSIONS_DIRS+x}''${CLAUDE_WIKI_SESSIONS_DIRS+x}" ]; then
             export AGENT_WIKI_SESSIONS_DIRS="''${CLAUDE_CONFIG_DIR:+$CLAUDE_CONFIG_DIR/projects:}${
@@ -90,23 +90,9 @@ let
   wikiDir = "${config.xdg.dataHome}/agent-wiki";
   legacyWikiDir = "${config.xdg.dataHome}/claude-wiki";
 
-  # One Claude Code config directory per account: `claude` uses ~/.claude, and the
-  # `pclaude` fish function sets CLAUDE_CONFIG_DIR to ~/.pclaude. All of them get the
-  # same settings; their `projects`, `skills`, `rules`, and `plugins` directories
-  # link to ~/.claude, so transcripts, auto memory, skills (including ones written
-  # at runtime), rules, and installed plugins are shared. Which plugins are enabled
-  # stays per account, in each settings.json. claude.ai-synced skills and plugins live
-  # in per-account buckets (skills/synced/<org>_<account>, plugins/synced/...), so the
-  # accounts coexist there.
-  configDirs = [
-    ".claude"
-    ".pclaude"
-  ];
-  extraConfigDirs = lib.remove ".claude" configDirs;
-  codexConfigDirs = [
-    ".codex"
-    ".pcodex"
-  ];
+  # Manage the default CLI homes; Orca manages additional accounts.
+  configDirs = [ ".claude" ];
+  codexConfigDirs = [ ".codex" ];
   codexHookPython = pkgs.python3.withPackages (ps: [ ps.tomlkit ]);
   antigravityHookMerge =
     pkgs.runCommand "agent-wiki-antigravity-hooks" { nativeBuildInputs = [ pkgs.python3 ]; }
@@ -115,14 +101,7 @@ let
         python3 -m unittest discover -v
         install -Dm644 merge.py $out/libexec/merge.py
       '';
-  sharedDirs = [
-    "projects"
-    "skills"
-    "rules"
-    "plugins"
-  ];
-  # Linked into ~/.claude only; the other accounts reach them through their
-  # `sharedDirs` links.
+  # Linked into ~/.claude only.
   claudeFiles = {
     # User-level rules rather than CLAUDE.md, which stays editable (/memory).
     "rules/agent-wiki.md" = ./rules/agent-wiki.md;
@@ -296,53 +275,14 @@ in
       // {
         ".agents/skills/agent-wiki".source = ./skills/agent-wiki;
         ".gemini/config/skills/agent-wiki".source = ./skills/agent-wiki;
-      }
-      // lib.listToAttrs (
-        lib.concatMap (
-          dir:
-          map (
-            sub:
-            lib.nameValuePair "${dir}/${sub}" {
-              source = config.lib.file.mkOutOfStoreSymlink "${homeDir}/.claude/${sub}";
-            }
-          ) sharedDirs
-        ) extraConfigDirs
-      );
+      };
 
-    # Before `skills` became a link, each extra config directory had its own skills
-    # directory holding Nix-managed links and that account's claude.ai-synced bucket.
-    # Move the account's own content into ~/.claude/skills and drop the old
-    # directory, so the link can take its place. Anything that would collide stays,
-    # and checkLinkTargets then moves the directory aside with the backup extension.
     activation = {
       # Antigravity owns this mutable file. Replace only our named hook entry.
       antigravityWikiHooks = lib.hm.dag.entryAfter [ "linkGeneration" ] ''
         run ${lib.getExe pkgs.python3} ${antigravityHookMerge}/libexec/merge.py \
           --wiki ${lib.getExe' agent-wiki "agent-wiki"} \
           ${lib.escapeShellArg "${homeDir}/.gemini/config/hooks.json"}
-      '';
-
-      claudeCodeSharedSkills = lib.hm.dag.entryBefore [ "checkLinkTargets" ] ''
-        shared=${lib.escapeShellArg "${homeDir}/.claude/skills"}
-        for skills in ${lib.escapeShellArgs (map (dir: "${homeDir}/${dir}/skills") extraConfigDirs)}; do
-        [ -d "$skills" ] && [ ! -L "$skills" ] || continue
-        run mkdir -p "$shared/synced"
-        if [ -d "$skills/synced" ]; then
-          for entry in "$skills/synced"/* "$skills/synced"/.bucket-*; do
-            [ -e "$entry" ] || continue
-            [ -e "$shared/synced/''${entry##*/}" ] || run mv "$entry" "$shared/synced/"
-          done
-          run rmdir --ignore-fail-on-non-empty "$skills/synced"
-        fi
-        for entry in "$skills"/* "$skills"/.[!.]*; do
-          [ -e "$entry" ] || [ -L "$entry" ] || continue
-          case "$(readlink "$entry")" in
-            /nix/store/*) run rm "$entry" ;;
-            *) [ -e "$shared/''${entry##*/}" ] || run mv "$entry" "$shared/" ;;
-          esac
-        done
-        run rmdir --ignore-fail-on-non-empty "$skills"
-        done
       '';
 
       # Old symlinks keep in-flight sessions and curator git worktrees usable.
@@ -427,17 +367,4 @@ in
     };
   };
 
-  programs.fish.functions = {
-    pclaude = {
-      description = "Claude Code with config directory ~/.pclaude";
-      wraps = "claude";
-      body = "env CLAUDE_CONFIG_DIR=$HOME/.pclaude claude $argv";
-    };
-    # Nothing is shared with ~/.codex. codex-implement reaches it with --account pcodex.
-    pcodex = {
-      description = "Codex CLI with CODEX_HOME ~/.pcodex";
-      wraps = "codex";
-      body = "env CODEX_HOME=$HOME/.pcodex codex $argv";
-    };
-  };
 }

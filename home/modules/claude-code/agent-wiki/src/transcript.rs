@@ -20,16 +20,16 @@ pub fn cwd_class(cwd: &str) -> &'static str {
         .any(|root| path.starts_with(root.join("wiki-curator")))
     {
         "wiki_curator"
-    } else if [".claude", ".pclaude"].iter().any(|dir| {
-        path.strip_prefix(crate::home().join(dir).join("jobs"))
-            .ok()
-            .is_some_and(|relative| {
-                relative
-                    .components()
-                    .nth(1)
-                    .is_some_and(|c| c.as_os_str() == "tmp")
-            })
-    }) {
+    } else if path
+        .strip_prefix(crate::home().join(".claude/jobs"))
+        .ok()
+        .is_some_and(|relative| {
+            relative
+                .components()
+                .nth(1)
+                .is_some_and(|c| c.as_os_str() == "tmp")
+        })
+    {
         "claude_jobs_tmp"
     } else {
         "project_or_other"

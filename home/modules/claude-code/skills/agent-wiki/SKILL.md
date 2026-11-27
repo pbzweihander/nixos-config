@@ -266,7 +266,7 @@ Sources are the colon-separated directories in `$AGENT_WIKI_SESSIONS_DIRS`;
 empty entries and missing directories are skipped, and symlinked duplicates are
 read once. When unset or empty, it defaults to `$CLAUDE_CONFIG_DIR/projects`, or
 `~/.claude/projects` if `CLAUDE_CONFIG_DIR` is unset; the installed wrapper lists
-both `~/.claude/projects` and `~/.pclaude/projects`. Transcripts outside the listed
+`~/.claude/projects` plus `$CLAUDE_CONFIG_DIR/projects` when set. Transcripts outside the listed
 directories are dropped from the index. For `sessions`, only immediate project directories'
 `*.jsonl` files are read; subagents, tool results, thinking, and meta messages are
 excluded. Scripted `sdk-cli` messages are not indexed; older text indexes rebuild
@@ -276,7 +276,7 @@ Verify a result against the current project before turning it into a wiki fact.
 
 Codex rollouts come from `$AGENT_WIKI_CODEX_SESSIONS_DIRS`, a colon-separated list
 defaulting to `$CODEX_HOME/sessions` or `~/.codex/sessions`; the installed wrapper
-lists both `~/.codex/sessions` and `~/.pcodex/sessions`. Results label the harness;
+lists `~/.codex/sessions` plus `$CODEX_HOME/sessions` when set. Results label the harness;
 `--harness claude|codex` filters it. Only `response_item` user/assistant messages
 are indexed, without event duplicates, reasoning or tool output. Codex sidechains
 (`source.subagent`) are excluded. Orca desktop sessions are included as `codex/orca`;

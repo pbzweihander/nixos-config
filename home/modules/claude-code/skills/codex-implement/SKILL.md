@@ -222,16 +222,16 @@ The run directory is the handle for its processes, codex thread, and output:
 | `last.md` | Codex's final message, written by `-o` in the examples. |
 | `progress.seen` | Number of progress lines already printed by the watch. |
 
-**Accounts.** There is more than one codex account, each with its own usage limit:
-`codex` (the default, `~/.codex`) and `pcodex` (`~/.pcodex`). Start with the default
-and pass `--account pcodex` before the run directory only after the default runs out.
-The runner then sets `CODEX_HOME`; it refuses with `[FAILED] no codex account in ...`
-when that account has never logged in.
+**Accounts.** The runner uses the current `CODEX_HOME` (default `~/.codex`).
+For a separately configured CLI home, pass `--account NAME` before the run directory
+to select `~/.NAME`. The runner sets `CODEX_HOME`; it refuses with
+`[FAILED] no codex account in ...` when that account has never logged in.
 
 A usage-limit failure looks like `[FAILED]` or a non-zero `[EXIT]` whose reason in
 `<run dir>/stderr.log` or `last.md` mentions a usage or rate limit, often with a reset
-time. When that happens, rerun the **whole spec** on the next account: sessions live
-under `CODEX_HOME`, so another account cannot resume the previous account's run. Say in
+time. Report the limit and wait for it to reset, or use another account the user
+has configured. Rerun the **whole spec** when changing accounts: sessions live under
+`CODEX_HOME`, so another account cannot resume the previous account's run. Say in
 your report which account did the work.
 
 Event lines (those marked *log only* are not printed by the watch):
@@ -277,8 +277,8 @@ Other useful flags:
 
 If codex failed (`[FAILED]`, or `[EXIT]` with a non-zero rc), read the reason
 first. If it was blocked by the sandbox, do not rewrite the spec: resume the same
-session with the missing flag added (see step 4). If it was a usage limit, start the
-same spec again with `--account pcodex`. Otherwise fix the spec or
+session with the missing flag added (see step 4). If it was a usage limit, follow
+the account guidance above. Otherwise fix the spec or
 environment and run again. Do not silently take over the implementation yourself
 on the first failure.
 

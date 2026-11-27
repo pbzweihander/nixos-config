@@ -1,8 +1,8 @@
 # Codex wiki hooks
 
-Home-manager merges wiki hooks into existing `~/.codex` and `~/.pcodex` homes.
-It does not create an unused account directory. `pcodex` selects the latter with
-`CODEX_HOME`; Orca's Codex workers inherit its hook configuration as well.
+Home-manager merges wiki hooks into the existing `~/.codex` home.
+It does not create an unused account directory. Orca manages additional accounts;
+its Codex workers inherit the default home's hook configuration as well.
 
 | Event | Command | Output |
 | --- | --- | --- |
@@ -116,10 +116,10 @@ no watcher or rewrite loop is needed.
 The same wiki rules are appended to `$CODEX_HOME/AGENTS.md` inside an owned HTML
 comment block. Other text remains intact. A nonempty `AGENTS.override.md` takes
 precedence in Codex; users opting into that override must include their desired
-wiki rules there. The skill is installed at `~/.agents/skills/agent-wiki` for both
-accounts. Read-only inspection on 2026-11-23 found mutable `.codex/hooks.json` and
+wiki rules there. The skill is installed at `~/.agents/skills/agent-wiki`.
+Read-only inspection on 2026-11-23 found mutable `.codex/hooks.json` and
 `.codex/config.toml`, no global `AGENTS.md`/`AGENTS.override.md`, no existing
-`.agents/skills/agent-wiki`, and no `.pcodex` directory.
+`.agents/skills/agent-wiki`.
 
 ## Verification, 2026-11-23
 
