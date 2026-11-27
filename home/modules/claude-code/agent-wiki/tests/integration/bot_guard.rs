@@ -15,6 +15,10 @@ use std::{
 
 const ANCHOR: &str = "agent-wiki witch-anchor:";
 const CLEANUP: &str = "agent-wiki witch-cleanup:";
+/// The full anchor, pinned so a wording change is a deliberate test change.
+const FULL_ANCHOR: &str = "agent-wiki witch-anchor: 최종 응답(핸드오프 카드 포함)은 지아에게 직접 표시됩니다. 일반 작업·핸드오프 보고는 에이전트 원문이나 영문 상태 로그를 붙여넣지 말고 이 위치의 한국어 페르소나로 핵심만 2~4줄로 간결하게 요약하세요(상세 리포트는 ~/.local/state/agent-wiki/artifacts/ 파일로 전달). 단, 지아가 원문 인용·비교·검증을 명시적으로 요청한 경우에는 분량 제한 없이 요청된 원문을 출처와 함께 그대로 제시하세요.";
+const QUOTATION: &str = "원문 인용·비교·검증을 명시적으로 요청한 경우";
+const QUOTE_PROMPT: &str = "에디타의 리뷰 원문을 그대로 인용해서 내 기억과 비교·검증해 줘";
 // Avoid tests competing with each other for the production scan's 70 ms budget.
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -248,7 +252,7 @@ fn owner_handoff_worker_done_question_and_status_scope() {
         let text = f.prompt(prompt);
         assert_eq!(text.matches(ANCHOR).count(), 1, "{text}");
         assert_eq!(text.lines().count(), 1);
-        assert!(text.contains("핵심만 2~4줄로 간결하게 보고하세요"));
+        assert_eq!(text.trim_end(), FULL_ANCHOR);
     }
     assert!(
         !f.prompt("──── From: bot-2 (status) ────\n참고")
@@ -1025,4 +1029,82 @@ fn bot_sessions_skip_only_the_interval_sync_nudge() {
     );
     assert!(!bot.contains(NUDGE), "{bot}");
     assert!(bot.contains(ANCHOR), "{bot}");
+}
+
+#[test]
+fn non_bot_workspaces_never_get_the_anchor_on_any_harness_or_prompt() {
+    let f = Fixture::new();
+    let outside = std::env::temp_dir().join(format!("wiki-bot-guard-plain-{}", std::process::id()));
+    fs::create_dir_all(&outside).unwrap();
+    let nixos = f.root.join("nixos-config");
+    fs::create_dir_all(&nixos).unwrap();
+    for cwd in [nixos, f.repo(), outside.clone()] {
+        for prompt in [
+            "검토해 줘",
+            "──── From: bot-2 (handoff) ────\n수행",
+            QUOTE_PROMPT,
+        ] {
+            let payload = json!({"session_id":"plain", "cwd":cwd, "hook_event_name":"UserPromptSubmit", "prompt":prompt});
+            for harness in ["claude", "codex"] {
+                let text = f.run(
+                    &["remind", "--harness", harness],
+                    Some(payload.clone()),
+                    &[],
+                );
+                assert!(!text.contains("witch-"), "{harness} {cwd:?}: {text}");
+            }
+            let text = f.run(
+                &["remind", "--harness", "antigravity"],
+                Some(json!({
+                    "conversationId":"agy-plain", "workspacePaths":[cwd],
+                    "hookEventName":"PreInvocation", "invocationNum":1,
+                    "initialNumSteps":1, "lastUserInput":prompt,
+                })),
+                &[],
+            );
+            assert!(!text.contains("witch-"), "antigravity {cwd:?}: {text}");
+        }
+    }
+    assert!(!f.has_state());
+    let _ = fs::remove_dir_all(outside);
+}
+
+#[test]
+fn bot_homes_get_the_quotation_exception_on_every_harness() {
+    let f = Fixture::new();
+    let prompts = [
+        "검토해 줘",
+        "──── From: bot-2 (handoff) ────\n수행",
+        "──── From: worker (worker_done) ────\n완료",
+        QUOTE_PROMPT,
+        "──── From: bot-2 (handoff) ────\n로스만 리뷰 원문을 그대로 인용해 비교해 줘",
+    ];
+    for prompt in prompts {
+        let payload = f.payload("UserPromptSubmit", prompt);
+        let claude = f.run(
+            &["remind", "--harness", "claude"],
+            Some(payload.clone()),
+            &[],
+        );
+        assert_eq!(claude.trim_end(), FULL_ANCHOR, "{prompt}");
+        let codex: Value =
+            serde_json::from_str(&f.run(&["remind", "--harness", "codex"], Some(payload), &[]))
+                .unwrap();
+        assert_eq!(
+            codex["hookSpecificOutput"]["hookEventName"],
+            "UserPromptSubmit"
+        );
+        assert_eq!(
+            codex["hookSpecificOutput"]["additionalContext"],
+            FULL_ANCHOR
+        );
+    }
+    for (step, prompt) in (10..).step_by(10).zip(prompts) {
+        let agy = f.agy("PreInvocation", 1, step, prompt);
+        let text = agy["injectSteps"][0]["systemMessage"]["systemMessage"]
+            .as_str()
+            .unwrap();
+        assert!(text.contains(FULL_ANCHOR), "{text}");
+        assert!(text.contains(QUOTATION), "{text}");
+    }
 }

@@ -15,7 +15,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-const ANCHOR: &str = "agent-wiki witch-anchor: 최종 응답(핸드오프 카드 포함)은 지아에게 직접 표시됩니다. 에이전트 원문이나 영문 상태 로그를 붙여넣지 말고, 이 위치의 한국어 페르소나로 핵심만 2~4줄로 간결하게 보고하세요(상세 리포트는 ~/.local/state/agent-wiki/artifacts/ 파일로 전달).";
+const ANCHOR: &str = "agent-wiki witch-anchor: 최종 응답(핸드오프 카드 포함)은 지아에게 직접 표시됩니다. 일반 작업·핸드오프 보고는 에이전트 원문이나 영문 상태 로그를 붙여넣지 말고 이 위치의 한국어 페르소나로 핵심만 2~4줄로 간결하게 요약하세요(상세 리포트는 ~/.local/state/agent-wiki/artifacts/ 파일로 전달). 단, 지아가 원문 인용·비교·검증을 명시적으로 요청한 경우에는 분량 제한 없이 요청된 원문을 출처와 함께 그대로 제시하세요.";
 const PREFIX: &str = "agent-wiki witch-cleanup: 정리 대상 임시 워크트리가 남아 있습니다: ";
 const SUFFIX: &str =
     " 작업이 끝났다면 orca worktree rm --worktree path:<path> --delete-branch 로 정리하세요.";
@@ -625,6 +625,16 @@ fn scan_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn anchor_keeps_summary_rule_and_explicit_quotation_exception_on_one_line() {
+        assert!(ANCHOR.starts_with("agent-wiki witch-anchor: "));
+        assert!(!ANCHOR.contains('\n'));
+        assert!(ANCHOR.contains("일반 작업·핸드오프 보고는"));
+        assert!(ANCHOR.contains("핵심만 2~4줄로 간결하게 요약하세요"));
+        assert!(ANCHOR.contains("원문 인용·비교·검증을 명시적으로 요청한 경우"));
+        assert!(ANCHOR.contains("요청된 원문을 출처와 함께 그대로 제시하세요."));
+    }
 
     #[test]
     fn owner_and_actionable_envelopes_but_not_status() {
