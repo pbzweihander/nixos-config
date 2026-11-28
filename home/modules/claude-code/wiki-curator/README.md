@@ -5,7 +5,7 @@ The data and socket directories fall back to `claude-wiki` until Home Manager
 migrates them to `agent-wiki` and leaves compatibility symlinks.
 
 Daily, conservative maintenance for the shared `agent-wiki` git repository. On
-rossmann the user timer starts at 05:00 local time, with up to 15 minutes of random
+rossmann the user timer starts at 04:00 local time, with up to 15 minutes of random
 delay and catch-up after downtime. It attempts at most five tasks per run.
 
 The job reads `agent-wiki lint --json` and considers, in order:

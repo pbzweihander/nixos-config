@@ -27,7 +27,7 @@ in
     timers.wiki-curator = {
       Unit.Description = "Daily agent-wiki curation";
       Timer = {
-        OnCalendar = "*-*-* 05:00:00";
+        OnCalendar = "*-*-* 04:00:00";
         Persistent = true;
         RandomizedDelaySec = "15min";
       };
