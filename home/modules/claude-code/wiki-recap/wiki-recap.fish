@@ -150,7 +150,11 @@ function ask -a out system
     set -l code $status
     rm -f $system_file
     if test $code -ne 0
-        set -g error "claude exited with $code: "(string trim -- (tail -n 1 $out.err))
+        set -l detail (string replace -ar '(*UCP)\s+' ' ' -- "$(cat $out) $(cat $out.err)" | string trim)
+        set -g error "claude exited with $code"
+        if test -n "$detail"
+            set error (string sub -l 500 -- "$error: $detail" | string trim -r)
+        end
         return 1
     end
     if not string match -qr '\S' <$out
